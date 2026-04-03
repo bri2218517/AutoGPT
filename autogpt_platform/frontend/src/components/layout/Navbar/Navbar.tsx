@@ -19,8 +19,10 @@ import { MobileNavBar } from "./components/MobileNavbar/MobileNavBar";
 import { NavbarLoading } from "./components/NavbarLoading";
 import { Wallet } from "./components/Wallet/Wallet";
 import { getAccountMenuItems, loggedInLinks } from "./helpers";
+import { useLayout } from "@/components/layout/LayoutContext";
 
 export function Navbar() {
+  const { layout } = useLayout();
   const { user, isLoggedIn, isUserLoading } = useSupabase();
   const breakpoint = useBreakpoint();
   const isSmallScreen = breakpoint === "sm" || breakpoint === "base";
@@ -31,18 +33,17 @@ export function Navbar() {
   const previewBranchName = environment.getPreviewStealingDev();
   const logoutInProgress = isLogoutInProgress();
 
-  const { data: profile, isLoading: isProfileLoading } = useGetV2GetUserProfile(
-    {
+  const { data: profile, isLoading: isProfileLoading } =
+    useGetV2GetUserProfile({
       query: {
         select: okData,
         enabled: isLoggedIn && !!user && !logoutInProgress,
-        // Include user ID in query key to ensure cache invalidation when user changes
         queryKey: ["/api/store/profile", user?.id],
       },
-    },
-  );
+    });
 
   const isLoadingProfile = isProfileLoading || isUserLoading;
+  const isClassic = layout === "classic";
 
   const shouldShowPreviewBanner = Boolean(isLoggedIn && previewBranchName);
 
@@ -55,45 +56,63 @@ export function Navbar() {
   ];
 
   if (isUserLoading) {
-    return <NavbarLoading />;
+    return isClassic ? <NavbarLoading /> : null;
   }
 
   return (
     <>
-      <div className="sticky top-0 z-40 w-full">
-        {shouldShowPreviewBanner && previewBranchName ? (
-          <PreviewBanner branchName={previewBranchName} />
-        ) : null}
-        <nav
-          className="relative inline-flex w-full items-center justify-end border-b border-zinc-100 bg-[#FAFAFA]/80 p-3 backdrop-blur-xl"
-          style={{ height: NAVBAR_HEIGHT_PX }}
-        >
-          {isSidebarCollapsed && (
-            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-              <IconAutoGPTLogo className="h-8 w-24" />
-            </div>
-          )}
-          {/* Right section */}
-          {isLoggedIn && !isSmallScreen ? (
-            <div className="flex items-center gap-4">
-              <FeedbackButton />
-              <AgentActivityDropdown />
-              {profile && <Wallet key={profile.username} />}
-              <AccountMenu
-                userName={profile?.username}
-                userEmail={profile?.name}
-                avatarSrc={profile?.avatar_url ?? ""}
-                menuItemGroups={dynamicMenuItems}
-                isLoading={isLoadingProfile}
-              />
-            </div>
-          ) : !isLoggedIn ? (
-            <LoginButton />
+      {/* Classic layout: full top navbar */}
+      {isClassic && (
+        <div className="sticky top-0 z-40 w-full">
+          {shouldShowPreviewBanner && previewBranchName ? (
+            <PreviewBanner branchName={previewBranchName} />
           ) : null}
-          {/* <ThemeToggle /> */}
-        </nav>
-      </div>
-      {/* Mobile Navbar - Adjust positioning */}
+          <nav
+            className="relative inline-flex w-full items-center justify-end border-b border-zinc-100 bg-[#FAFAFA]/80 p-3 backdrop-blur-xl"
+            style={{ height: NAVBAR_HEIGHT_PX }}
+          >
+            {isSidebarCollapsed && (
+              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                <IconAutoGPTLogo className="h-8 w-24" />
+              </div>
+            )}
+            {isLoggedIn && !isSmallScreen ? (
+              <div className="flex items-center gap-4">
+                <FeedbackButton />
+                <AgentActivityDropdown />
+                {profile && <Wallet key={profile.username} />}
+                <AccountMenu
+                  userName={profile?.username}
+                  userEmail={profile?.name}
+                  avatarSrc={profile?.avatar_url ?? ""}
+                  menuItemGroups={dynamicMenuItems}
+                  isLoading={isLoadingProfile}
+                />
+              </div>
+            ) : !isLoggedIn ? (
+              <LoginButton />
+            ) : null}
+          </nav>
+        </div>
+      )}
+
+      {/* Modern layout: only preview banner + login for unauthenticated */}
+      {!isClassic && (
+        <>
+          {shouldShowPreviewBanner && previewBranchName ? (
+            <div className="sticky top-0 z-40 w-full">
+              <PreviewBanner branchName={previewBranchName} />
+            </div>
+          ) : null}
+          {!isLoggedIn ? (
+            <div className="flex w-full justify-end p-3">
+              <LoginButton />
+            </div>
+          ) : null}
+        </>
+      )}
+
+      {/* Mobile Navbar (both layouts) */}
       {isLoggedIn && isSmallScreen ? (
         <div className="fixed right-0 top-2 z-50 flex items-center gap-0">
           <Wallet />

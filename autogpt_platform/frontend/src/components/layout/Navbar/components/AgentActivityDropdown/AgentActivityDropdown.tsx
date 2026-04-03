@@ -30,7 +30,7 @@ export function AgentActivityDropdown() {
           data-testid="agent-activity-button"
           aria-label="View Agent Activity"
         >
-          <Bell size={22} className="text-black" />
+          <Bell size={20} className="text-black" />
 
           {activeCount > 0 && (
             <>

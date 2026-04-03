@@ -2,6 +2,8 @@
 
 import { AppSidebar } from "@/components/layout/AppSidebar/AppSidebar";
 import { SidebarDynamicContent } from "@/components/layout/AppSidebar/SidebarDynamicContent";
+import { LayoutProvider } from "@/components/layout/LayoutContext";
+import { LayoutSwitcher } from "@/components/layout/LayoutSwitcher";
 import { Navbar } from "@/components/layout/Navbar/Navbar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { NetworkStatusMonitor } from "@/services/network-status/NetworkStatusMonitor";
@@ -18,16 +20,19 @@ export default function PlatformLayout({ children }: { children: ReactNode }) {
   }, [pathname]);
 
   return (
-    <SidebarProvider defaultOpen={true}>
-      <AppSidebar dynamicContent={<SidebarDynamicContent />} />
-      <main className="flex h-screen w-full flex-col overflow-hidden">
-        <NetworkStatusMonitor />
-        <Navbar />
-        <AdminImpersonationBanner />
-        <section ref={scrollRef} className="flex-1 overflow-y-auto">
-          {children}
-        </section>
-      </main>
-    </SidebarProvider>
+    <LayoutProvider>
+      <SidebarProvider defaultOpen={true}>
+        <AppSidebar dynamicContent={<SidebarDynamicContent />} />
+        <main className="flex h-screen w-full flex-col overflow-hidden">
+          <NetworkStatusMonitor />
+          <Navbar />
+          <AdminImpersonationBanner />
+          <section ref={scrollRef} className="flex-1 overflow-y-auto">
+            {children}
+          </section>
+        </main>
+        <LayoutSwitcher />
+      </SidebarProvider>
+    </LayoutProvider>
   );
 }
