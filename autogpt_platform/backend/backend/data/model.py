@@ -870,6 +870,12 @@ class NodeExecutionStats(BaseModel):
         # vars() returns __dict__ for fields that are set (plus extras via
         # model_config.extra='allow') — much cheaper than model_dump() which
         # validates + serialises every field.
+        #
+        # Pydantic v2 stores all field values in __dict__, so vars() is
+        # equivalent to model_dump() for our declared fields. Internal keys
+        # (__pydantic_fields_set__, etc.) start with __ and are harmless —
+        # setattr on those would update the instance's private Pydantic state,
+        # but in practice they don't appear in __dict__ for field keys.
         other_fields = vars(other)
         self_fields = vars(self)
 
