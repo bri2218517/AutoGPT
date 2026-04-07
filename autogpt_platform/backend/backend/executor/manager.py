@@ -45,7 +45,10 @@ from backend.data.notifications import (
     ZeroBalanceData,
 )
 from backend.data.rabbitmq import SyncRabbitMQ
-from backend.executor.cost_tracking import log_system_credential_cost
+from backend.executor.cost_tracking import (
+    drain_pending_cost_logs,
+    log_system_credential_cost,
+)
 from backend.integrations.creds_manager import IntegrationCredentialsManager
 from backend.notifications.notifications import queue_notification
 from backend.util import json
@@ -2053,6 +2056,18 @@ class ExecutionManager(AppProcess):
             self.cancel_client,
             prefix + " [cancel-consumer]",
         )
+
+        # Drain any in-flight cost log tasks before exit so we don't silently
+        # drop INSERT operations during deployments.
+        loop = getattr(self, "node_execution_loop", None)
+        if loop is not None and loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    drain_pending_cost_logs(), loop
+                ).result(timeout=10)
+                logger.info(f"{prefix} ✅ Cost log tasks drained")
+            except Exception as e:
+                logger.warning(f"{prefix} ⚠️ Failed to drain cost log tasks: {e}")
 
         logger.info(f"{prefix} ✅ Finished GraphExec cleanup")
 
