@@ -421,5 +421,9 @@ describe("PlatformCostContent", () => {
     );
     expect(screen.getByText("copilot:SDK")).toBeDefined();
     expect(screen.getByText("anthropic")).toBeDefined();
+    // null email + null user_id renders as "-" in the User column; multiple
+    // other cells (tokens, duration, session) also render "-", so use
+    // getAllByText to avoid the single-match constraint.
+    expect(screen.getAllByText("-").length).toBeGreaterThan(0);
   });
 });
