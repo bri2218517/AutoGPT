@@ -1432,6 +1432,7 @@ class AIStructuredResponseGeneratorBlock(AIBlockBase):
 
         error_feedback_message = ""
         llm_model = input_data.model
+        last_attempt_cost: float | None = None
 
         for retry_count in range(input_data.retry):
             logger.debug(f"LLM request: {prompt}")
@@ -1449,13 +1450,15 @@ class AIStructuredResponseGeneratorBlock(AIBlockBase):
                     max_tokens=input_data.max_tokens,
                 )
                 response_text = llm_response.response
-                cost_stats = NodeExecutionStats(
+                # Merge token counts for every attempt (each call costs tokens).
+                # provider_cost (actual USD) is tracked separately and only merged
+                # on success to avoid double-counting across retries.
+                token_stats = NodeExecutionStats(
                     input_token_count=llm_response.prompt_tokens,
                     output_token_count=llm_response.completion_tokens,
                 )
-                if llm_response.provider_cost is not None:
-                    cost_stats.provider_cost = llm_response.provider_cost
-                self.merge_stats(cost_stats)
+                self.merge_stats(token_stats)
+                last_attempt_cost = llm_response.provider_cost
                 logger.debug(f"LLM attempt-{retry_count} response: {response_text}")
 
                 if input_data.expected_format:
@@ -1524,6 +1527,7 @@ class AIStructuredResponseGeneratorBlock(AIBlockBase):
                             NodeExecutionStats(
                                 llm_call_count=retry_count + 1,
                                 llm_retry_count=retry_count,
+                                provider_cost=last_attempt_cost,
                             )
                         )
                         yield "response", response_obj
@@ -1544,6 +1548,7 @@ class AIStructuredResponseGeneratorBlock(AIBlockBase):
                         NodeExecutionStats(
                             llm_call_count=retry_count + 1,
                             llm_retry_count=retry_count,
+                            provider_cost=last_attempt_cost,
                         )
                     )
                     yield "response", {"response": response_text}

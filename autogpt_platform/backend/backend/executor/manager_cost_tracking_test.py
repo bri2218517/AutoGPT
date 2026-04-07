@@ -311,7 +311,7 @@ class TestLogSystemCredentialCost:
         assert entry.cost_microdollars == 1500
         assert entry.tracking_type == "cost_usd"
         assert entry.metadata["tracking_type"] == "cost_usd"
-        assert entry.metadata["provider_cost_usd"] == 0.0015
+        assert entry.metadata["provider_cost_raw"] == 0.0015
 
     @pytest.mark.asyncio
     async def test_model_name_enum_converted_to_str(self):
@@ -419,6 +419,34 @@ class TestLogSystemCredentialCost:
 
         entry = db_client.log_platform_cost.call_args[0][0]
         assert entry.cost_microdollars == 1500
+
+    @pytest.mark.asyncio
+    async def test_per_run_metadata_has_no_provider_cost_raw(self):
+        """For per-run providers (google_maps etc), provider_cost_raw is absent
+        from metadata since stats.provider_cost is None."""
+        db_client = _make_db_client()
+        with (
+            patch(
+                "backend.executor.cost_tracking.is_system_credential", return_value=True
+            ),
+            patch(
+                "backend.executor.cost_tracking.block_usage_cost",
+                return_value=(0, None),
+            ),
+        ):
+            node_exec = _make_node_exec(
+                inputs={
+                    "credentials": {"id": "sys-cred", "provider": "google_maps"},
+                }
+            )
+            block = _make_block()
+            stats = NodeExecutionStats()  # no provider_cost
+            await log_system_credential_cost(node_exec, block, stats, db_client)
+            await asyncio.sleep(0)
+
+        entry = db_client.log_platform_cost.call_args[0][0]
+        assert entry.tracking_type == "per_run"
+        assert "provider_cost_raw" not in (entry.metadata or {})
 
 
 # ---------------------------------------------------------------------------

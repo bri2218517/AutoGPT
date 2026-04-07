@@ -1,5 +1,6 @@
 "use client";
 
+import { Alert, AlertDescription } from "@/components/molecules/Alert/Alert";
 import { formatMicrodollars } from "../helpers";
 import { SummaryCard } from "./SummaryCard";
 import { ProviderTable } from "./ProviderTable";
@@ -127,12 +128,9 @@ function PlatformCostContent({ searchParams }: Props) {
       </div>
 
       {error && (
-        <div
-          role="alert"
-          className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/20 dark:text-red-400"
-        >
-          {error}
-        </div>
+        <Alert variant="error">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
       )}
 
       {loading ? (

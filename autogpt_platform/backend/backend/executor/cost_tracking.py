@@ -36,6 +36,36 @@ _WALLTIME_BILLED_PROVIDERS = frozenset(
 _pending_log_tasks: set[asyncio.Task] = set()
 
 
+async def drain_pending_cost_logs(timeout: float = 5.0) -> None:
+    """Await all in-flight cost log tasks with a timeout.
+
+    Drains both the executor cost log tasks (_pending_log_tasks in this module,
+    used for block execution cost tracking via DatabaseManagerAsyncClient) and
+    the copilot cost log tasks (from platform_cost.schedule_cost_log, used by
+    token_tracking for copilot LLM turns).
+
+    Call this during graceful shutdown to flush pending INSERT tasks before
+    the process exits. Tasks that don't complete within `timeout` seconds are
+    abandoned and their failures are already logged by _safe_log.
+    """
+    all_pending = list(_pending_log_tasks)
+    if all_pending:
+        logger.info("Draining %d executor cost log task(s)", len(all_pending))
+        _, still_pending = await asyncio.wait(all_pending, timeout=timeout)
+        if still_pending:
+            logger.warning(
+                "%d executor cost log task(s) did not complete within %.1fs",
+                len(still_pending),
+                timeout,
+            )
+    # Also drain copilot cost log tasks (platform_cost._pending_log_tasks)
+    from backend.data.platform_cost import (  # noqa: PLC0415
+        drain_pending_cost_logs as _drain_copilot,
+    )
+
+    await _drain_copilot()
+
+
 def _schedule_log(
     db_client: "DatabaseManagerAsyncClient", entry: PlatformCostEntry
 ) -> None:
@@ -175,7 +205,9 @@ async def log_system_credential_cost(
             if credit_cost:
                 meta["credit_cost"] = credit_cost
             if stats.provider_cost is not None:
-                meta["provider_cost_usd"] = stats.provider_cost
+                # Use 'provider_cost_raw' — the value's unit varies by tracking
+                # type (USD for cost_usd, count for items/characters/per_run, etc.)
+                meta["provider_cost_raw"] = stats.provider_cost
 
             _schedule_log(
                 db_client,

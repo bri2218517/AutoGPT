@@ -113,6 +113,20 @@ def schedule_cost_log(entry: PlatformCostEntry) -> None:
     task.add_done_callback(_pending_log_tasks.discard)
 
 
+async def drain_pending_cost_logs() -> None:
+    """Await all in-flight cost log tasks before shutdown.
+
+    Call this from ExecutionManager.cleanup() (or equivalent teardown hook)
+    to ensure no cost entries are silently dropped during a rolling deployment.
+    Tasks that were already completed are no-ops; only genuinely in-flight
+    tasks cause a real wait.
+    """
+    pending = list(_pending_log_tasks)
+    if pending:
+        logger.info("Draining %d pending cost log task(s)…", len(pending))
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 def _json_or_none(data: dict[str, Any] | None) -> str | None:
     if data is None:
         return None
@@ -310,6 +324,8 @@ async def get_platform_cost_logs(
     page: int = 1,
     page_size: int = 50,
 ) -> tuple[list[CostLogRow], int]:
+    if start is None:
+        start = datetime.now(tz=timezone.utc) - timedelta(days=DEFAULT_DASHBOARD_DAYS)
     where_sql, params = _build_where(start, end, provider, user_id, "p")
 
     offset = (page - 1) * page_size

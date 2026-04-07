@@ -342,3 +342,296 @@ class TestSearchOrganizationsBlockCostTracking:
         assert len(accumulated) == 1
         assert accumulated[0].provider_cost == 0.0
         assert accumulated[0].provider_cost_type == "items"
+
+
+# ---------------------------------------------------------------------------
+# JinaEmbeddingBlock — token count from usage.total_tokens
+# ---------------------------------------------------------------------------
+
+
+class TestJinaEmbeddingBlockCostTracking:
+    @pytest.mark.asyncio
+    async def test_merge_stats_called_with_token_count(self):
+        """provider token count is recorded when API returns usage.total_tokens."""
+        from backend.blocks.jina._auth import TEST_CREDENTIALS as JINA_CREDS
+        from backend.blocks.jina._auth import TEST_CREDENTIALS_INPUT as JINA_CREDS_INPUT
+        from backend.blocks.jina.embeddings import JinaEmbeddingBlock
+
+        block = JinaEmbeddingBlock()
+
+        api_response = {
+            "data": [{"embedding": [0.1, 0.2, 0.3]}],
+            "usage": {"total_tokens": 42},
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = api_response
+
+        accumulated: list[NodeExecutionStats] = []
+
+        with (
+            patch(
+                "backend.blocks.jina.embeddings.Requests.post",
+                new_callable=AsyncMock,
+                return_value=mock_resp,
+            ),
+            patch.object(
+                block, "merge_stats", side_effect=lambda s: accumulated.append(s)
+            ),
+        ):
+            input_data = JinaEmbeddingBlock.Input(
+                texts=["hello world"],
+                credentials=JINA_CREDS_INPUT,  # type: ignore[arg-type]
+            )
+            async for _ in block.run(input_data, credentials=JINA_CREDS):
+                pass
+
+        assert len(accumulated) == 1
+        assert accumulated[0].input_token_count == 42
+
+    @pytest.mark.asyncio
+    async def test_no_merge_stats_when_usage_absent(self):
+        """When API response omits usage field, merge_stats is not called."""
+        from backend.blocks.jina._auth import TEST_CREDENTIALS as JINA_CREDS
+        from backend.blocks.jina._auth import TEST_CREDENTIALS_INPUT as JINA_CREDS_INPUT
+        from backend.blocks.jina.embeddings import JinaEmbeddingBlock
+
+        block = JinaEmbeddingBlock()
+
+        api_response = {
+            "data": [{"embedding": [0.1, 0.2, 0.3]}],
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = api_response
+
+        accumulated: list[NodeExecutionStats] = []
+
+        with (
+            patch(
+                "backend.blocks.jina.embeddings.Requests.post",
+                new_callable=AsyncMock,
+                return_value=mock_resp,
+            ),
+            patch.object(
+                block, "merge_stats", side_effect=lambda s: accumulated.append(s)
+            ),
+        ):
+            input_data = JinaEmbeddingBlock.Input(
+                texts=["hello"],
+                credentials=JINA_CREDS_INPUT,  # type: ignore[arg-type]
+            )
+            async for _ in block.run(input_data, credentials=JINA_CREDS):
+                pass
+
+        assert accumulated == []
+
+
+# ---------------------------------------------------------------------------
+# UnrealTextToSpeechBlock — character count from input text length
+# ---------------------------------------------------------------------------
+
+
+class TestUnrealTextToSpeechBlockCostTracking:
+    @pytest.mark.asyncio
+    async def test_merge_stats_called_with_character_count(self):
+        """provider_cost equals len(text) with type='characters'."""
+        from backend.blocks.text_to_speech_block import TEST_CREDENTIALS as TTS_CREDS
+        from backend.blocks.text_to_speech_block import (
+            TEST_CREDENTIALS_INPUT as TTS_CREDS_INPUT,
+        )
+        from backend.blocks.text_to_speech_block import UnrealTextToSpeechBlock
+
+        block = UnrealTextToSpeechBlock()
+        test_text = "Hello, world!"
+
+        with (
+            patch.object(
+                UnrealTextToSpeechBlock,
+                "call_unreal_speech_api",
+                new_callable=AsyncMock,
+                return_value={"OutputUri": "https://example.com/audio.mp3"},
+            ),
+            patch.object(block, "merge_stats") as mock_merge,
+        ):
+            input_data = UnrealTextToSpeechBlock.Input(
+                text=test_text,
+                credentials=TTS_CREDS_INPUT,  # type: ignore[arg-type]
+            )
+            async for _ in block.run(input_data, credentials=TTS_CREDS):
+                pass
+
+        mock_merge.assert_called_once()
+        stats = mock_merge.call_args[0][0]
+        assert stats.provider_cost == float(len(test_text))
+        assert stats.provider_cost_type == "characters"
+
+    @pytest.mark.asyncio
+    async def test_empty_text_gives_zero_characters(self):
+        """An empty text string results in provider_cost=0.0."""
+        from backend.blocks.text_to_speech_block import TEST_CREDENTIALS as TTS_CREDS
+        from backend.blocks.text_to_speech_block import (
+            TEST_CREDENTIALS_INPUT as TTS_CREDS_INPUT,
+        )
+        from backend.blocks.text_to_speech_block import UnrealTextToSpeechBlock
+
+        block = UnrealTextToSpeechBlock()
+
+        with (
+            patch.object(
+                UnrealTextToSpeechBlock,
+                "call_unreal_speech_api",
+                new_callable=AsyncMock,
+                return_value={"OutputUri": "https://example.com/audio.mp3"},
+            ),
+            patch.object(block, "merge_stats") as mock_merge,
+        ):
+            input_data = UnrealTextToSpeechBlock.Input(
+                text="",
+                credentials=TTS_CREDS_INPUT,  # type: ignore[arg-type]
+            )
+            async for _ in block.run(input_data, credentials=TTS_CREDS):
+                pass
+
+        mock_merge.assert_called_once()
+        stats = mock_merge.call_args[0][0]
+        assert stats.provider_cost == 0.0
+        assert stats.provider_cost_type == "characters"
+
+
+# ---------------------------------------------------------------------------
+# GoogleMapsSearchBlock — item count from search_places results
+# ---------------------------------------------------------------------------
+
+
+class TestGoogleMapsSearchBlockCostTracking:
+    @pytest.mark.asyncio
+    async def test_merge_stats_called_with_place_count(self):
+        """provider_cost equals number of returned places, type == 'items'."""
+        from backend.blocks.google_maps import TEST_CREDENTIALS as MAPS_CREDS
+        from backend.blocks.google_maps import (
+            TEST_CREDENTIALS_INPUT as MAPS_CREDS_INPUT,
+        )
+        from backend.blocks.google_maps import GoogleMapsSearchBlock
+
+        block = GoogleMapsSearchBlock()
+
+        fake_places = [{"name": f"Place{i}", "address": f"Addr{i}"} for i in range(4)]
+        accumulated: list[NodeExecutionStats] = []
+
+        with (
+            patch.object(
+                GoogleMapsSearchBlock,
+                "search_places",
+                return_value=fake_places,
+            ),
+            patch.object(
+                block, "merge_stats", side_effect=lambda s: accumulated.append(s)
+            ),
+        ):
+            input_data = GoogleMapsSearchBlock.Input(
+                query="coffee shops",
+                credentials=MAPS_CREDS_INPUT,  # type: ignore[arg-type]
+            )
+            async for _ in block.run(input_data, credentials=MAPS_CREDS):
+                pass
+
+        assert len(accumulated) == 1
+        assert accumulated[0].provider_cost == 4.0
+        assert accumulated[0].provider_cost_type == "items"
+
+    @pytest.mark.asyncio
+    async def test_empty_results_tracks_zero(self):
+        """Zero places returned results in provider_cost=0.0."""
+        from backend.blocks.google_maps import TEST_CREDENTIALS as MAPS_CREDS
+        from backend.blocks.google_maps import (
+            TEST_CREDENTIALS_INPUT as MAPS_CREDS_INPUT,
+        )
+        from backend.blocks.google_maps import GoogleMapsSearchBlock
+
+        block = GoogleMapsSearchBlock()
+        accumulated: list[NodeExecutionStats] = []
+
+        with (
+            patch.object(
+                GoogleMapsSearchBlock,
+                "search_places",
+                return_value=[],
+            ),
+            patch.object(
+                block, "merge_stats", side_effect=lambda s: accumulated.append(s)
+            ),
+        ):
+            input_data = GoogleMapsSearchBlock.Input(
+                query="nothing here",
+                credentials=MAPS_CREDS_INPUT,  # type: ignore[arg-type]
+            )
+            async for _ in block.run(input_data, credentials=MAPS_CREDS):
+                pass
+
+        assert len(accumulated) == 1
+        assert accumulated[0].provider_cost == 0.0
+        assert accumulated[0].provider_cost_type == "items"
+
+
+# ---------------------------------------------------------------------------
+# SmartLeadAddLeadsBlock — item count from lead_list length
+# ---------------------------------------------------------------------------
+
+
+class TestSmartLeadAddLeadsBlockCostTracking:
+    @pytest.mark.asyncio
+    async def test_merge_stats_called_with_lead_count(self):
+        """provider_cost equals number of leads uploaded, type == 'items'."""
+        from backend.blocks.smartlead._auth import TEST_CREDENTIALS as SL_CREDS
+        from backend.blocks.smartlead._auth import (
+            TEST_CREDENTIALS_INPUT as SL_CREDS_INPUT,
+        )
+        from backend.blocks.smartlead.campaign import AddLeadToCampaignBlock
+        from backend.blocks.smartlead.models import (
+            AddLeadsToCampaignResponse,
+            LeadInput,
+        )
+
+        block = AddLeadToCampaignBlock()
+
+        fake_leads = [
+            LeadInput(first_name="Alice", last_name="A", email="alice@example.com"),
+            LeadInput(first_name="Bob", last_name="B", email="bob@example.com"),
+        ]
+        fake_response = AddLeadsToCampaignResponse(
+            ok=True,
+            upload_count=2,
+            total_leads=2,
+            block_count=0,
+            duplicate_count=0,
+            invalid_email_count=0,
+            invalid_emails=[],
+            already_added_to_campaign=0,
+            unsubscribed_leads=[],
+            is_lead_limit_exhausted=False,
+            lead_import_stopped_count=0,
+            bounce_count=0,
+        )
+        accumulated: list[NodeExecutionStats] = []
+
+        with (
+            patch.object(
+                AddLeadToCampaignBlock,
+                "add_leads_to_campaign",
+                new_callable=AsyncMock,
+                return_value=fake_response,
+            ),
+            patch.object(
+                block, "merge_stats", side_effect=lambda s: accumulated.append(s)
+            ),
+        ):
+            input_data = AddLeadToCampaignBlock.Input(
+                campaign_id=123,
+                lead_list=fake_leads,
+                credentials=SL_CREDS_INPUT,  # type: ignore[arg-type]
+            )
+            async for _ in block.run(input_data, credentials=SL_CREDS):
+                pass
+
+        assert len(accumulated) == 1
+        assert accumulated[0].provider_cost == 2.0
+        assert accumulated[0].provider_cost_type == "items"
