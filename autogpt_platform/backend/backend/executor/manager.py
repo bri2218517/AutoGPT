@@ -699,6 +699,7 @@ class ExecutionProcessor:
                 node_exec=node_exec,
                 block=node.block,
                 stats=execution_stats,
+                db_client=db_client,
             )
 
         return execution_stats

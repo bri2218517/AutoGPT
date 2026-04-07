@@ -1,19 +1,19 @@
 """Helpers for platform cost tracking on system-credential block executions."""
 
+import asyncio
 import logging
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from backend.blocks._base import Block, BlockSchema
 from backend.data.execution import NodeExecutionEntry
 from backend.data.model import NodeExecutionStats
-from backend.data.platform_cost import (
-    PlatformCostEntry,
-    schedule_cost_log,
-    usd_to_microdollars,
-)
+from backend.data.platform_cost import PlatformCostEntry, usd_to_microdollars
 from backend.executor.utils import block_usage_cost
 from backend.integrations.credentials_store import is_system_credential
 from backend.integrations.providers import ProviderName
+
+if TYPE_CHECKING:
+    from backend.data.db_manager import DatabaseManagerAsyncClient
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,29 @@ _WALLTIME_BILLED_PROVIDERS = frozenset(
         ProviderName.REPLICATE.value,
     }
 )
+
+# Hold strong references to in-flight log tasks so the event loop doesn't
+# garbage-collect them mid-execution. Tasks remove themselves on completion.
+_pending_log_tasks: set[asyncio.Task] = set()
+
+
+def _schedule_log(
+    db_client: "DatabaseManagerAsyncClient", entry: PlatformCostEntry
+) -> None:
+    async def _safe_log() -> None:
+        try:
+            await db_client.log_platform_cost(entry)
+        except Exception:
+            logger.exception(
+                "Failed to log platform cost for user=%s provider=%s block=%s",
+                entry.user_id,
+                entry.provider,
+                entry.block_name,
+            )
+
+    task = asyncio.create_task(_safe_log())
+    _pending_log_tasks.add(task)
+    task.add_done_callback(_pending_log_tasks.discard)
 
 
 def resolve_tracking(
@@ -92,8 +115,13 @@ async def log_system_credential_cost(
     node_exec: NodeExecutionEntry,
     block: Block,
     stats: NodeExecutionStats,
+    db_client: "DatabaseManagerAsyncClient",
 ) -> None:
     """Check if a system credential was used and log the platform cost.
+
+    Routes through DatabaseManagerAsyncClient so the write goes via the
+    message-passing DB service rather than calling Prisma directly (which
+    is not connected in the executor process).
 
     Logs only the first matching system credential field (one log per
     execution). Any unexpected error is caught and logged — cost logging
@@ -149,7 +177,8 @@ async def log_system_credential_cost(
             if stats.provider_cost is not None:
                 meta["provider_cost_usd"] = stats.provider_cost
 
-            schedule_cost_log(
+            _schedule_log(
+                db_client,
                 PlatformCostEntry(
                     user_id=node_exec.user_id,
                     graph_exec_id=node_exec.graph_exec_id,
@@ -169,7 +198,7 @@ async def log_system_credential_cost(
                     tracking_type=tracking_type,
                     tracking_amount=tracking_amount,
                     metadata=meta or None,
-                )
+                ),
             )
             return  # One log per execution is enough
     except Exception:

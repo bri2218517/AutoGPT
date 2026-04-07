@@ -169,6 +169,12 @@ class TestResolveTracking:
 # ---------------------------------------------------------------------------
 
 
+def _make_db_client() -> MagicMock:
+    db_client = MagicMock()
+    db_client.log_platform_cost = AsyncMock()
+    return db_client
+
+
 def _make_block(has_credentials: bool = True) -> MagicMock:
     block = MagicMock()
     block.name = "TestBlock"
@@ -201,43 +207,37 @@ def _make_node_exec(
 class TestLogSystemCredentialCost:
     @pytest.mark.asyncio
     async def test_skips_dry_run(self):
-        mock_log = AsyncMock()
-        with patch("backend.data.platform_cost.log_platform_cost_safe", new=mock_log):
-            node_exec = _make_node_exec(dry_run=True)
-            block = _make_block()
-            stats = NodeExecutionStats()
-            await log_system_credential_cost(node_exec, block, stats)
-        mock_log.assert_not_awaited()
+        db_client = _make_db_client()
+        node_exec = _make_node_exec(dry_run=True)
+        block = _make_block()
+        stats = NodeExecutionStats()
+        await log_system_credential_cost(node_exec, block, stats, db_client)
+        db_client.log_platform_cost.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_when_no_credential_fields(self):
-        mock_log = AsyncMock()
-        with patch("backend.data.platform_cost.log_platform_cost_safe", new=mock_log):
-            node_exec = _make_node_exec(inputs={})
-            block = _make_block(has_credentials=False)
-            stats = NodeExecutionStats()
-            await log_system_credential_cost(node_exec, block, stats)
-        mock_log.assert_not_awaited()
+        db_client = _make_db_client()
+        node_exec = _make_node_exec(inputs={})
+        block = _make_block(has_credentials=False)
+        stats = NodeExecutionStats()
+        await log_system_credential_cost(node_exec, block, stats, db_client)
+        db_client.log_platform_cost.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_when_cred_data_missing(self):
-        mock_log = AsyncMock()
-        with patch("backend.data.platform_cost.log_platform_cost_safe", new=mock_log):
-            node_exec = _make_node_exec(inputs={})
-            block = _make_block()
-            stats = NodeExecutionStats()
-            await log_system_credential_cost(node_exec, block, stats)
-        mock_log.assert_not_awaited()
+        db_client = _make_db_client()
+        node_exec = _make_node_exec(inputs={})
+        block = _make_block()
+        stats = NodeExecutionStats()
+        await log_system_credential_cost(node_exec, block, stats, db_client)
+        db_client.log_platform_cost.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_when_not_system_credential(self):
-        mock_log = AsyncMock()
-        with (
-            patch("backend.data.platform_cost.log_platform_cost_safe", new=mock_log),
-            patch(
-                "backend.executor.cost_tracking.is_system_credential",
-                return_value=False,
-            ),
+        db_client = _make_db_client()
+        with patch(
+            "backend.executor.cost_tracking.is_system_credential",
+            return_value=False,
         ):
             node_exec = _make_node_exec(
                 inputs={
@@ -246,14 +246,13 @@ class TestLogSystemCredentialCost:
             )
             block = _make_block()
             stats = NodeExecutionStats()
-            await log_system_credential_cost(node_exec, block, stats)
-        mock_log.assert_not_awaited()
+            await log_system_credential_cost(node_exec, block, stats, db_client)
+        db_client.log_platform_cost.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_logs_with_system_credential(self):
-        mock_log = AsyncMock()
+        db_client = _make_db_client()
         with (
-            patch("backend.data.platform_cost.log_platform_cost_safe", new=mock_log),
             patch(
                 "backend.executor.cost_tracking.is_system_credential", return_value=True
             ),
@@ -270,11 +269,11 @@ class TestLogSystemCredentialCost:
             )
             block = _make_block()
             stats = NodeExecutionStats(input_token_count=500, output_token_count=200)
-            await log_system_credential_cost(node_exec, block, stats)
+            await log_system_credential_cost(node_exec, block, stats, db_client)
             await asyncio.sleep(0)
 
-        mock_log.assert_awaited_once()
-        entry = mock_log.call_args[0][0]
+        db_client.log_platform_cost.assert_awaited_once()
+        entry = db_client.log_platform_cost.call_args[0][0]
         assert entry.user_id == "user-1"
         assert entry.provider == "openai"
         assert entry.block_name == "TestBlock"
@@ -288,9 +287,8 @@ class TestLogSystemCredentialCost:
 
     @pytest.mark.asyncio
     async def test_logs_with_provider_cost(self):
-        mock_log = AsyncMock()
+        db_client = _make_db_client()
         with (
-            patch("backend.data.platform_cost.log_platform_cost_safe", new=mock_log),
             patch(
                 "backend.executor.cost_tracking.is_system_credential", return_value=True
             ),
@@ -306,10 +304,10 @@ class TestLogSystemCredentialCost:
             )
             block = _make_block()
             stats = NodeExecutionStats(provider_cost=0.0015)
-            await log_system_credential_cost(node_exec, block, stats)
+            await log_system_credential_cost(node_exec, block, stats, db_client)
             await asyncio.sleep(0)
 
-        entry = mock_log.call_args[0][0]
+        entry = db_client.log_platform_cost.call_args[0][0]
         assert entry.cost_microdollars == 1500
         assert entry.tracking_type == "cost_usd"
         assert entry.metadata["tracking_type"] == "cost_usd"
@@ -317,9 +315,8 @@ class TestLogSystemCredentialCost:
 
     @pytest.mark.asyncio
     async def test_model_name_enum_converted_to_str(self):
-        mock_log = AsyncMock()
+        db_client = _make_db_client()
         with (
-            patch("backend.data.platform_cost.log_platform_cost_safe", new=mock_log),
             patch(
                 "backend.executor.cost_tracking.is_system_credential", return_value=True
             ),
@@ -341,17 +338,16 @@ class TestLogSystemCredentialCost:
             )
             block = _make_block()
             stats = NodeExecutionStats()
-            await log_system_credential_cost(node_exec, block, stats)
+            await log_system_credential_cost(node_exec, block, stats, db_client)
             await asyncio.sleep(0)
 
-        entry = mock_log.call_args[0][0]
+        entry = db_client.log_platform_cost.call_args[0][0]
         assert entry.model == "FakeModel.GPT4"
 
     @pytest.mark.asyncio
     async def test_model_name_dict_becomes_none(self):
-        mock_log = AsyncMock()
+        db_client = _make_db_client()
         with (
-            patch("backend.data.platform_cost.log_platform_cost_safe", new=mock_log),
             patch(
                 "backend.executor.cost_tracking.is_system_credential", return_value=True
             ),
@@ -368,17 +364,17 @@ class TestLogSystemCredentialCost:
             )
             block = _make_block()
             stats = NodeExecutionStats()
-            await log_system_credential_cost(node_exec, block, stats)
+            await log_system_credential_cost(node_exec, block, stats, db_client)
             await asyncio.sleep(0)
 
-        entry = mock_log.call_args[0][0]
+        entry = db_client.log_platform_cost.call_args[0][0]
         assert entry.model is None
 
     @pytest.mark.asyncio
     async def test_does_not_raise_when_block_usage_cost_raises(self):
         """log_system_credential_cost must swallow exceptions from block_usage_cost."""
+        db_client = _make_db_client()
         with (
-            patch("backend.data.platform_cost.log_platform_cost_safe", new=AsyncMock()),
             patch(
                 "backend.executor.cost_tracking.is_system_credential", return_value=True
             ),
@@ -395,13 +391,12 @@ class TestLogSystemCredentialCost:
             block = _make_block()
             stats = NodeExecutionStats()
             # Should not raise — outer except must catch block_usage_cost error
-            await log_system_credential_cost(node_exec, block, stats)
+            await log_system_credential_cost(node_exec, block, stats, db_client)
 
     @pytest.mark.asyncio
     async def test_round_instead_of_int_for_microdollars(self):
-        mock_log = AsyncMock()
+        db_client = _make_db_client()
         with (
-            patch("backend.data.platform_cost.log_platform_cost_safe", new=mock_log),
             patch(
                 "backend.executor.cost_tracking.is_system_credential", return_value=True
             ),
@@ -419,10 +414,10 @@ class TestLogSystemCredentialCost:
             # 0.0015 * 1_000_000 = 1499.9999999... with float math
             # round() should give 1500, int() would give 1499
             stats = NodeExecutionStats(provider_cost=0.0015)
-            await log_system_credential_cost(node_exec, block, stats)
+            await log_system_credential_cost(node_exec, block, stats, db_client)
             await asyncio.sleep(0)
 
-        entry = mock_log.call_args[0][0]
+        entry = db_client.log_platform_cost.call_args[0][0]
         assert entry.cost_microdollars == 1500
 
 
@@ -486,9 +481,8 @@ class TestManagerCostTrackingIntegration:
     async def test_log_called_with_accumulated_stats(self):
         """Verify that log_system_credential_cost receives stats that could
         have been accumulated by merge_stats across multiple yield steps."""
-        mock_log = AsyncMock()
+        db_client = _make_db_client()
         with (
-            patch("backend.data.platform_cost.log_platform_cost_safe", new=mock_log),
             patch(
                 "backend.executor.cost_tracking.is_system_credential", return_value=True
             ),
@@ -511,11 +505,11 @@ class TestManagerCostTrackingIntegration:
                 }
             )
             block = _make_block()
-            await log_system_credential_cost(node_exec, block, stats)
+            await log_system_credential_cost(node_exec, block, stats, db_client)
             await asyncio.sleep(0)
 
-        mock_log.assert_awaited_once()
-        entry = mock_log.call_args[0][0]
+        db_client.log_platform_cost.assert_awaited_once()
+        entry = db_client.log_platform_cost.call_args[0][0]
         assert entry.input_tokens == 300
         assert entry.tracking_type == "tokens"
         assert entry.metadata["tracking_amount"] == 300.0
@@ -530,17 +524,16 @@ class TestManagerCostTrackingIntegration:
         """
         from backend.data.execution import ExecutionStatus
 
-        mock_log = AsyncMock()
-        with patch("backend.data.platform_cost.log_platform_cost_safe", new=mock_log):
-            node_exec = _make_node_exec(
-                inputs={"credentials": {"id": "sys-cred", "provider": "openai"}}
-            )
-            block = _make_block()
-            stats = NodeExecutionStats(input_token_count=100)
+        db_client = _make_db_client()
+        node_exec = _make_node_exec(
+            inputs={"credentials": {"id": "sys-cred", "provider": "openai"}}
+        )
+        block = _make_block()
+        stats = NodeExecutionStats(input_token_count=100)
 
-            # Simulate the manager guard: only call on COMPLETED
-            status = ExecutionStatus.FAILED
-            if status == ExecutionStatus.COMPLETED:
-                await log_system_credential_cost(node_exec, block, stats)
+        # Simulate the manager guard: only call on COMPLETED
+        status = ExecutionStatus.FAILED
+        if status == ExecutionStatus.COMPLETED:
+            await log_system_credential_cost(node_exec, block, stats, db_client)
 
-        mock_log.assert_not_awaited()
+        db_client.log_platform_cost.assert_not_awaited()
