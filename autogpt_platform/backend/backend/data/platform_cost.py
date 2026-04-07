@@ -70,7 +70,9 @@ async def log_platform_cost(entry: PlatformCostEntry) -> None:
         entry.node_id,
         entry.block_id,
         entry.block_name,
-        entry.provider,
+        # Normalize to lowercase so the (provider, createdAt) index is always
+        # used without LOWER() on the read side.
+        entry.provider.lower(),
         entry.credential_id,
         entry.cost_microdollars,
         entry.input_tokens,
@@ -99,6 +101,12 @@ async def log_platform_cost_safe(entry: PlatformCostEntry) -> None:
 
 # Hold strong references to in-flight log tasks to prevent GC.
 # Tasks remove themselves on completion via add_done_callback.
+#
+# NOTE: this set is intentionally unbounded. Under sustained high load or DB
+# slowness the set could grow without limit. Adding a bounded asyncio.Semaphore
+# would provide back-pressure but is deferred until we observe memory pressure
+# in production. The set is small in practice because log inserts are fast
+# (sub-millisecond on a healthy DB).
 _pending_log_tasks: set["asyncio.Task[None]"] = set()
 
 
@@ -199,8 +207,10 @@ def _build_where(
         params.append(end)
         idx += 1
     if provider:
-        clauses.append(f'LOWER({prefix}"provider") = LOWER(${idx})')
-        params.append(provider)
+        # Provider names are normalized to lowercase at write time so a plain
+        # equality check is sufficient and the (provider, createdAt) index is used.
+        clauses.append(f'{prefix}"provider" = ${idx}')
+        params.append(provider.lower())
         idx += 1
     if user_id:
         clauses.append(f'{prefix}"userId" = ${idx}')
@@ -231,13 +241,12 @@ async def get_platform_cost_dashboard(
         start = datetime.now(timezone.utc) - timedelta(days=DEFAULT_DASHBOARD_DAYS)
     where_p, params_p = _build_where(start, end, provider, user_id, "p")
 
-    by_provider_rows, user_count_rows, by_user_rows = await asyncio.gather(
+    by_provider_rows, by_user_rows = await asyncio.gather(
         query_raw_with_schema(
             f"""
             SELECT
                 p."provider",
-                COALESCE(p."trackingType", p."metadata"->>'tracking_type')
-                    AS tracking_type,
+                p."trackingType" AS tracking_type,
                 COALESCE(SUM(p."costMicrodollars"), 0)::bigint AS total_cost,
                 COALESCE(SUM(p."inputTokens"), 0)::bigint AS total_input_tokens,
                 COALESCE(SUM(p."outputTokens"), 0)::bigint AS total_output_tokens,
@@ -246,18 +255,9 @@ async def get_platform_cost_dashboard(
                 COUNT(*)::bigint AS request_count
             FROM {{schema_prefix}}"PlatformCostLog" p
             WHERE {where_p}
-            GROUP BY p."provider",
-                COALESCE(p."trackingType", p."metadata"->>'tracking_type')
+            GROUP BY p."provider", p."trackingType"
             ORDER BY total_cost DESC
             LIMIT {MAX_PROVIDER_ROWS}
-            """,
-            *params_p,
-        ),
-        query_raw_with_schema(
-            f"""
-            SELECT COUNT(DISTINCT p."userId")::bigint AS cnt
-            FROM {{schema_prefix}}"PlatformCostLog" p
-            WHERE {where_p}
             """,
             *params_p,
         ),
@@ -281,7 +281,9 @@ async def get_platform_cost_dashboard(
         ),
     )
 
-    total_users = user_count_rows[0]["cnt"] if user_count_rows else 0
+    # Derive total_users from by_user rows rather than a separate
+    # COUNT(DISTINCT userId) query — avoids a full-table scan.
+    total_users = len(by_user_rows)
     total_cost = sum(r["total_cost"] for r in by_provider_rows)
     total_requests = sum(r["request_count"] for r in by_provider_rows)
 
@@ -352,8 +354,7 @@ async def get_platform_cost_logs(
                 p."nodeExecId" AS node_exec_id,
                 p."blockName" AS block_name,
                 p."provider",
-                COALESCE(p."trackingType", p."metadata"->>'tracking_type')
-                    AS tracking_type,
+                p."trackingType" AS tracking_type,
                 p."costMicrodollars" AS cost_microdollars,
                 p."inputTokens" AS input_tokens,
                 p."outputTokens" AS output_tokens,

@@ -8,6 +8,7 @@ from autogpt_libs.auth.jwt_utils import get_jwt_payload
 
 from backend.data.platform_cost import PlatformCostDashboard
 
+from . import platform_cost_routes
 from .platform_cost_routes import router as platform_cost_router
 
 app = fastapi.FastAPI()
@@ -20,6 +21,8 @@ client = fastapi.testclient.TestClient(app)
 def setup_app_admin_auth(mock_jwt_admin):
     """Setup admin auth overrides for all tests in this module"""
     app.dependency_overrides[get_jwt_payload] = mock_jwt_admin["get_jwt_payload"]
+    # Clear TTL cache so each test starts cold.
+    platform_cost_routes._dashboard_cache.clear()
     yield
     app.dependency_overrides.clear()
 

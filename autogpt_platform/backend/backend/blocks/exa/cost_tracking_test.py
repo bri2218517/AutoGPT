@@ -1,0 +1,210 @@
+"""Tests for cost tracking in Exa blocks.
+
+Covers the cost_dollars → provider_cost → merge_stats path for both
+ExaContentsBlock and ExaCodeContextBlock.
+"""
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from backend.blocks.exa._test import TEST_CREDENTIALS, TEST_CREDENTIALS_INPUT
+from backend.data.model import NodeExecutionStats
+
+
+class TestExaCodeContextCostTracking:
+    """ExaCodeContextBlock parses cost_dollars (string) and calls merge_stats."""
+
+    @pytest.mark.asyncio
+    async def test_valid_cost_string_is_parsed_and_merged(self):
+        """A numeric cost string like '0.005' is merged as provider_cost."""
+        from backend.blocks.exa.code_context import ExaCodeContextBlock
+
+        block = ExaCodeContextBlock()
+        merged: list[NodeExecutionStats] = []
+        block.merge_stats = lambda s: merged.append(s)  # type: ignore[assignment]
+
+        api_response = {
+            "requestId": "req-1",
+            "query": "test query",
+            "response": "some code",
+            "resultsCount": 3,
+            "costDollars": "0.005",
+            "searchTime": 1.2,
+            "outputTokens": 100,
+        }
+
+        with patch("backend.blocks.exa.code_context.Requests") as mock_requests_cls:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = api_response
+            mock_requests_cls.return_value.post = AsyncMock(return_value=mock_resp)
+
+            outputs = []
+            async for key, value in block.run(
+                block.Input(query="test query", credentials=TEST_CREDENTIALS_INPUT),  # type: ignore[arg-type]
+                credentials=TEST_CREDENTIALS,
+            ):
+                outputs.append((key, value))
+
+        assert any(k == "cost_dollars" for k, _ in outputs)
+        assert len(merged) == 1
+        assert merged[0].provider_cost == pytest.approx(0.005)
+
+    @pytest.mark.asyncio
+    async def test_invalid_cost_string_does_not_raise(self):
+        """A non-numeric cost_dollars value is swallowed silently."""
+        from backend.blocks.exa.code_context import ExaCodeContextBlock
+
+        block = ExaCodeContextBlock()
+        merged: list[NodeExecutionStats] = []
+        block.merge_stats = lambda s: merged.append(s)  # type: ignore[assignment]
+
+        api_response = {
+            "requestId": "req-2",
+            "query": "test",
+            "response": "code",
+            "resultsCount": 0,
+            "costDollars": "N/A",
+            "searchTime": 0.5,
+            "outputTokens": 0,
+        }
+
+        with patch("backend.blocks.exa.code_context.Requests") as mock_requests_cls:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = api_response
+            mock_requests_cls.return_value.post = AsyncMock(return_value=mock_resp)
+
+            outputs = []
+            async for key, value in block.run(
+                block.Input(query="test", credentials=TEST_CREDENTIALS_INPUT),  # type: ignore[arg-type]
+                credentials=TEST_CREDENTIALS,
+            ):
+                outputs.append((key, value))
+
+        # No merge_stats call because float() raised ValueError
+        assert len(merged) == 0
+
+    @pytest.mark.asyncio
+    async def test_zero_cost_string_is_merged(self):
+        """'0.0' is a valid cost — should still be tracked."""
+        from backend.blocks.exa.code_context import ExaCodeContextBlock
+
+        block = ExaCodeContextBlock()
+        merged: list[NodeExecutionStats] = []
+        block.merge_stats = lambda s: merged.append(s)  # type: ignore[assignment]
+
+        api_response = {
+            "requestId": "req-3",
+            "query": "free query",
+            "response": "result",
+            "resultsCount": 1,
+            "costDollars": "0.0",
+            "searchTime": 0.1,
+            "outputTokens": 10,
+        }
+
+        with patch("backend.blocks.exa.code_context.Requests") as mock_requests_cls:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = api_response
+            mock_requests_cls.return_value.post = AsyncMock(return_value=mock_resp)
+
+            async for _ in block.run(
+                block.Input(query="free query", credentials=TEST_CREDENTIALS_INPUT),  # type: ignore[arg-type]
+                credentials=TEST_CREDENTIALS,
+            ):
+                pass
+
+        assert len(merged) == 1
+        assert merged[0].provider_cost == pytest.approx(0.0)
+
+
+class TestExaContentsCostTracking:
+    """ExaContentsBlock merges cost_dollars.total as provider_cost."""
+
+    @pytest.mark.asyncio
+    async def test_cost_dollars_total_is_merged(self):
+        """When the SDK response includes cost_dollars, its total is merged."""
+        from backend.blocks.exa.contents import ExaContentsBlock
+        from backend.blocks.exa.helpers import CostDollars
+
+        block = ExaContentsBlock()
+        merged: list[NodeExecutionStats] = []
+        block.merge_stats = lambda s: merged.append(s)  # type: ignore[assignment]
+
+        mock_sdk_response = MagicMock()
+        mock_sdk_response.results = []
+        mock_sdk_response.context = None
+        mock_sdk_response.statuses = None
+        mock_sdk_response.cost_dollars = CostDollars(total=0.012)
+
+        with patch("backend.blocks.exa.contents.AsyncExa") as mock_exa_cls:
+            mock_exa = MagicMock()
+            mock_exa.get_contents = AsyncMock(return_value=mock_sdk_response)
+            mock_exa_cls.return_value = mock_exa
+
+            async for _ in block.run(
+                block.Input(urls=["https://example.com"], credentials=TEST_CREDENTIALS_INPUT),  # type: ignore[arg-type]
+                credentials=TEST_CREDENTIALS,
+            ):
+                pass
+
+        assert len(merged) == 1
+        assert merged[0].provider_cost == pytest.approx(0.012)
+
+    @pytest.mark.asyncio
+    async def test_no_cost_dollars_skips_merge(self):
+        """When cost_dollars is absent, merge_stats is not called."""
+        from backend.blocks.exa.contents import ExaContentsBlock
+
+        block = ExaContentsBlock()
+        merged: list[NodeExecutionStats] = []
+        block.merge_stats = lambda s: merged.append(s)  # type: ignore[assignment]
+
+        mock_sdk_response = MagicMock()
+        mock_sdk_response.results = []
+        mock_sdk_response.context = None
+        mock_sdk_response.statuses = None
+        mock_sdk_response.cost_dollars = None
+
+        with patch("backend.blocks.exa.contents.AsyncExa") as mock_exa_cls:
+            mock_exa = MagicMock()
+            mock_exa.get_contents = AsyncMock(return_value=mock_sdk_response)
+            mock_exa_cls.return_value = mock_exa
+
+            async for _ in block.run(
+                block.Input(urls=["https://example.com"], credentials=TEST_CREDENTIALS_INPUT),  # type: ignore[arg-type]
+                credentials=TEST_CREDENTIALS,
+            ):
+                pass
+
+        assert len(merged) == 0
+
+    @pytest.mark.asyncio
+    async def test_zero_cost_dollars_is_merged(self):
+        """A total of 0.0 (free tier) should still be merged."""
+        from backend.blocks.exa.contents import ExaContentsBlock
+        from backend.blocks.exa.helpers import CostDollars
+
+        block = ExaContentsBlock()
+        merged: list[NodeExecutionStats] = []
+        block.merge_stats = lambda s: merged.append(s)  # type: ignore[assignment]
+
+        mock_sdk_response = MagicMock()
+        mock_sdk_response.results = []
+        mock_sdk_response.context = None
+        mock_sdk_response.statuses = None
+        mock_sdk_response.cost_dollars = CostDollars(total=0.0)
+
+        with patch("backend.blocks.exa.contents.AsyncExa") as mock_exa_cls:
+            mock_exa = MagicMock()
+            mock_exa.get_contents = AsyncMock(return_value=mock_sdk_response)
+            mock_exa_cls.return_value = mock_exa
+
+            async for _ in block.run(
+                block.Input(urls=["https://example.com"], credentials=TEST_CREDENTIALS_INPUT),  # type: ignore[arg-type]
+                credentials=TEST_CREDENTIALS,
+            ):
+                pass
+
+        assert len(merged) == 1
+        assert merged[0].provider_cost == pytest.approx(0.0)

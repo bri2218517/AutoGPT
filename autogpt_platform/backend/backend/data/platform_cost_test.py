@@ -49,8 +49,11 @@ class TestBuildWhere:
         assert params == [dt]
 
     def test_provider_only(self):
-        sql, params = _build_where(None, None, "openai", None)
-        assert 'LOWER("provider") = LOWER($1)' in sql
+        # Provider names are normalized to lowercase at write time, so the
+        # filter uses a plain equality check. The input is also lowercased so
+        # "OpenAI" and "openai" both match stored rows.
+        sql, params = _build_where(None, None, "OpenAI", None)
+        assert '"provider" = $1' in sql
         assert params == ["openai"]
 
     def test_user_id_only(self):
@@ -61,12 +64,13 @@ class TestBuildWhere:
     def test_all_filters(self):
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
         end = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        sql, params = _build_where(start, end, "anthropic", "u1")
+        sql, params = _build_where(start, end, "Anthropic", "u1")
         assert "$1" in sql
         assert "$2" in sql
         assert "$3" in sql
         assert "$4" in sql
         assert len(params) == 4
+        # Provider is lowercased at filter time to match stored lowercase values.
         assert params == [start, end, "anthropic", "u1"]
 
     def test_table_alias(self):
@@ -157,7 +161,6 @@ class TestGetPlatformCostDashboard:
                 "request_count": 3,
             }
         ]
-        user_count_rows = [{"cnt": 2}]
         user_rows = [
             {
                 "user_id": "u1",
@@ -168,12 +171,14 @@ class TestGetPlatformCostDashboard:
                 "request_count": 3,
             }
         ]
-        mock_query = AsyncMock(side_effect=[provider_rows, user_count_rows, user_rows])
+        # Dashboard now runs 2 queries (by_provider + by_user) — total_users is
+        # derived from len(by_user_rows) instead of a separate COUNT query.
+        mock_query = AsyncMock(side_effect=[provider_rows, user_rows])
         with patch("backend.data.platform_cost.query_raw_with_schema", new=mock_query):
             dashboard = await get_platform_cost_dashboard()
         assert dashboard.total_cost_microdollars == 5000
         assert dashboard.total_requests == 3
-        assert dashboard.total_users == 2
+        assert dashboard.total_users == 1
         assert len(dashboard.by_provider) == 1
         assert dashboard.by_provider[0].provider == "openai"
         assert dashboard.by_provider[0].tracking_type == "tokens"
@@ -183,7 +188,7 @@ class TestGetPlatformCostDashboard:
 
     @pytest.mark.asyncio
     async def test_returns_empty_dashboard(self):
-        mock_query = AsyncMock(side_effect=[[], [{"cnt": 0}], []])
+        mock_query = AsyncMock(side_effect=[[], []])
         with patch("backend.data.platform_cost.query_raw_with_schema", new=mock_query):
             dashboard = await get_platform_cost_dashboard()
         assert dashboard.total_cost_microdollars == 0
@@ -195,12 +200,12 @@ class TestGetPlatformCostDashboard:
     @pytest.mark.asyncio
     async def test_passes_filters_to_queries(self):
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        mock_query = AsyncMock(side_effect=[[], [{"cnt": 0}], []])
+        mock_query = AsyncMock(side_effect=[[], []])
         with patch("backend.data.platform_cost.query_raw_with_schema", new=mock_query):
             await get_platform_cost_dashboard(
                 start=start, provider="openai", user_id="u1"
             )
-        assert mock_query.await_count == 3
+        assert mock_query.await_count == 2
         first_call_sql = mock_query.call_args_list[0][0][0]
         assert "createdAt" in first_call_sql
 

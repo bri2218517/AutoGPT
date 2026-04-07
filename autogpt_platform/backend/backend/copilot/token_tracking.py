@@ -95,14 +95,23 @@ async def persist_and_record_usage(
 
     if cache_read_tokens or cache_creation_tokens:
         logger.info(
-            f"{log_prefix} Turn usage: uncached={prompt_tokens}, "
-            f"cache_read={cache_read_tokens}, cache_create={cache_creation_tokens}, "
-            f"output={completion_tokens}, total={total_tokens}, cost_usd={cost_usd}"
+            "%s Turn usage: uncached=%d, cache_read=%d, cache_create=%d,"
+            " output=%d, total=%d, cost_usd=%s",
+            log_prefix,
+            prompt_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+            completion_tokens,
+            total_tokens,
+            cost_usd,
         )
     else:
         logger.info(
-            f"{log_prefix} Turn usage: prompt={prompt_tokens}, "
-            f"completion={completion_tokens}, total={total_tokens}"
+            "%s Turn usage: prompt=%d, completion=%d, total=%d",
+            log_prefix,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
         )
 
     if user_id:
@@ -115,7 +124,7 @@ async def persist_and_record_usage(
                 cache_creation_tokens=cache_creation_tokens,
             )
         except Exception as usage_err:
-            logger.warning(f"{log_prefix} Failed to record token usage: {usage_err}")
+            logger.warning("%s Failed to record token usage: %s", log_prefix, usage_err)
 
     # Log to PlatformCostLog for admin cost dashboard.
     # Include entries where cost_usd is set even if token count is 0
