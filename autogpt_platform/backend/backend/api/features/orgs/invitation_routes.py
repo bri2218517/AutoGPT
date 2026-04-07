@@ -200,6 +200,14 @@ async def decline_invitation(
     if invitation is None:
         raise NotFoundError("Invitation not found")
 
+    # State checks — same as accept_invitation
+    if invitation.acceptedAt is not None:
+        raise HTTPException(400, detail="Invitation already accepted")
+    if invitation.revokedAt is not None:
+        raise HTTPException(400, detail="Invitation already revoked")
+    if invitation.expiresAt < datetime.now(timezone.utc):
+        raise HTTPException(400, detail="Invitation has expired")
+
     # Verify the declining user's email matches the invitation
     declining_user = await prisma.user.find_unique(where={"id": user_id})
     if declining_user is None:

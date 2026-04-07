@@ -131,6 +131,8 @@ async def join_team(
     ws_id: str,
     ctx: Annotated[RequestContext, Security(get_request_context)],
 ) -> TeamResponse:
+    if ctx.org_id != org_id:
+        raise HTTPException(403, detail="Not a member of this organization")
     return await team_db.join_team(ws_id, ctx.user_id, org_id)
 
 
@@ -145,6 +147,8 @@ async def leave_team(
     ws_id: str,
     ctx: Annotated[RequestContext, Security(get_request_context)],
 ) -> None:
+    if ctx.org_id != org_id:
+        raise HTTPException(403, detail="Not a member of this organization")
     await team_db.leave_team(ws_id, ctx.user_id)
 
 

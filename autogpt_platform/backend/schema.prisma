@@ -838,7 +838,7 @@ enum CreditTransactionType {
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
-//////////   ORGANIZATION & WORKSPACE ENUMS    /////////////
+//////////   ORGANIZATION ORGANIZATION & WORKSPACE ENUMS TEAM ENUMS    /////////////
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 
@@ -849,13 +849,13 @@ enum TeamJoinPolicy {
 
 enum ResourceVisibility {
   PRIVATE
-  WORKSPACE
+  TEAM
   ORG
 }
 
 enum CredentialScope {
   USER
-  WORKSPACE
+  TEAM
   ORG
 }
 
@@ -894,7 +894,7 @@ enum TransferStatus {
 
 enum CredentialOwnerType {
   USER
-  WORKSPACE
+  TEAM
   ORG
 }
 
@@ -1470,7 +1470,7 @@ model OAuthRefreshToken {
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
-////////   ORGANIZATION & WORKSPACE MODELS    //////////////
+////////   ORGANIZATION ORGANIZATION & WORKSPACE MODELS TEAM MODELS    //////////////
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 
@@ -1765,7 +1765,7 @@ model IntegrationCredential {
   organizationId   String
   ownerType        CredentialOwnerType
   ownerId          String // userId, teamId, or orgId depending on ownerType
-  teamId           String? // Dedicated FK for workspace-scoped creds (set when ownerType=WORKSPACE)
+  teamId           String? // Dedicated FK for workspace-scoped creds (set when ownerType=TEAM)
   provider         String
   credentialType   String
   displayName      String

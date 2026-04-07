@@ -55,7 +55,7 @@ async def get_scoped_credentials(
     if team_id:
         ws_where: dict = {
             "organizationId": organization_id,
-            "ownerType": "WORKSPACE",
+            "ownerType": "TEAM",
             "ownerId": team_id,
             "status": "active",
         }
@@ -64,7 +64,7 @@ async def get_scoped_credentials(
 
         ws_creds = await prisma.integrationcredential.find_many(where=ws_where)
         for c in ws_creds:
-            results.append(_cred_to_metadata(c, scope="WORKSPACE"))
+            results.append(_cred_to_metadata(c, scope="TEAM"))
 
     # 3. Org-scoped credentials
     org_where: dict = {

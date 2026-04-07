@@ -83,6 +83,7 @@ async def reject_transfer(
     return await transfer_db.reject_transfer(
         transfer_id=transfer_id,
         user_id=ctx.user_id,
+        org_id=ctx.org_id,
     )
 
 

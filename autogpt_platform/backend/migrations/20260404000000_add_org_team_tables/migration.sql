@@ -2,10 +2,10 @@
 CREATE TYPE "TeamJoinPolicy" AS ENUM ('OPEN', 'PRIVATE');
 
 -- CreateEnum
-CREATE TYPE "ResourceVisibility" AS ENUM ('PRIVATE', 'WORKSPACE', 'ORG');
+CREATE TYPE "ResourceVisibility" AS ENUM ('PRIVATE', 'TEAM', 'ORG');
 
 -- CreateEnum
-CREATE TYPE "CredentialScope" AS ENUM ('USER', 'WORKSPACE', 'ORG');
+CREATE TYPE "CredentialScope" AS ENUM ('USER', 'TEAM', 'ORG');
 
 -- CreateEnum
 CREATE TYPE "OrgAliasType" AS ENUM ('MIGRATION', 'RENAME', 'MANUAL');
@@ -23,7 +23,7 @@ CREATE TYPE "SeatStatus" AS ENUM ('ACTIVE', 'INACTIVE', 'PENDING');
 CREATE TYPE "TransferStatus" AS ENUM ('PENDING', 'SOURCE_APPROVED', 'TARGET_APPROVED', 'COMPLETED', 'REJECTED', 'CANCELLED');
 
 -- CreateEnum
-CREATE TYPE "CredentialOwnerType" AS ENUM ('USER', 'WORKSPACE', 'ORG');
+CREATE TYPE "CredentialOwnerType" AS ENUM ('USER', 'TEAM', 'ORG');
 
 -- AlterTable
 ALTER TABLE "BuilderSearchHistory" ADD COLUMN     "organizationId" TEXT;

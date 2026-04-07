@@ -99,7 +99,8 @@ async def approve_transfer(
             raise ValueError("Source organization has already approved this transfer")
         update_data["sourceApprovedByUserId"] = user_id
         if tr.targetApprovedByUserId is not None:
-            update_data["status"] = "COMPLETED"
+            # Both sides approved — ready for execution (NOT completed yet)
+            update_data["status"] = "TARGET_APPROVED"
         else:
             update_data["status"] = "SOURCE_APPROVED"
 
@@ -108,7 +109,8 @@ async def approve_transfer(
             raise ValueError("Target organization has already approved this transfer")
         update_data["targetApprovedByUserId"] = user_id
         if tr.sourceApprovedByUserId is not None:
-            update_data["status"] = "COMPLETED"
+            # Both sides approved — ready for execution (NOT completed yet)
+            update_data["status"] = "SOURCE_APPROVED"
         else:
             update_data["status"] = "TARGET_APPROVED"
 
@@ -127,14 +129,20 @@ async def approve_transfer(
 async def reject_transfer(
     transfer_id: str,
     user_id: str,
+    org_id: str,
 ) -> TransferResponse:
-    """Reject a pending transfer request."""
+    """Reject a pending transfer request. Caller must be in source or target org."""
     tr = await prisma.transferrequest.find_unique(where={"id": transfer_id})
     if tr is None:
         raise NotFoundError(f"Transfer request {transfer_id} not found")
 
     if tr.status in ("COMPLETED", "REJECTED"):
         raise ValueError(f"Cannot reject a transfer with status '{tr.status}'")
+
+    if org_id not in (tr.sourceOrganizationId, tr.targetOrganizationId):
+        raise ValueError(
+            "Your active organization is not a party to this transfer"
+        )
 
     updated = await prisma.transferrequest.update(
         where={"id": transfer_id},

@@ -277,6 +277,19 @@ async def update_org(org_id: str, data: UpdateOrgData) -> OrgResponse:
         return await get_org(org_id)
 
     await prisma.organization.update(where={"id": org_id}, data=update_dict)
+
+    # Sync OrganizationProfile when name or slug changes
+    profile_update: dict = {}
+    if data.name is not None:
+        profile_update["displayName"] = data.name
+    if data.slug is not None:
+        profile_update["username"] = data.slug
+    if profile_update:
+        await prisma.organizationprofile.update(
+            where={"organizationId": org_id},
+            data=profile_update,
+        )
+
     return await get_org(org_id)
 
 
