@@ -14,7 +14,12 @@ from backend.data.llm_registry.registry import (
     RegistryModelCreator,
     _build_schema_options,
     _record_to_registry_model,
+    clear_registry_cache,
+    get_all_model_slugs_for_validation,
+    get_all_models,
     get_default_model_slug,
+    get_enabled_models,
+    get_model,
     get_schema_options,
     refresh_llm_registry,
 )
@@ -356,3 +361,106 @@ async def test_refresh_llm_registry():
     # Schema options should be populated too
     assert len(reg._schema_options) == 1
     assert reg._schema_options[0]["value"] == "openai/gpt-4o"
+
+
+# ---------------------------------------------------------------------------
+# clear_registry_cache tests
+# ---------------------------------------------------------------------------
+
+
+def test_clear_registry_cache():
+    """clear_registry_cache calls cache_clear on the cached fetch function."""
+    import backend.data.llm_registry.registry as reg
+    from unittest.mock import patch
+
+    with patch.object(reg._fetch_registry_from_db, "cache_clear") as mock_clear:
+        clear_registry_cache()
+        mock_clear.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# get_model / get_all_models / get_enabled_models / get_all_model_slugs tests
+# ---------------------------------------------------------------------------
+
+
+def test_get_model_found():
+    """get_model returns the model when the slug exists in the registry."""
+    import backend.data.llm_registry.registry as reg
+
+    m = _make_registry_model(slug="openai/gpt-4o")
+    reg._dynamic_models = {"openai/gpt-4o": m}
+
+    result = get_model("openai/gpt-4o")
+
+    assert result is m
+
+
+def test_get_model_not_found():
+    """get_model returns None for an unknown slug."""
+    import backend.data.llm_registry.registry as reg
+
+    reg._dynamic_models = {}
+
+    assert get_model("nonexistent/model") is None
+
+
+def test_get_all_models_includes_disabled():
+    """get_all_models returns all models, including disabled ones."""
+    import backend.data.llm_registry.registry as reg
+
+    enabled = _make_registry_model(slug="openai/gpt-4", is_enabled=True)
+    disabled = _make_registry_model(slug="openai/old-model", is_enabled=False)
+    reg._dynamic_models = {"openai/gpt-4": enabled, "openai/old-model": disabled}
+
+    result = get_all_models()
+
+    slugs = [m.slug for m in result]
+    assert "openai/gpt-4" in slugs
+    assert "openai/old-model" in slugs
+    assert len(result) == 2
+
+
+def test_get_enabled_models_excludes_disabled():
+    """get_enabled_models returns only models where is_enabled=True."""
+    import backend.data.llm_registry.registry as reg
+
+    enabled = _make_registry_model(slug="openai/gpt-4", is_enabled=True)
+    disabled = _make_registry_model(slug="openai/old-model", is_enabled=False)
+    reg._dynamic_models = {"openai/gpt-4": enabled, "openai/old-model": disabled}
+
+    result = get_enabled_models()
+
+    assert len(result) == 1
+    assert result[0].slug == "openai/gpt-4"
+
+
+def test_get_all_model_slugs_for_validation():
+    """get_all_model_slugs_for_validation returns only enabled model slugs."""
+    import backend.data.llm_registry.registry as reg
+
+    reg._dynamic_models = {
+        "openai/gpt-4": _make_registry_model(slug="openai/gpt-4", is_enabled=True),
+        "openai/old": _make_registry_model(slug="openai/old", is_enabled=False),
+        "anthropic/claude": _make_registry_model(
+            slug="anthropic/claude", is_enabled=True
+        ),
+    }
+
+    result = get_all_model_slugs_for_validation()
+
+    assert "openai/gpt-4" in result
+    assert "anthropic/claude" in result
+    assert "openai/old" not in result
+    assert len(result) == 2
+
+
+@pytest.mark.asyncio
+async def test_refresh_llm_registry_error_is_reraised(mocker):
+    """refresh_llm_registry re-raises exceptions after logging them."""
+    mocker.patch(
+        "backend.data.llm_registry.registry._fetch_registry_from_db",
+        new=AsyncMock(side_effect=RuntimeError("DB unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="DB unavailable"):
+        await refresh_llm_registry()
