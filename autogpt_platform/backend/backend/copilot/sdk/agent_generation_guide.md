@@ -26,6 +26,19 @@ Steps:
 **Skip this** when the goal already specifies all dimensions (e.g.
 "scrape prices from Amazon and email me daily").
 
+### Before Building: Goal Decomposition (REQUIRED)
+
+Before running the workflow below, ALWAYS decompose the goal first:
+
+1. Analyze the user's request and break it into logical build steps (e.g.
+   "add input block", "add AI summarizer", "wire blocks together").
+2. Call `decompose_goal` with those steps.
+3. **STOP — do not proceed until the user approves the plan.**
+4. Only after approval, continue with "Workflow for Creating/Editing Agents".
+
+For simple goals (1-2 blocks), keep steps brief (2-3 steps).
+For complex goals, decompose into 4-8 steps max.
+
 ### Workflow for Creating/Editing Agents
 
 1. **If editing**: First narrow to the specific agent by UUID, then fetch its

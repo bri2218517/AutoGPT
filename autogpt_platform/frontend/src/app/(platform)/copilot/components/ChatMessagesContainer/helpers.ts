@@ -29,6 +29,7 @@ const CUSTOM_TOOL_TYPES = new Set([
   "tool-view_agent_output",
   "tool-search_feature_requests",
   "tool-create_feature_request",
+  "tool-decompose_goal",
 ]);
 
 const INTERACTIVE_RESPONSE_TYPES: ReadonlySet<string> = new Set([
@@ -42,6 +43,7 @@ const INTERACTIVE_RESPONSE_TYPES: ReadonlySet<string> = new Set([
   ResponseType.suggested_goal,
   ResponseType.agent_builder_preview,
   ResponseType.agent_builder_saved,
+  ResponseType.task_decomposition,
 ]);
 
 export function isCompletedToolPart(part: MessagePart): part is ToolUIPart {
@@ -148,9 +150,16 @@ export function splitReasoningAndResponse(parts: MessagePart[]): {
     }
   }
 
+  const hasDecomposeGoal = pinnedParts.some(
+    (p) => p.type === "tool-decompose_goal",
+  );
+  const filteredResponse = hasDecomposeGoal
+    ? rawResponse.filter((p) => p.type !== "text")
+    : rawResponse;
+
   return {
     reasoning,
-    response: [...pinnedParts, ...rawResponse],
+    response: [...pinnedParts, ...filteredResponse],
   };
 }
 

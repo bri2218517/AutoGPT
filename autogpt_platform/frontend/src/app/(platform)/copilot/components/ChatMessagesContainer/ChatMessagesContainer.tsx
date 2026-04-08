@@ -214,7 +214,12 @@ export function ChatMessagesContainer({
             message.role === "assistant" && !isCurrentlyStreaming;
           const { reasoning, response } = isFinalized
             ? splitReasoningAndResponse(message.parts)
-            : { reasoning: [] as MessagePart[], response: message.parts };
+            : {
+                reasoning: [] as MessagePart[],
+                response: message.parts.filter(
+                  (p) => p.type !== "tool-decompose_goal",
+                ),
+              };
           const hasReasoning = reasoning.length > 0;
 
           // Note: when interactive tools are pinned from reasoning into response,
