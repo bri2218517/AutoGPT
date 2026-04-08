@@ -9,6 +9,7 @@ import pytest
 from backend.blocks.video.download import VideoDownloadBlock
 from backend.data.execution import ExecutionContext
 from backend.util.exceptions import BlockExecutionError
+from backend.util.file import MAX_FILE_SIZE_BYTES
 
 
 def _make_execution_context() -> ExecutionContext:
@@ -89,8 +90,7 @@ class TestDownloadSizeLimit:
             )
 
             opts = mock_cls.call_args[0][0]
-            assert "max_filesize" in opts
-            assert opts["max_filesize"] > 0
+            assert opts["max_filesize"] == MAX_FILE_SIZE_BYTES
 
 
 class TestPlaylistRestriction:

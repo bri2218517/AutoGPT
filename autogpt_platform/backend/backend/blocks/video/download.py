@@ -70,6 +70,7 @@ class VideoDownloadBlock(Block):
                 ("source_url", str),
             ],
             test_mock={
+                "validate_url": lambda *args, **kwargs: None,
                 "_download_video": lambda *args: (
                     "video.mp4",
                     212.0,
@@ -186,6 +187,8 @@ class VideoDownloadBlock(Block):
             yield "title", title
             yield "source_url", input_data.url
 
+        except BlockExecutionError:
+            raise
         except Exception as e:
             raise BlockExecutionError(
                 message=f"Failed to download video: {e}",
