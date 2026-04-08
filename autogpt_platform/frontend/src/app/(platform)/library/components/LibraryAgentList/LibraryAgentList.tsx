@@ -19,6 +19,7 @@ import { LibraryFolderDeleteDialog } from "../LibraryFolderDeleteDialog/LibraryF
 import type { LibraryTab, AgentStatusFilter, FleetSummary } from "../../types";
 import { useLibraryAgentList } from "./useLibraryAgentList";
 import { AgentBriefingPanel } from "../AgentBriefingPanel/AgentBriefingPanel";
+import { Flag, useGetFlag } from "@/services/feature-flags/use-get-flag";
 
 // cancels the current spring and starts a new one from current state.
 const containerVariants = {
@@ -89,6 +90,7 @@ export function LibraryAgentList({
   onStatusFilterChange,
   fleetSummary,
 }: Props) {
+  const isAgentBriefingEnabled = useGetFlag(Flag.AGENT_BRIEFING);
   const shouldReduceMotion = useReducedMotion();
   const activeContainerVariants = shouldReduceMotion
     ? reducedContainerVariants
@@ -129,7 +131,7 @@ export function LibraryAgentList({
 
   return (
     <>
-      {!selectedFolderId && fleetSummary && (
+      {isAgentBriefingEnabled && !selectedFolderId && fleetSummary && (
         <div className="mb-4">
           <AgentBriefingPanel
             summary={fleetSummary}

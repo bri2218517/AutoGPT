@@ -15,6 +15,7 @@ export enum Flag {
   ENABLE_PLATFORM_PAYMENT = "enable-platform-payment",
   ARTIFACTS = "artifacts",
   CHAT_MODE_OPTION = "chat-mode-option",
+  AGENT_BRIEFING = "agent-briefing",
 }
 
 const isPwMockEnabled = process.env.NEXT_PUBLIC_PW_TEST === "true";
@@ -30,6 +31,7 @@ const defaultFlags = {
   [Flag.ENABLE_PLATFORM_PAYMENT]: false,
   [Flag.ARTIFACTS]: false,
   [Flag.CHAT_MODE_OPTION]: false,
+  [Flag.AGENT_BRIEFING]: false,
 };
 
 type FlagValues = typeof defaultFlags;
