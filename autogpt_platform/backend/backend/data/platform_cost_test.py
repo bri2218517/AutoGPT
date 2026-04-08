@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from prisma.errors import DataError
 
 from .platform_cost import (
     PlatformCostEntry,
@@ -14,6 +15,21 @@ from .platform_cost import (
     log_platform_cost,
     log_platform_cost_safe,
 )
+
+
+def _make_data_error(msg: str = "stale schema") -> DataError:
+    """Construct a valid prisma DataError (requires a dict, not a bare string)."""
+    return DataError(
+        {
+            "user_facing_error": {
+                "is_panic": False,
+                "message": msg,
+                "meta": {},
+                "error_code": "P2006",
+                "batch_request_idx": 0,
+            }
+        }
+    )
 
 
 class TestMaskEmail:
@@ -155,6 +171,28 @@ class TestLogPlatformCostSafe:
             entry = _make_entry()
             await log_platform_cost_safe(entry)
         mock_create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_data_error_logs_warning_not_error(self, caplog):
+        """DataError (stale Prisma client) should be logged at WARNING, not ERROR."""
+        import logging
+
+        with patch("backend.data.platform_cost.PrismaLog.prisma") as mock_prisma:
+            mock_prisma.return_value.create = AsyncMock(side_effect=_make_data_error())
+            entry = _make_entry()
+            with caplog.at_level(logging.WARNING, logger="backend.data.platform_cost"):
+                await log_platform_cost_safe(entry)
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warning_records, "Expected a WARNING log record for DataError"
+        assert "schema mismatch" in warning_records[0].message.lower()
+
+    @pytest.mark.asyncio
+    async def test_data_error_does_not_raise(self):
+        """DataError must be swallowed — log_platform_cost_safe never raises."""
+        with patch("backend.data.platform_cost.PrismaLog.prisma") as mock_prisma:
+            mock_prisma.return_value.create = AsyncMock(side_effect=_make_data_error())
+            entry = _make_entry()
+            await log_platform_cost_safe(entry)  # must not raise
 
 
 class TestGetPlatformCostDashboard:

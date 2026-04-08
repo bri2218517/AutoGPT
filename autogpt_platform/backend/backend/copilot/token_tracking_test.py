@@ -9,9 +9,27 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from prisma.errors import DataError
+
+from backend.data.platform_cost import PlatformCostEntry
 
 from .model import ChatSession, Usage
-from .token_tracking import persist_and_record_usage
+from .token_tracking import _schedule_cost_log, persist_and_record_usage
+
+
+def _make_data_error(msg: str = "stale schema") -> DataError:
+    """Construct a valid prisma DataError (requires a dict, not a bare string)."""
+    return DataError(
+        {
+            "user_facing_error": {
+                "is_panic": False,
+                "message": msg,
+                "meta": {},
+                "error_code": "P2006",
+                "batch_request_idx": 0,
+            }
+        }
+    )
 
 
 def _make_session() -> ChatSession:
@@ -567,3 +585,53 @@ class TestPlatformCostLogging:
         # Negative cost rejected — falls back to token-based tracking
         assert entry.cost_microdollars is None
         assert entry.metadata["tracking_type"] == "tokens"
+
+
+def _make_cost_entry(**overrides: object) -> PlatformCostEntry:
+    return PlatformCostEntry.model_validate(
+        {
+            "user_id": "user-1",
+            "block_id": "copilot",
+            "block_name": "copilot:SDK",
+            "provider": "anthropic",
+            **overrides,
+        }
+    )
+
+
+class TestScheduleCostLogDataError:
+    @pytest.mark.asyncio
+    async def test_data_error_logs_warning_not_error(self, caplog):
+        """DataError from stale Prisma client should be logged at WARNING, not ERROR."""
+        import logging
+
+        mock_log = AsyncMock(side_effect=_make_data_error())
+        with patch(
+            "backend.copilot.token_tracking.platform_cost_db",
+            return_value=type(
+                "FakePlatformCostDb", (), {"log_platform_cost": mock_log}
+            )(),
+        ):
+            entry = _make_cost_entry()
+            with caplog.at_level(
+                logging.WARNING, logger="backend.copilot.token_tracking"
+            ):
+                _schedule_cost_log(entry)
+                await asyncio.sleep(0)
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warning_records, "Expected a WARNING log record for DataError"
+        assert "schema mismatch" in warning_records[0].message.lower()
+
+    @pytest.mark.asyncio
+    async def test_data_error_does_not_propagate(self):
+        """DataError in the scheduled task must not crash the event loop."""
+        mock_log = AsyncMock(side_effect=_make_data_error())
+        with patch(
+            "backend.copilot.token_tracking.platform_cost_db",
+            return_value=type(
+                "FakePlatformCostDb", (), {"log_platform_cost": mock_log}
+            )(),
+        ):
+            entry = _make_cost_entry()
+            _schedule_cost_log(entry)
+            await asyncio.sleep(0)  # must not raise
