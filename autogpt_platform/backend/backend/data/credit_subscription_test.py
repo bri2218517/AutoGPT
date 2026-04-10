@@ -380,6 +380,61 @@ async def test_cancel_stripe_subscription_raises_on_list_failure():
 
 
 @pytest.mark.asyncio
+async def test_cancel_stripe_subscription_cancels_trialing():
+    """Trialing subs must also be cancelled, else users get billed after trial end."""
+    active_subs = MagicMock()
+    active_subs.data = []
+    trialing_subs = MagicMock()
+    trialing_subs.data = [{"id": "sub_trial_123"}]
+
+    def list_side_effect(*args, **kwargs):
+        return trialing_subs if kwargs.get("status") == "trialing" else active_subs
+
+    with (
+        patch(
+            "backend.data.credit.get_stripe_customer_id",
+            new_callable=AsyncMock,
+            return_value="cus_123",
+        ),
+        patch(
+            "backend.data.credit.stripe.Subscription.list",
+            side_effect=list_side_effect,
+        ),
+        patch("backend.data.credit.stripe.Subscription.cancel") as mock_cancel,
+    ):
+        await cancel_stripe_subscription("user-1")
+        mock_cancel.assert_called_once_with("sub_trial_123")
+
+
+@pytest.mark.asyncio
+async def test_cancel_stripe_subscription_cancels_active_and_trialing():
+    """Both active AND trialing subs present → both get cancelled, no duplicates."""
+    active_subs = MagicMock()
+    active_subs.data = [{"id": "sub_active_1"}]
+    trialing_subs = MagicMock()
+    trialing_subs.data = [{"id": "sub_trial_2"}]
+
+    def list_side_effect(*args, **kwargs):
+        return trialing_subs if kwargs.get("status") == "trialing" else active_subs
+
+    with (
+        patch(
+            "backend.data.credit.get_stripe_customer_id",
+            new_callable=AsyncMock,
+            return_value="cus_123",
+        ),
+        patch(
+            "backend.data.credit.stripe.Subscription.list",
+            side_effect=list_side_effect,
+        ),
+        patch("backend.data.credit.stripe.Subscription.cancel") as mock_cancel,
+    ):
+        await cancel_stripe_subscription("user-1")
+        cancelled_ids = {call.args[0] for call in mock_cancel.call_args_list}
+        assert cancelled_ids == {"sub_active_1", "sub_trial_2"}
+
+
+@pytest.mark.asyncio
 async def test_create_subscription_checkout_returns_url():
     mock_session = MagicMock()
     mock_session.url = "https://checkout.stripe.com/pay/cs_test_abc123"
