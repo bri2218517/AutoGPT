@@ -4,12 +4,15 @@ from unittest.mock import AsyncMock, patch
 import orjson
 import pytest
 
+from backend.util.exceptions import GraphValidationError
+
 from ._test_data import (
     make_session,
     setup_firecrawl_test_data,
     setup_llm_test_data,
     setup_test_data,
 )
+from .models import SetupRequirementsResponse
 from .run_agent import RunAgentTool
 
 # This is so the formatter doesn't remove the fixture imports
@@ -453,3 +456,137 @@ async def test_run_agent_rejects_unknown_input_fields(setup_test_data):
     }
     assert "inputs" in result_data  # Contains the valid schema
     assert "Agent was not executed" in result_data["message"]
+
+
+# ---------------------------------------------------------------------------
+# Credential-race-condition handling
+#
+# ``_check_prerequisites`` already catches the common "missing creds" case
+# at the top of ``_execute``, but the scheduler / executor re-validates and
+# can raise ``GraphValidationError`` if creds were deleted between the
+# prereq check and the actual call.  The tool turns these credential
+# errors back into the inline ``SetupRequirementsResponse`` so the user
+# still gets the credential setup card instead of a generic error.
+# ---------------------------------------------------------------------------
+
+
+def test_is_credential_node_error_message_recognises_credential_strings():
+    """Static helper should match all credential error strings emitted by
+    ``backend.executor.utils._validate_node_input_credentials``."""
+    matcher = RunAgentTool._is_credential_node_error_message
+    assert matcher("These credentials are required")
+    assert matcher("THESE CREDENTIALS ARE REQUIRED")
+    assert matcher("Invalid credentials: not found")
+    assert matcher("Credentials not available: github")
+    assert matcher("Unknown credentials #abc-123")
+
+
+def test_is_credential_node_error_message_rejects_non_credential_strings():
+    """Static helper should ignore unrelated graph validation messages."""
+    matcher = RunAgentTool._is_credential_node_error_message
+    assert not matcher("Input field 'url' is required")
+    assert not matcher("Block configuration invalid")
+    assert not matcher("")
+    assert not matcher("credentials are fine")
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_build_setup_requirements_from_credential_validation_error(
+    setup_firecrawl_test_data,
+):
+    """When the scheduler raises a credential-flavoured GraphValidationError,
+    the helper should rebuild the inline setup card from the graph schema."""
+    graph = setup_firecrawl_test_data["graph"]
+    tool = RunAgentTool()
+
+    # Construct an error in the same shape the executor produces.
+    error = GraphValidationError(
+        message="Graph is invalid",
+        node_errors={"some-node-id": {"credentials": "These credentials are required"}},
+    )
+
+    response = tool._build_setup_requirements_from_validation_error(
+        graph=graph,
+        error=error,
+        session_id="test-session",
+    )
+
+    assert isinstance(response, SetupRequirementsResponse)
+    assert response.graph_id == graph.id
+    assert response.graph_version == graph.version
+    assert response.setup_info.user_readiness.has_all_credentials is False
+    assert response.setup_info.user_readiness.ready_to_run is False
+    # Firecrawl agent has at least one credentials field — make sure the
+    # rebuilt missing-credentials map matches the graph schema.
+    assert len(response.setup_info.user_readiness.missing_credentials) > 0
+    assert "credentials" in response.message.lower()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_build_setup_requirements_returns_none_for_non_credential_error(
+    setup_firecrawl_test_data,
+):
+    """Non-credential validation errors should fall through to the plain
+    ErrorResponse path (helper returns None)."""
+    graph = setup_firecrawl_test_data["graph"]
+    tool = RunAgentTool()
+
+    error = GraphValidationError(
+        message="Graph is invalid",
+        node_errors={"some-node-id": {"url": "Input field 'url' is required"}},
+    )
+
+    response = tool._build_setup_requirements_from_validation_error(
+        graph=graph,
+        error=error,
+        session_id="test-session",
+    )
+
+    assert response is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_run_agent_schedule_credential_race_returns_setup_card(
+    setup_test_data,
+):
+    """End-to-end: if the scheduler raises a credential GraphValidationError
+    after _check_prerequisites passed, the user should still see the
+    inline credentials-setup card (not a generic error)."""
+    user = setup_test_data["user"]
+    store_submission = setup_test_data["store_submission"]
+
+    tool = RunAgentTool()
+    agent_marketplace_id = f"{user.email.split('@')[0]}/{store_submission.slug}"
+    session = make_session(user_id=user.id)
+
+    fake_scheduler = AsyncMock()
+    fake_scheduler.add_execution_schedule.side_effect = GraphValidationError(
+        message="Graph is invalid",
+        node_errors={"some-node-id": {"credentials": "These credentials are required"}},
+    )
+
+    with patch(
+        "backend.copilot.tools.run_agent.get_scheduler_client",
+        return_value=fake_scheduler,
+    ):
+        response = await tool.execute(
+            user_id=user.id,
+            session_id=str(uuid.uuid4()),
+            tool_call_id=str(uuid.uuid4()),
+            username_agent_slug=agent_marketplace_id,
+            inputs={"test_input": "value"},
+            schedule_name="My Schedule",
+            cron="0 9 * * *",
+            dry_run=False,
+            session=session,
+        )
+
+    assert response is not None
+    assert isinstance(response.output, str)
+    result_data = orjson.loads(response.output)
+
+    # Should surface the inline credential card, NOT a generic error or a
+    # link redirecting to the Builder.
+    assert result_data.get("type") == "setup_requirements"
+    assert "setup_info" in result_data
+    assert result_data["setup_info"]["user_readiness"]["ready_to_run"] is False

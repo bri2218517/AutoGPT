@@ -14,7 +14,7 @@ from backend.data.graph import GraphModel
 from backend.data.model import CredentialsMetaInput
 from backend.executor import utils as execution_utils
 from backend.util.clients import get_scheduler_client
-from backend.util.exceptions import DatabaseError, NotFoundError
+from backend.util.exceptions import DatabaseError, GraphValidationError, NotFoundError
 from backend.util.timezone_utils import (
     convert_utc_time_to_user_timezone,
     get_user_timezone_or_utc,
@@ -106,9 +106,15 @@ class RunAgentTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Run or schedule an agent. Automatically checks inputs and credentials. "
-            "Identify by username_agent_slug ('user/agent') or library_agent_id. "
-            "For scheduling, provide schedule_name + cron."
+            "Run or schedule an agent. Automatically checks inputs and "
+            "credentials and surfaces the inline credentials-setup card if "
+            "anything is missing. Identify by username_agent_slug "
+            "('user/agent') or library_agent_id. For scheduling, provide "
+            "schedule_name + cron. When the user wants to run/schedule an "
+            "existing agent that needs credentials, ALWAYS call this tool "
+            "(or connect_integration) — do NOT redirect the user to the "
+            "Builder; the inline setup card handles credential connection "
+            "without leaving the chat."
         )
 
     @property
@@ -362,6 +368,74 @@ class RunAgentTool(BaseTool):
             trigger_info=trigger_info,
         )
 
+    @staticmethod
+    def _is_credential_node_error_message(message: str) -> bool:
+        """Return True if *message* came from the executor's credential gate.
+
+        Mirrors the recognised strings in
+        ``backend.executor.utils._validate_node_input_credentials`` so we
+        can distinguish credential failures from other graph validation
+        errors (input schema mismatch, invalid block config, ...) when
+        the scheduler raises a generic ``GraphValidationError``.
+        """
+        lower = message.lower()
+        return (
+            lower == "these credentials are required"
+            or lower.startswith("invalid credentials:")
+            or lower.startswith("credentials not available:")
+            or lower.startswith("unknown credentials #")
+        )
+
+    def _build_setup_requirements_from_validation_error(
+        self,
+        graph: GraphModel,
+        error: GraphValidationError,
+        session_id: str,
+    ) -> SetupRequirementsResponse | None:
+        """Convert a credential-related ``GraphValidationError`` into
+        the inline ``SetupRequirementsResponse`` the frontend renders.
+
+        Returns ``None`` if *error* isn't credential-related — the
+        caller should then fall back to a plain text error.
+        """
+        has_credential_error = any(
+            self._is_credential_node_error_message(msg)
+            for node_errors in error.node_errors.values()
+            for msg in node_errors.values()
+        )
+        if not has_credential_error:
+            return None
+
+        # Rebuild the missing-credentials map from the graph schema so
+        # the card renders the same fields the user would see if the
+        # check had fired at ``_check_prerequisites`` time.
+        requirements_creds_dict = build_missing_credentials_from_graph(graph, None)
+        missing_credentials_dict = build_missing_credentials_from_graph(graph, None)
+        return SetupRequirementsResponse(
+            message=(
+                f"Agent '{graph.name}' has credentials that are missing or "
+                "no longer valid. Please connect the required account(s) "
+                "and try scheduling again."
+            ),
+            session_id=session_id,
+            setup_info=SetupInfo(
+                agent_id=graph.id,
+                agent_name=graph.name,
+                user_readiness=UserReadiness(
+                    has_all_credentials=False,
+                    missing_credentials=missing_credentials_dict,
+                    ready_to_run=False,
+                ),
+                requirements={
+                    "credentials": list(requirements_creds_dict.values()),
+                    "inputs": get_inputs_from_schema(graph.input_schema),
+                    "execution_modes": self._get_execution_modes(graph),
+                },
+            ),
+            graph_id=graph.id,
+            graph_version=graph.version,
+        )
+
     async def _check_prerequisites(
         self,
         graph: GraphModel,
@@ -495,14 +569,34 @@ class RunAgentTool(BaseTool):
         # Get or create library agent
         library_agent = await get_or_create_library_agent(graph, user_id)
 
-        # Execute
-        execution = await execution_utils.add_graph_execution(
-            graph_id=library_agent.graph_id,
-            user_id=user_id,
-            inputs=inputs,
-            graph_credentials_inputs=graph_credentials,
-            dry_run=dry_run,
-        )
+        # Execute — ``add_graph_execution`` ultimately calls
+        # ``validate_and_construct_node_execution_input`` which raises
+        # ``GraphValidationError`` on missing/invalid credentials.  The
+        # common case is caught by ``_check_prerequisites`` above, but
+        # defend against a race (creds deleted between prereq and
+        # execute) by turning credential errors back into the inline
+        # setup card.
+        try:
+            execution = await execution_utils.add_graph_execution(
+                graph_id=library_agent.graph_id,
+                user_id=user_id,
+                inputs=inputs,
+                graph_credentials_inputs=graph_credentials,
+                dry_run=dry_run,
+            )
+        except GraphValidationError as e:
+            creds_setup = self._build_setup_requirements_from_validation_error(
+                graph=graph,
+                error=e,
+                session_id=session_id,
+            )
+            if creds_setup is not None:
+                return creds_setup
+            return ErrorResponse(
+                message=f"Failed to run agent: {e}",
+                error="graph_validation_failed",
+                session_id=session_id,
+            )
 
         # Track successful run (dry runs don't count against the session limit)
         if not dry_run:
@@ -665,17 +759,40 @@ class RunAgentTool(BaseTool):
         user = await user_db().get_user_by_id(user_id)
         user_timezone = get_user_timezone_or_utc(user.timezone if user else timezone)
 
-        # Create schedule
-        result = await get_scheduler_client().add_execution_schedule(
-            user_id=user_id,
-            graph_id=library_agent.graph_id,
-            graph_version=library_agent.graph_version,
-            name=schedule_name,
-            cron=cron,
-            input_data=inputs,
-            input_credentials=graph_credentials,
-            user_timezone=user_timezone,
-        )
+        # Create schedule — the scheduler re-validates credentials via
+        # ``validate_and_construct_node_execution_input`` and will raise
+        # ``GraphValidationError`` if any required credential is missing
+        # or invalid.  ``_check_prerequisites`` already catches the
+        # common case at the top of ``_execute``, but a race (creds
+        # deleted between prereq check and scheduler call) or any other
+        # validation drift could hit here — turn credential errors back
+        # into the inline ``SetupRequirementsResponse`` so the user
+        # sees the credential setup card instead of a generic error.
+        try:
+            result = await get_scheduler_client().add_execution_schedule(
+                user_id=user_id,
+                graph_id=library_agent.graph_id,
+                graph_version=library_agent.graph_version,
+                name=schedule_name,
+                cron=cron,
+                input_data=inputs,
+                input_credentials=graph_credentials,
+                user_timezone=user_timezone,
+            )
+        except GraphValidationError as e:
+            creds_setup = self._build_setup_requirements_from_validation_error(
+                graph=graph,
+                error=e,
+                session_id=session_id,
+            )
+            if creds_setup is not None:
+                return creds_setup
+            # Not a credential issue — surface the raw validation error.
+            return ErrorResponse(
+                message=f"Failed to schedule agent: {e}",
+                error="graph_validation_failed",
+                session_id=session_id,
+            )
 
         # Convert next_run_time to user timezone for display
         if result.next_run_time:
