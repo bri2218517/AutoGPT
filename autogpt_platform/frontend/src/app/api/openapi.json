@@ -13788,6 +13788,12 @@
             "type": "boolean",
             "title": "Requires Approval",
             "default": true
+          },
+          "auto_approve_seconds": {
+            "type": "integer",
+            "title": "Auto Approve Seconds",
+            "description": "Seconds the client should count down before auto-approving. Kept in sync with the server-side fallback timer, which runs a grace period longer to absorb network latency.",
+            "default": 60
           }
         },
         "type": "object",

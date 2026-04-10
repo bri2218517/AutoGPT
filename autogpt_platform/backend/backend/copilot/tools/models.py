@@ -729,6 +729,14 @@ class TaskDecompositionResponse(ToolResponseBase):
         default=0, description="Number of steps (auto-derived from steps list)"
     )
     requires_approval: bool = True
+    auto_approve_seconds: int = Field(
+        default=60,
+        description=(
+            "Seconds the client should count down before auto-approving. "
+            "Kept in sync with the server-side fallback timer, which runs a "
+            "grace period longer to absorb network latency."
+        ),
+    )
 
     @model_validator(mode="after")
     def sync_step_count(self) -> "TaskDecompositionResponse":

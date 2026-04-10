@@ -2,7 +2,7 @@ import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Self, cast
+from typing import Any, Callable, Self, cast
 from weakref import WeakValueDictionary
 
 from openai.types.chat import (
@@ -668,6 +668,49 @@ async def append_and_save_message(session_id: str, message: ChatMessage) -> Chat
             raise DatabaseError(
                 f"Failed to persist message to session {session_id}"
             ) from e
+
+        try:
+            await cache_chat_session(session)
+        except Exception as e:
+            logger.warning(f"Cache write failed for session {session_id}: {e}")
+
+        return session
+
+
+async def append_message_if(
+    session_id: str,
+    message: ChatMessage,
+    predicate: Callable[["ChatSession"], bool],
+) -> "ChatSession | None":
+    """Atomically append a message iff ``predicate(session)`` returns True.
+
+    Used by fire-and-forget tasks that need to no-op if the session state
+    has moved on while they were waiting (e.g. the decompose_goal server-side
+    auto-approve timer: skip the approval if the user has already sent a
+    message). The predicate runs inside the session lock, so the check and
+    the append are one atomic operation — no race with concurrent appends.
+
+    Returns the updated session on append, or ``None`` if the predicate
+    rejected, the session no longer exists, or the append failed.
+    """
+    lock = await _get_session_lock(session_id)
+
+    async with lock:
+        session = await get_chat_session(session_id)
+        if session is None or not predicate(session):
+            return None
+
+        session.messages.append(message)
+        existing_message_count = await chat_db().get_next_sequence(session_id)
+
+        try:
+            await _save_session_to_db(session, existing_message_count)
+        except Exception as e:
+            logger.error(
+                f"append_message_if: failed to persist message to "
+                f"session {session_id}: {e}"
+            )
+            return None
 
         try:
             await cache_chat_session(session)

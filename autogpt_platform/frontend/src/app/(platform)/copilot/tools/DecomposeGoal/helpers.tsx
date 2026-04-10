@@ -26,6 +26,7 @@ export interface TaskDecompositionOutput {
   steps: DecompositionStep[];
   step_count: number;
   requires_approval: boolean;
+  auto_approve_seconds?: number;
 }
 
 export interface DecomposeErrorOutput {

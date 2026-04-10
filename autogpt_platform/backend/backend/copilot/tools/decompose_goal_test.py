@@ -1,10 +1,25 @@
 """Unit tests for DecomposeGoalTool."""
 
+import asyncio
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
+from backend.copilot.model import ChatMessage
+
+from . import decompose_goal as decompose_goal_module
 from ._test_data import make_session
-from .decompose_goal import DEFAULT_ACTION, MAX_STEPS, DecomposeGoalTool
+from .decompose_goal import (
+    AUTO_APPROVE_CLIENT_SECONDS,
+    DEFAULT_ACTION,
+    MAX_STEPS,
+    DecomposeGoalTool,
+    _no_user_action_since,
+)
 from .models import ErrorResponse, TaskDecompositionResponse
+
+# Captured before the autouse fixture stubs the real scheduler.
+_REAL_SCHEDULE_AUTO_APPROVE = decompose_goal_module._schedule_auto_approve
 
 _USER_ID = "test-user-decompose-goal"
 
@@ -17,6 +32,18 @@ _VALID_STEPS = [
     },
     {"description": "Connect blocks together", "action": "connect_blocks"},
 ]
+
+
+@pytest.fixture(autouse=True)
+def _stub_auto_approve_scheduler():
+    """The existing happy-path tests don't have a database; stub the
+    fire-and-forget scheduler so they don't kick off real timers that try to
+    hit Redis/Postgres. Tests that exercise auto-approve override this with
+    their own patches inside the test body."""
+    with patch.object(
+        decompose_goal_module, "_schedule_auto_approve", lambda *a, **kw: None
+    ):
+        yield
 
 
 @pytest.fixture()
@@ -253,3 +280,210 @@ async def test_step_ids_are_sequential(tool: DecomposeGoalTool, session):
     assert isinstance(result, TaskDecompositionResponse)
     for i, step in enumerate(result.steps):
         assert step.step_id == f"step_{i + 1}"
+
+
+# ---------------------------------------------------------------------------
+# auto_approve_seconds field
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_response_includes_auto_approve_seconds(tool: DecomposeGoalTool, session):
+    """The response carries the countdown so the frontend has a single
+    source of truth instead of a hard-coded constant."""
+    result = await tool._execute(
+        user_id=_USER_ID,
+        session=session,
+        goal="Build agent",
+        steps=_VALID_STEPS,
+    )
+    assert isinstance(result, TaskDecompositionResponse)
+    assert result.auto_approve_seconds == AUTO_APPROVE_CLIENT_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# Predicate: _no_user_action_since
+# ---------------------------------------------------------------------------
+
+
+def test_predicate_passes_when_no_user_messages_after_baseline():
+    session = make_session(_USER_ID)
+    session.messages.append(
+        ChatMessage(role="assistant", content="tool call", sequence=5)
+    )
+    assert _no_user_action_since(5)(session) is True
+
+
+def test_predicate_rejects_when_user_message_after_baseline():
+    session = make_session(_USER_ID)
+    session.messages.append(
+        ChatMessage(role="assistant", content="tool call", sequence=5)
+    )
+    session.messages.append(
+        ChatMessage(role="user", content="user replied", sequence=6)
+    )
+    assert _no_user_action_since(5)(session) is False
+
+
+def test_predicate_ignores_assistant_messages_after_baseline():
+    """Only user messages count as 'user action' — assistant messages are
+    just the LLM continuing on its own."""
+    session = make_session(_USER_ID)
+    session.messages.append(
+        ChatMessage(role="assistant", content="more stuff", sequence=6)
+    )
+    assert _no_user_action_since(5)(session) is True
+
+
+# ---------------------------------------------------------------------------
+# Server-side auto-approve task — full flow
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auto_approve_fires_when_user_idle():
+    """When no user message is appended after the baseline sequence, the
+    task should append the synthetic approval and enqueue a new turn."""
+    session_id = "session-auto-approve-idle"
+
+    captured_message = {}
+
+    async def fake_append_message_if(session_id, message, predicate):
+        captured_message["msg"] = message
+        return make_session(_USER_ID)
+
+    fake_enqueue = AsyncMock()
+    fake_create_session = AsyncMock()
+
+    with (
+        patch(
+            "backend.copilot.tools.decompose_goal.append_message_if",
+            new=fake_append_message_if,
+        ),
+        patch(
+            "backend.copilot.tools.decompose_goal.AUTO_APPROVE_SERVER_SECONDS",
+            0,
+        ),
+        patch(
+            "backend.copilot.executor.utils.enqueue_copilot_turn",
+            new=fake_enqueue,
+        ),
+        patch(
+            "backend.copilot.stream_registry.create_session",
+            new=fake_create_session,
+        ),
+    ):
+        await decompose_goal_module._run_auto_approve(
+            session_id=session_id,
+            user_id=_USER_ID,
+            baseline_sequence=5,
+        )
+
+    assert captured_message["msg"].role == "user"
+    assert captured_message["msg"].content == "Approved. Please build the agent."
+    fake_create_session.assert_awaited_once()
+    fake_enqueue.assert_awaited_once()
+    assert fake_enqueue.await_args is not None
+    enqueue_kwargs = fake_enqueue.await_args.kwargs
+    assert enqueue_kwargs["session_id"] == session_id
+    assert enqueue_kwargs["message"] == "Approved. Please build the agent."
+    assert enqueue_kwargs["is_user_message"] is True
+
+
+@pytest.mark.asyncio
+async def test_auto_approve_skips_when_user_already_acted():
+    """If append_message_if returns None (predicate rejected because the
+    user already sent a message), no turn should be enqueued."""
+    fake_append_message_if = AsyncMock(return_value=None)
+    fake_enqueue = AsyncMock()
+    fake_create_session = AsyncMock()
+
+    with (
+        patch(
+            "backend.copilot.tools.decompose_goal.append_message_if",
+            new=fake_append_message_if,
+        ),
+        patch(
+            "backend.copilot.tools.decompose_goal.AUTO_APPROVE_SERVER_SECONDS",
+            0,
+        ),
+        patch(
+            "backend.copilot.executor.utils.enqueue_copilot_turn",
+            new=fake_enqueue,
+        ),
+        patch(
+            "backend.copilot.stream_registry.create_session",
+            new=fake_create_session,
+        ),
+    ):
+        await decompose_goal_module._run_auto_approve(
+            session_id="session-acted",
+            user_id=_USER_ID,
+            baseline_sequence=5,
+        )
+
+    fake_append_message_if.assert_awaited_once()
+    fake_enqueue.assert_not_awaited()
+    fake_create_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_approve_swallows_unexpected_errors():
+    """A failure inside the task must never propagate — the worker should
+    keep running."""
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("kaboom")
+
+    with (
+        patch(
+            "backend.copilot.tools.decompose_goal.append_message_if",
+            new=boom,
+        ),
+        patch(
+            "backend.copilot.tools.decompose_goal.AUTO_APPROVE_SERVER_SECONDS",
+            0,
+        ),
+    ):
+        # Should not raise.
+        await decompose_goal_module._run_auto_approve(
+            session_id="session-error",
+            user_id=_USER_ID,
+            baseline_sequence=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_schedule_auto_approve_creates_task(monkeypatch):
+    """_schedule_auto_approve should add a task to the tracking set and
+    auto-remove it on completion."""
+    monkeypatch.setattr(decompose_goal_module, "AUTO_APPROVE_SERVER_SECONDS", 0)
+    fake_run = AsyncMock()
+    monkeypatch.setattr(decompose_goal_module, "_run_auto_approve", fake_run)
+
+    session = make_session(_USER_ID)
+    session.messages.append(
+        ChatMessage(role="assistant", content="tool call", sequence=3)
+    )
+
+    _REAL_SCHEDULE_AUTO_APPROVE(
+        session_id="session-schedule",
+        user_id=_USER_ID,
+        session=session,
+    )
+
+    # Wait for the scheduled task to complete.
+    await asyncio.sleep(0)
+    while decompose_goal_module._auto_approve_tasks:
+        await asyncio.sleep(0)
+
+    fake_run.assert_awaited_once_with("session-schedule", _USER_ID, 3)
+
+
+def test_schedule_auto_approve_no_op_without_session_id():
+    """Empty session id should be a no-op (defensive)."""
+    session = make_session(_USER_ID)
+    decompose_goal_module._schedule_auto_approve(
+        session_id=None, user_id=_USER_ID, session=session
+    )
+    assert len(decompose_goal_module._auto_approve_tasks) == 0

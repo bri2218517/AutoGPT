@@ -27,7 +27,9 @@ import {
   ToolIcon,
 } from "./helpers";
 
-const COUNTDOWN_SECONDS = 60;
+// Fallback used only if the backend response omits auto_approve_seconds
+// (older sessions). The authoritative value comes from the tool output.
+const FALLBACK_COUNTDOWN_SECONDS = 60;
 const RADIUS = 15;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
@@ -62,7 +64,13 @@ export function DecomposeGoalTool({ part, isLastMessage }: Props) {
     isDecompositionOutput(output) &&
     output.requires_approval;
 
-  const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS);
+  // Authoritative countdown comes from the backend tool response so the
+  // server-side fallback timer and the client are guaranteed to agree.
+  const countdownSeconds =
+    (output && isDecompositionOutput(output) && output.auto_approve_seconds) ||
+    FALLBACK_COUNTDOWN_SECONDS;
+
+  const [secondsLeft, setSecondsLeft] = useState(countdownSeconds);
   // timerActive becomes false when the user clicks Modify — stops countdown and auto-approve.
   const [timerActive, setTimerActive] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
@@ -153,7 +161,7 @@ export function DecomposeGoalTool({ part, isLastMessage }: Props) {
     }
   }, [secondsLeft, timerActive, showActions]); // approve reads refs only — safe to omit
 
-  const progress = secondsLeft / COUNTDOWN_SECONDS;
+  const progress = secondsLeft / countdownSeconds;
   const dashOffset = CIRCUMFERENCE * (1 - progress);
   const stepCount = isEditing
     ? editableSteps.length
@@ -263,10 +271,10 @@ export function DecomposeGoalTool({ part, isLastMessage }: Props) {
                   </Button>
                 ) : (
                   <>
-                    {/* Timer button — same ghost style as Modify, ring wraps the number inline */}
-                    <Button variant="ghost" onClick={approve}>
-                      <span className="group/label inline-flex items-center gap-1">
-                        <span className="inline-flex items-center gap-1 group-hover/label:hidden">
+                    {/* Primary CTA — encourages user to run the agent */}
+                    <Button variant="primary" size="small" onClick={approve}>
+                      <span className="group/label inline-flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1.5 group-hover/label:hidden">
                           Starting in
                           <span className="relative inline-flex h-6 w-6 items-center justify-center">
                             <svg
@@ -282,7 +290,7 @@ export function DecomposeGoalTool({ part, isLastMessage }: Props) {
                                 fill="none"
                                 stroke="currentColor"
                                 strokeWidth="2"
-                                className="text-neutral-300"
+                                className="text-white/30"
                               />
                               <circle
                                 cx="17"
@@ -294,22 +302,20 @@ export function DecomposeGoalTool({ part, isLastMessage }: Props) {
                                 strokeLinecap="round"
                                 strokeDasharray={CIRCUMFERENCE}
                                 strokeDashoffset={dashOffset}
-                                className="text-neutral-600 transition-[stroke-dashoffset] duration-1000 ease-linear"
+                                className="text-white transition-[stroke-dashoffset] duration-1000 ease-linear"
                               />
                             </svg>
-                            <span className="relative z-10 text-[11px] font-semibold tabular-nums text-foreground">
+                            <span className="relative z-10 text-[11px] font-semibold tabular-nums text-white">
                               {secondsLeft}
                             </span>
                           </span>
-                          s
                         </span>
                         <span className="hidden group-hover/label:inline">
                           Start now
                         </span>
                       </span>
                     </Button>
-                    <span className="text-neutral-300">|</span>
-                    <Button variant="ghost" onClick={handleModify}>
+                    <Button variant="ghost" size="small" onClick={handleModify}>
                       <span className="inline-flex items-center gap-1.5">
                         <PencilSimpleIcon size={14} weight="bold" />
                         Modify
