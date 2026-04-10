@@ -347,6 +347,7 @@ class DatabaseManager(AppService):
     delete_chat_session = _(chat_db.delete_chat_session)
     get_next_sequence = _(chat_db.get_next_sequence)
     update_tool_message_content = _(chat_db.update_tool_message_content)
+    update_message_content_by_sequence = _(chat_db.update_message_content_by_sequence)
     update_chat_session_title = _(chat_db.update_chat_session_title)
     set_turn_duration = _(chat_db.set_turn_duration)
 
