@@ -752,8 +752,24 @@ class ExecutionProcessor:
                         f"{notif_error}"
                     )
             except Exception as e:
-                log_metadata.warning(
-                    f"Failed to charge extra iterations for {node.block.name}: {e}"
+                # Unexpected billing failure (DB outage, network, etc.).
+                # Log at ERROR with structured fields and the same
+                # `billing_leak: True` marker so monitoring catches it
+                # alongside InsufficientBalanceError.  The run is kept
+                # COMPLETED because the work is already done.
+                log_metadata.error(
+                    f"billing_leak: failed to charge extra iterations "
+                    f"for {node.block.name}",
+                    extra={
+                        "billing_leak": True,
+                        "user_id": node_exec.user_id,
+                        "graph_id": node_exec.graph_id,
+                        "block_id": node_exec.block_id,
+                        "extra_iterations": extra_iterations,
+                        "error_type": type(e).__name__,
+                        "error": str(e),
+                    },
+                    exc_info=True,
                 )
 
         graph_stats, graph_stats_lock = graph_stats_pair
