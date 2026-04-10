@@ -304,6 +304,38 @@ describe("useBuilderChatPanel – seed message", () => {
 
     expect(mockSendMessage).toHaveBeenCalledOnce();
   });
+
+  it("does NOT send seed when panel is closed even if sessionId is cached and isGraphLoaded is true", async () => {
+    // Session is pre-cached for this flowID so sessionId is set without opening the panel
+    mockFlowID = "flow-cached";
+    mockPostV2CreateSession.mockResolvedValue({
+      status: 200,
+      data: { id: "sess-cached-pre" },
+    });
+
+    // First: open panel to create and cache the session
+    const { result, rerender } = renderHook(() =>
+      useBuilderChatPanel({ isGraphLoaded: true }),
+    );
+    await openAndFlush(() => result.current.handleToggle());
+    expect(result.current.sessionId).toBe("sess-cached-pre");
+    expect(mockSendMessage).toHaveBeenCalledOnce();
+    mockSendMessage.mockClear();
+
+    // Close panel, then navigate away and back (clears hasSentSeedMessageRef)
+    act(() => result.current.handleToggle()); // close
+    mockFlowID = "flow-other";
+    rerender();
+    mockFlowID = "flow-cached";
+    rerender();
+
+    // Panel is still closed but sessionId is restored from cache
+    // Seed should NOT fire because panel is closed (nodes = EMPTY_NODES)
+    await act(async () => {
+      await new Promise<void>((r) => setTimeout(r, 0));
+    });
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
 });
 
 describe("useBuilderChatPanel – flowID reset", () => {

@@ -243,11 +243,20 @@ export function useBuilderChatPanel({
   // in their dependency arrays.
   sendMessageRef.current = sendMessage;
 
-  // Send the seed message once per session when the session becomes available
-  // and the graph is loaded. The ref guard prevents duplicate sends when the
-  // effect re-runs due to dependency changes.
+  // Send the seed message once per session when the panel is open, the session
+  // becomes available, and the graph is loaded. The ref guard prevents duplicate
+  // sends when the effect re-runs due to dependency changes.
+  // isOpen is required: when the panel is closed, the nodes selector returns EMPTY_NODES
+  // to avoid unnecessary store subscriptions. Sending a seed with an empty graph would
+  // poison the AI context, so we defer until the panel is actually visible.
   useEffect(() => {
-    if (!sessionId || !isGraphLoaded || hasSentSeedMessageRef.current) return;
+    if (
+      !isOpen ||
+      !sessionId ||
+      !isGraphLoaded ||
+      hasSentSeedMessageRef.current
+    )
+      return;
     hasSentSeedMessageRef.current = true;
     const edges = useEdgeStore.getState().edges;
     const summary = serializeGraphForChat(nodes, edges);
@@ -255,7 +264,7 @@ export function useBuilderChatPanel({
     // nodes is intentionally excluded: the seed only fires once per session and
     // reading the live value here is sufficient. edges are read via getState().
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, isGraphLoaded]);
+  }, [isOpen, sessionId, isGraphLoaded]);
 
   // Parsed actions from all assistant messages, accumulated across turns.
   // Gated on `status === "ready"` so parsing only runs on completed turns.
