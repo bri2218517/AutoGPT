@@ -2283,6 +2283,17 @@ async def stream_chat_completion_sdk(
             )
             return
 
+        # On the first turn inject user context into the message before building
+        # the query so that _build_query_message sees the full prefixed content.
+        # The system prompt is now static (same for all users) so the LLM can
+        # cache it across sessions.
+        if not has_history and understanding:
+            prefixed_message = await inject_user_context(
+                understanding, current_message, session_id, session.messages
+            )
+            if prefixed_message:
+                current_message = prefixed_message
+
         query_message, was_compacted = await _build_query_message(
             current_message,
             session,
@@ -2290,16 +2301,6 @@ async def stream_chat_completion_sdk(
             transcript_msg_count,
             session_id,
         )
-        # On the first turn inject user context into the message instead of the
-        # system prompt — the system prompt is now static (same for all users)
-        # so the LLM can cache it across sessions.
-        if not has_history and understanding:
-            prefixed_message = await inject_user_context(
-                understanding, current_message, session_id, session.messages
-            )
-            if prefixed_message:
-                current_message = prefixed_message
-                query_message = prefixed_message
         # If files are attached, prepare them: images become vision
         # content blocks in the user message, other files go to sdk_cwd.
         attachments = await _prepare_file_attachments(

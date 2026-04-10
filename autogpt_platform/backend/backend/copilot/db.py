@@ -508,6 +508,11 @@ async def update_message_content_by_sequence(
     Used to persist content modifications (e.g. user-context prefix injection)
     to a message that was already saved to the DB.
 
+    Authorization note: session_id is a high-entropy UUID generated at session
+    creation time.  Callers (inject_user_context) only receive a session_id
+    after the service layer has already validated that the requesting user owns
+    the session, so a userId join is not required here.
+
     Args:
         session_id: The chat session ID.
         sequence: The 0-based sequence number of the message to update.
@@ -517,9 +522,15 @@ async def update_message_content_by_sequence(
         True if a message was updated, False otherwise.
     """
     try:
+        # ChatMessage has a @@unique([sessionId, sequence]) constraint so
+        # update_many will match at most one row; assert to catch schema drift.
         result = await PrismaChatMessage.prisma().update_many(
             where={"sessionId": session_id, "sequence": sequence},
             data={"content": sanitize_string(new_content)},
+        )
+        assert result <= 1, (
+            f"update_many matched {result} rows for session {session_id}, "
+            f"sequence {sequence} — expected at most 1 (unique constraint)"
         )
         if result == 0:
             logger.warning(
