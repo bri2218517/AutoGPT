@@ -439,7 +439,15 @@ class OpenRouterCompatProxy:
             headers=clean_request_headers(dict(upstream_response.headers)),
         )
         await downstream.prepare(request)
+        # Track whether the stream terminated cleanly.  A mid-stream
+        # ``aiohttp.ClientError`` means the upstream died before
+        # finishing; calling ``write_eof()`` on that partial response
+        # would signal "complete stream" to the downstream client and
+        # silently corrupt the body.  Skip the EOF on the error path
+        # so the client's connection is dropped instead, surfacing the
+        # failure correctly.
         cancelled = False
+        stream_error: aiohttp.ClientError | None = None
         try:
             async for chunk in upstream_response.content.iter_any():
                 await downstream.write(chunk)
@@ -454,9 +462,25 @@ class OpenRouterCompatProxy:
             upstream_response.release()
             raise
         except aiohttp.ClientError as e:
+            stream_error = e
             logger.warning("OpenRouter compat proxy stream interrupted: %s", e)
         finally:
             if not cancelled:
                 upstream_response.release()
+
+        if stream_error is not None:
+            # Do NOT call ``write_eof`` — that would signal a clean end
+            # of stream to the client on top of a truncated body.
+            # Mark the connection for close (``Connection: close``) and
+            # skip the EOF so the aiohttp writer drops the connection
+            # mid-response.  The client's parser then raises a
+            # transport error and the caller can retry / surface the
+            # failure instead of silently consuming a corrupt body.
+            try:
+                downstream.force_close()
+            except Exception:  # pragma: no cover - defensive on transport
+                pass
+            return downstream
+
         await downstream.write_eof()
         return downstream

@@ -584,6 +584,96 @@ async def test_proxy_returns_502_on_upstream_timeout():
 
 
 @pytest.mark.asyncio
+async def test_proxy_does_not_signal_clean_eof_on_mid_stream_error():
+    """Regression guard: if the upstream stream dies mid-body, the
+    proxy must NOT call ``write_eof()`` — that would mark the
+    downstream response as a complete, valid stream even though the
+    client only saw a truncated body.  Instead the proxy drops the
+    connection so the client's parser surfaces a transport error.
+
+    We simulate the failure by giving the proxy an upstream that
+    closes the TCP socket mid-response.  The proxy must either drop
+    the client connection (``aiohttp.ClientPayloadError`` /
+    ``ClientConnectionError``) or — if aiohttp masks it — at least
+    not report an ``ok`` complete body.
+    """
+
+    class _TruncatingUpstream:
+        """Upstream that starts sending a response then kills the
+        connection before ``write_eof`` — mimicking a backend that
+        dies mid-stream."""
+
+        def __init__(self) -> None:
+            self._runner: web.AppRunner | None = None
+            self.port: int = 0
+
+        async def start(self) -> str:
+            async def handler(request: web.Request) -> web.StreamResponse:
+                resp = web.StreamResponse(
+                    status=200,
+                    headers={"Content-Type": "application/octet-stream"},
+                )
+                await resp.prepare(request)
+                await resp.write(b"partial-")
+                # Force-close without write_eof so the proxy's
+                # iter_any() raises mid-stream.
+                resp.force_close()
+                return resp
+
+            app = web.Application()
+            app.router.add_route("*", "/{tail:.*}", handler)
+            self._runner = web.AppRunner(app)
+            await self._runner.setup()
+            site = web.TCPSite(self._runner, "127.0.0.1", 0)
+            await site.start()
+            server = site._server
+            assert server is not None
+            sockets = getattr(server, "sockets", None)
+            assert sockets is not None
+            self.port = sockets[0].getsockname()[1]
+            return f"http://127.0.0.1:{self.port}"
+
+        async def stop(self) -> None:
+            if self._runner is not None:
+                await self._runner.cleanup()
+                self._runner = None
+
+    upstream = _TruncatingUpstream()
+    upstream_url = await upstream.start()
+    proxy = OpenRouterCompatProxy(target_base_url=upstream_url)
+    await proxy.start()
+    try:
+        async with aiohttp.ClientSession() as client:
+            client_error: Exception | None = None
+            try:
+                async with client.post(
+                    f"{proxy.local_url}/v1/messages",
+                    json={"model": "x"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    # The client should see either an error raising
+                    # here or a truncated body followed by a
+                    # transport-level failure on read — both are
+                    # acceptable because both surface the truncation
+                    # instead of silently reporting success.
+                    await resp.read()
+            except (
+                aiohttp.ClientPayloadError,
+                aiohttp.ClientConnectionError,
+                aiohttp.ServerDisconnectedError,
+            ) as e:
+                client_error = e
+            assert client_error is not None, (
+                "Proxy silently consumed an upstream mid-stream "
+                "failure and returned a clean EOF to the client — "
+                "regression in the stream-error path."
+            )
+    finally:
+        await proxy.stop()
+        await upstream.stop()
+
+
+@pytest.mark.asyncio
 async def test_proxy_local_url_raises_before_start():
     proxy = OpenRouterCompatProxy(target_base_url="http://example.com")
     with pytest.raises(RuntimeError):
