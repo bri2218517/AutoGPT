@@ -386,11 +386,11 @@ class TestReadTruncationDetection:
 
     @pytest.mark.asyncio
     async def test_no_truncation_plain_empty(self, sdk_cwd):
-        """No offset/limit, no file_path — generic error, not truncation."""
+        """Empty args — treated as complete truncation."""
         result = await _handle_read_non_e2b({})
         assert result["isError"]
         text = result["content"][0]["text"]
-        assert "required" in text.lower()
+        assert "truncated" in text.lower() or "empty arguments" in text.lower()
 
 
 class TestReadEmptyFilePath:

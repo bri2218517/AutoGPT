@@ -95,6 +95,8 @@ def _resolve_and_validate(
 
 async def _handle_write_non_e2b(args: dict[str, Any]) -> dict[str, Any]:
     """Write content to a file in the SDK working directory (non-E2B mode)."""
+    if not args:
+        return _mcp(_COMPLETE_TRUNCATION_MSG, error=True)
     file_path: str = args.get("file_path", "")
     content: str = args.get("content", "")
 
@@ -118,7 +120,11 @@ async def _handle_write_non_e2b(args: dict[str, Any]) -> dict[str, Any]:
         with open(resolved, "w", encoding="utf-8") as f:
             f.write(content)
     except Exception as exc:
-        return _mcp(f"Failed to write {os.path.basename(resolved)}: {exc}", error=True)
+        logger.error("Write failed for %s: %s", resolved, exc, exc_info=True)
+        return _mcp(
+            f"Failed to write {os.path.basename(resolved)}: {type(exc).__name__}",
+            error=True,
+        )
 
     msg = f"Successfully wrote to {resolved}"
     if len(content) > _LARGE_CONTENT_WARN_CHARS:
@@ -140,6 +146,8 @@ async def _handle_write_e2b(args: dict[str, Any]) -> dict[str, Any]:
     """Write content to a file, delegating to the E2B sandbox."""
     from .e2b_file_tools import _handle_write_file
 
+    if not args:
+        return _mcp(_COMPLETE_TRUNCATION_MSG, error=True)
     file_path: str = args.get("file_path", "")
     content: str = args.get("content", "")
 
@@ -178,6 +186,7 @@ WRITE_TOOL_SCHEMA: dict[str, Any] = {
             "description": "The content to write to the file.",
         },
     },
+    "required": ["file_path", "content"],
 }
 
 
@@ -233,6 +242,13 @@ def _is_likely_binary(path: str) -> bool:
 
 async def _handle_read_non_e2b(args: dict[str, Any]) -> dict[str, Any]:
     """Read a file from the SDK working directory (non-E2B mode)."""
+    if not args:
+        return _mcp(
+            "Your read_file call had empty arguments — this means your previous "
+            "response was too long and the tool call was truncated by the API. "
+            "Break your work into smaller steps.",
+            error=True,
+        )
     file_path: str = args.get("file_path", "")
     try:
         offset: int = max(0, int(args.get("offset", 0)))
@@ -326,6 +342,7 @@ READ_TOOL_SCHEMA: dict[str, Any] = {
             "description": "Number of lines to read. Default: 2000.",
         },
     },
+    "required": ["file_path"],
 }
 
 
@@ -343,6 +360,13 @@ _EDIT_PARTIAL_TRUNCATION_MSG = (
 
 async def _handle_edit_non_e2b(args: dict[str, Any]) -> dict[str, Any]:
     """Edit a file in the SDK working directory (non-E2B mode)."""
+    if not args:
+        return _mcp(
+            "Your Edit call had empty arguments — this means your previous "
+            "response was too long and the tool call was truncated by the API. "
+            "Break your work into smaller steps.",
+            error=True,
+        )
     file_path: str = args.get("file_path", "")
     old_string: str = args.get("old_string", "")
     new_string: str = args.get("new_string", "")
@@ -420,6 +444,13 @@ async def _handle_edit_e2b(args: dict[str, Any]) -> dict[str, Any]:
     """Edit a file, delegating to the E2B sandbox."""
     from .e2b_file_tools import _handle_edit_file
 
+    if not args:
+        return _mcp(
+            "Your Edit call had empty arguments — this means your previous "
+            "response was too long and the tool call was truncated by the API. "
+            "Break your work into smaller steps.",
+            error=True,
+        )
     file_path: str = args.get("file_path", "")
     old_string: str = args.get("old_string", "")
     new_string: str = args.get("new_string", "")
