@@ -302,6 +302,28 @@ class TestReadOffsetLimit:
         assert "5\t" in text
 
 
+class TestReadInvalidOffsetLimit:
+    @pytest.mark.asyncio
+    async def test_non_integer_offset(self, sdk_cwd):
+        path = os.path.join(sdk_cwd, "valid.txt")
+        with open(path, "w") as f:
+            f.write("content\n")
+        result = await _handle_read_non_e2b({"file_path": "valid.txt", "offset": "abc"})
+        assert result["isError"]
+        text = result["content"][0]["text"]
+        assert "invalid" in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_non_integer_limit(self, sdk_cwd):
+        path = os.path.join(sdk_cwd, "valid.txt")
+        with open(path, "w") as f:
+            f.write("content\n")
+        result = await _handle_read_non_e2b({"file_path": "valid.txt", "limit": "xyz"})
+        assert result["isError"]
+        text = result["content"][0]["text"]
+        assert "invalid" in text.lower()
+
+
 class TestReadFileNotFound:
     @pytest.mark.asyncio
     async def test_file_not_found(self, sdk_cwd):

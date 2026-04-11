@@ -653,18 +653,20 @@ def create_copilot_mcp_server(*, use_e2b: bool = False):
     # delegates to the sandbox.  Named "read_file" to match E2B naming.
     # The CLI's built-in Read is NOT disabled (it's used internally for
     # oversized tool results); our MCP version is an additional tool.
-    read_file_handler = get_read_tool_handler(use_e2b=use_e2b)
-    read_file_tool = tool(
-        READ_TOOL_NAME,
-        READ_TOOL_DESCRIPTION,
-        READ_TOOL_SCHEMA,
-        annotations=_PARALLEL_ANNOTATION,
-    )(
-        _make_truncating_wrapper(
-            read_file_handler, READ_TOOL_NAME, input_schema=READ_TOOL_SCHEMA
+    # Skip in E2B mode: E2B_FILE_TOOLS already registers "read_file".
+    if not use_e2b:
+        read_file_handler = get_read_tool_handler(use_e2b=use_e2b)
+        read_file_tool = tool(
+            READ_TOOL_NAME,
+            READ_TOOL_DESCRIPTION,
+            READ_TOOL_SCHEMA,
+            annotations=_PARALLEL_ANNOTATION,
+        )(
+            _make_truncating_wrapper(
+                read_file_handler, READ_TOOL_NAME, input_schema=READ_TOOL_SCHEMA
+            )
         )
-    )
-    sdk_tools.append(read_file_tool)
+        sdk_tools.append(read_file_tool)
 
     # Unified Edit tool — replaces the CLI's built-in Edit which has no
     # defence against output-token truncation.

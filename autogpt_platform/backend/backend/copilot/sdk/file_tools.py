@@ -111,7 +111,7 @@ async def _handle_write_non_e2b(args: dict[str, Any]) -> dict[str, Any]:
         with open(resolved, "w", encoding="utf-8") as f:
             f.write(content)
     except Exception as exc:
-        return _mcp(f"Failed to write {resolved}: {exc}", error=True)
+        return _mcp(f"Failed to write {os.path.basename(resolved)}: {exc}", error=True)
 
     msg = f"Successfully wrote to {resolved}"
     if len(content) > _LARGE_CONTENT_WARN_CHARS:
@@ -228,8 +228,14 @@ def _is_likely_binary(path: str) -> bool:
 async def _handle_read_non_e2b(args: dict[str, Any]) -> dict[str, Any]:
     """Read a file from the SDK working directory (non-E2B mode)."""
     file_path: str = args.get("file_path", "")
-    offset: int = max(0, int(args.get("offset", 0)))
-    limit: int = max(1, int(args.get("limit", 2000)))
+    try:
+        offset: int = max(0, int(args.get("offset", 0)))
+        limit: int = max(1, int(args.get("limit", 2000)))
+    except (ValueError, TypeError):
+        return _mcp(
+            "Invalid offset/limit — must be integers.",
+            error=True,
+        )
 
     if not file_path:
         return _mcp("file_path is required", error=True)
