@@ -42,6 +42,7 @@ from backend.copilot.rate_limit import (
     reset_daily_usage,
 )
 from backend.copilot.response_model import StreamError, StreamFinish, StreamHeartbeat
+from backend.copilot.service import USER_CONTEXT_TAG
 from backend.copilot.tools.e2b_sandbox import kill_sandbox
 from backend.copilot.tools.models import (
     AgentDetailsResponse,
@@ -101,7 +102,9 @@ router = APIRouter(
 )
 
 
-_USER_CONTEXT_RE = re.compile(r"^<user_context>.*?</user_context>\n\n", re.DOTALL)
+_USER_CONTEXT_RE = re.compile(
+    rf"^<{USER_CONTEXT_TAG}>.*?</{USER_CONTEXT_TAG}>\n\n", re.DOTALL
+)
 
 
 def _strip_injected_context(message: dict) -> dict:
