@@ -217,6 +217,7 @@ async def _start_fake_anthropic_server(
     answered with a valid streaming response.  Returns ``(runner, port)``
     so the caller can ``await runner.cleanup()`` when finished.
     """
+    import socket
 
     async def messages_handler(request: web.Request) -> web.StreamResponse:
         body = await request.text()
@@ -242,22 +243,28 @@ async def _start_fake_anthropic_server(
         await response.write_eof()
         return response
 
+    async def fallback_handler(_request: web.Request) -> web.Response:
+        # OAuth/profile endpoints the CLI may probe — answer 404 so it
+        # falls through quickly without retrying.
+        return web.Response(status=404)
+
     app = web.Application()
     app.router.add_post("/v1/messages", messages_handler)
-    # OAuth/profile endpoints the CLI may probe — answer 404 so it falls
-    # through quickly without retrying.
-    app.router.add_route("*", "/{tail:.*}", lambda _r: web.Response(status=404))
+    app.router.add_route("*", "/{tail:.*}", fallback_handler)
+
+    # Bind an ephemeral port ourselves so we can read it back via the
+    # public ``getsockname`` API rather than reaching into ``site._server``
+    # private aiohttp internals.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    port: int = sock.getsockname()[1]
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
+    site = web.SockSite(runner, sock)
     await site.start()
 
-    server = site._server
-    assert server is not None
-    sockets = getattr(server, "sockets", None)
-    assert sockets is not None
-    port: int = sockets[0].getsockname()[1]
     return runner, port
 
 
@@ -592,13 +599,14 @@ class TestResolveCliPath:
     def test_returns_none_when_env_var_points_to_missing_file(self, monkeypatch):
         monkeypatch.delenv("CHAT_CLAUDE_AGENT_CLI_PATH", raising=False)
         monkeypatch.setenv("CLAUDE_AGENT_CLI_PATH", "/nonexistent/path/to/claude")
-        # Should fall through to the bundled binary OR return None,
-        # but never raise.
+        # When the override is set but the file is missing, the resolver
+        # returns ``None`` outright — it does NOT silently fall through to
+        # the bundled binary, because doing so would defeat the purpose of
+        # the override (the operator explicitly asked for a specific path).
+        # The strict ``is None`` assertion catches any future regression
+        # that swaps this fail-loud behaviour for a silent fallback.
         resolved = _resolve_cli_path()
-        # We can't assert exact value (depends on whether the bundled
-        # CLI is installed in the test env) but the function must not
-        # raise — the caller is supposed to handle None gracefully.
-        assert resolved is None or resolved.is_file()
+        assert resolved is None
 
     def test_falls_back_to_bundled_when_env_var_unset(self, monkeypatch):
         monkeypatch.delenv("CLAUDE_AGENT_CLI_PATH", raising=False)
