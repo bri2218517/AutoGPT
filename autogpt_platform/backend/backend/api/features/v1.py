@@ -6,6 +6,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Sequence, get_args
+from urllib.parse import urlparse
 
 import pydantic
 import stripe
@@ -710,8 +711,6 @@ def _validate_checkout_redirect_url(url: str) -> bool:
     Prevents open-redirect: attackers must not be able to supply arbitrary
     success_url/cancel_url that Stripe will redirect users to after checkout.
     """
-    from urllib.parse import urlparse
-
     allowed = settings.config.frontend_base_url or settings.config.platform_base_url
     if not allowed:
         # No configured origin — refuse to validate rather than allow arbitrary URLs.

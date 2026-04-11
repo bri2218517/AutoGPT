@@ -1483,6 +1483,17 @@ async def sync_subscription_from_stripe(stripe_subscription: dict) -> None:
                 new_sub_id,
             )
             return
+        # Filter out the cancelled subscription to check if other active subs
+        # exist. When new_sub_id is empty (malformed event with no 'id' field),
+        # we cannot safely exclude any sub — preserve current tier to avoid
+        # an unsafe downgrade on a malformed webhook payload.
+        if not new_sub_id:
+            logger.warning(
+                "sync_subscription_from_stripe: cancel event missing 'id' field"
+                " for customer %s; preserving current tier",
+                customer_id,
+            )
+            return
         still_has_active_sub = any(
             sub["id"] != new_sub_id for sub in other_subs_active.data
         ) or any(sub["id"] != new_sub_id for sub in other_subs_trialing.data)

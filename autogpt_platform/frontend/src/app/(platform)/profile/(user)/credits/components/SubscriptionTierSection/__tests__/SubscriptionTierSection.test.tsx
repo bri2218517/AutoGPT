@@ -1,4 +1,10 @@
-import { render, screen, fireEvent, waitFor, cleanup } from "@/tests/integrations/test-utils";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  cleanup,
+} from "@/tests/integrations/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SubscriptionTierSection } from "../SubscriptionTierSection";
 
@@ -30,29 +36,26 @@ vi.mock("@/app/api/__generated__/endpoints/credits/credits", () => ({
 }));
 
 // Mock Dialog (Radix portals don't work in happy-dom)
-vi.mock("@/components/__legacy__/ui/dialog", () => ({
-  Dialog: ({
-    open,
-    children,
-  }: {
-    open: boolean;
-    children: React.ReactNode;
-  }) => (open ? <div role="dialog">{children}</div> : null),
-  DialogContent: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  DialogHeader: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  DialogTitle: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  DialogDescription: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  DialogFooter: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
+const MockDialogContent = ({ children }: { children: React.ReactNode }) => (
+  <div>{children}</div>
+);
+const MockDialogFooter = ({ children }: { children: React.ReactNode }) => (
+  <div>{children}</div>
+);
+function MockDialog({
+  controlled,
+  children,
+}: {
+  controlled?: { isOpen: boolean; set: (open: boolean) => void };
+  children: React.ReactNode;
+  [key: string]: unknown;
+}) {
+  return controlled?.isOpen ? <div role="dialog">{children}</div> : null;
+}
+MockDialog.Content = MockDialogContent;
+MockDialog.Footer = MockDialogFooter;
+vi.mock("@/components/molecules/Dialog/Dialog", () => ({
+  Dialog: MockDialog,
 }));
 
 function makeSubscription({
@@ -112,7 +115,10 @@ describe("SubscriptionTierSection", () => {
   });
 
   it("renders error message when subscription fetch fails", () => {
-    setupMocks({ queryError: new Error("Network error"), subscription: makeSubscription() });
+    setupMocks({
+      queryError: new Error("Network error"),
+      subscription: makeSubscription(),
+    });
     // Override the data to simulate failed state
     mockUseGetSubscriptionStatus.mockReturnValue({
       data: null,
@@ -139,7 +145,9 @@ describe("SubscriptionTierSection", () => {
     render(<SubscriptionTierSection />);
     expect(screen.getByText("Current")).toBeDefined();
     // Upgrade to PRO button should NOT exist; Upgrade to BUSINESS and Downgrade to Free should
-    expect(screen.queryByRole("button", { name: /upgrade to pro/i })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /upgrade to pro/i }),
+    ).toBeNull();
     expect(
       screen.getByRole("button", { name: /upgrade to business/i }),
     ).toBeDefined();
@@ -185,7 +193,9 @@ describe("SubscriptionTierSection", () => {
 
     await waitFor(() => {
       expect(mutateFn).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ tier: "PRO" }) }),
+        expect.objectContaining({
+          data: expect.objectContaining({ tier: "PRO" }),
+        }),
       );
     });
   });
@@ -216,7 +226,9 @@ describe("SubscriptionTierSection", () => {
 
     await waitFor(() => {
       expect(mutateFn).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ tier: "FREE" }) }),
+        expect.objectContaining({
+          data: expect.objectContaining({ tier: "FREE" }),
+        }),
       );
     });
   });

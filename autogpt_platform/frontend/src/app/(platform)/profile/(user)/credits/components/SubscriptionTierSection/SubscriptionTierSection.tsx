@@ -1,14 +1,7 @@
 "use client";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/__legacy__/ui/dialog";
+import { Dialog } from "@/components/molecules/Dialog/Dialog";
 import { useSubscriptionTierSection } from "./useSubscriptionTierSection";
 
 type TierInfo = {
@@ -196,20 +189,20 @@ export function SubscriptionTierSection() {
       )}
 
       <Dialog
-        open={!!confirmDowngradeTo}
-        onOpenChange={(open) => !open && setConfirmDowngradeTo(null)}
+        title="Confirm Downgrade"
+        controlled={{
+          isOpen: !!confirmDowngradeTo,
+          set: (open) => !open && setConfirmDowngradeTo(null),
+        }}
       >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Confirm Downgrade</DialogTitle>
-            <DialogDescription>
-              {confirmDowngradeTo === "FREE"
-                ? "Downgrading to Free will cancel your current Stripe subscription immediately and remove your paid-tier rate limit increases."
-                : `Switching to ${confirmDowngradeTo} will take effect immediately.`}{" "}
-              Are you sure?
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+        <Dialog.Content>
+          <p className="text-sm text-neutral-600 dark:text-neutral-400">
+            {confirmDowngradeTo === "FREE"
+              ? "Downgrading to Free will cancel your current Stripe subscription immediately and remove your paid-tier rate limit increases."
+              : `Switching to ${confirmDowngradeTo} will take effect immediately.`}{" "}
+            Are you sure?
+          </p>
+          <Dialog.Footer>
             <Button
               variant="outline"
               onClick={() => setConfirmDowngradeTo(null)}
@@ -219,8 +212,8 @@ export function SubscriptionTierSection() {
             <Button variant="destructive" onClick={confirmDowngrade}>
               Confirm Downgrade
             </Button>
-          </DialogFooter>
-        </DialogContent>
+          </Dialog.Footer>
+        </Dialog.Content>
       </Dialog>
     </div>
   );
