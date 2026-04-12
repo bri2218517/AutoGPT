@@ -519,9 +519,7 @@ async def _handle_edit_file(args: dict[str, Any]) -> dict[str, Any]:
 
     # Per-path lock prevents parallel edits from racing through
     # the read-modify-write cycle and silently dropping changes.
-    if resolved not in _edit_locks:
-        _edit_locks[resolved] = asyncio.Lock()
-    lock = _edit_locks[resolved]
+    lock = _edit_locks.setdefault(resolved, asyncio.Lock())
     async with lock:
         try:
             with open(resolved, encoding="utf-8") as f:
@@ -554,10 +552,6 @@ async def _handle_edit_file(args: dict[str, Any]) -> dict[str, Any]:
                 f.write(updated)
         except Exception as exc:
             return _mcp(f"Failed to write {file_path}: {exc}", error=True)
-
-    # Evict lock when no other coroutine is waiting, preventing unbounded growth.
-    if not lock.locked() and _edit_locks.get(resolved) is lock:
-        _edit_locks.pop(resolved, None)
 
     return _mcp(f"Edited {resolved} ({count} replacement{'s' if count > 1 else ''})")
 
@@ -951,16 +945,16 @@ EDIT_TOOL_SCHEMA: dict[str, Any] = {
 }
 
 
-def get_write_tool_handler(*, use_e2b: bool) -> Callable[..., Any]:
-    """Return the Write handler — both modes now use the unified _handle_write_file."""
+def get_write_tool_handler() -> Callable[..., Any]:
+    """Return the Write handler for non-E2B mode."""
     return _handle_write_file
 
 
-def get_read_tool_handler(*, use_e2b: bool) -> Callable[..., Any]:
-    """Return the Read handler — both modes now use the unified _handle_read_file."""
+def get_read_tool_handler() -> Callable[..., Any]:
+    """Return the Read handler for non-E2B mode."""
     return _handle_read_file
 
 
-def get_edit_tool_handler(*, use_e2b: bool) -> Callable[..., Any]:
-    """Return the Edit handler — both modes now use the unified _handle_edit_file."""
+def get_edit_tool_handler() -> Callable[..., Any]:
+    """Return the Edit handler for non-E2B mode."""
     return _handle_edit_file

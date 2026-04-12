@@ -489,6 +489,7 @@ def _text_from_mcp_result(result: dict[str, Any]) -> str:
 
 
 _PARALLEL_ANNOTATION = ToolAnnotations(readOnlyHint=True)
+_MUTATING_ANNOTATION = ToolAnnotations(readOnlyHint=False)
 
 
 def _strip_llm_fields(result: dict[str, Any]) -> dict[str, Any]:
@@ -655,29 +656,26 @@ def create_copilot_mcp_server(*, use_e2b: bool = False):
             )(_make_truncating_wrapper(handler, name))
             sdk_tools.append(decorated)
 
-    # Unified Write tool — replaces the CLI's built-in Write which has no
-    # defence against output-token truncation.  Registered in both E2B and
-    # non-E2B modes so we always control validation and error messaging.
-    write_handler = get_write_tool_handler(use_e2b=use_e2b)
-    write_tool = tool(
-        WRITE_TOOL_NAME,
-        WRITE_TOOL_DESCRIPTION,
-        WRITE_TOOL_SCHEMA,
-        annotations=_PARALLEL_ANNOTATION,
-    )(
-        _make_truncating_wrapper(
-            write_handler, WRITE_TOOL_NAME, input_schema=WRITE_TOOL_SCHEMA
-        )
-    )
-    sdk_tools.append(write_tool)
-
-    # Unified Read tool — in non-E2B reads from SDK working dir, in E2B
-    # delegates to the sandbox.  Named "read_file" to match E2B naming.
-    # The CLI's built-in Read is NOT disabled (it's used internally for
-    # oversized tool results); our MCP version is an additional tool.
-    # Skip in E2B mode: E2B_FILE_TOOLS already registers "read_file".
+    # Unified Write/Read/Edit tools — replace the CLI's built-in versions
+    # which have no defence against output-token truncation.
+    # Skip in E2B mode: E2B_FILE_TOOLS already registers "write_file",
+    # "read_file", and "edit_file".  Registering both would give the LLM
+    # duplicate tools per operation.
     if not use_e2b:
-        read_file_handler = get_read_tool_handler(use_e2b=use_e2b)
+        write_handler = get_write_tool_handler()
+        write_tool = tool(
+            WRITE_TOOL_NAME,
+            WRITE_TOOL_DESCRIPTION,
+            WRITE_TOOL_SCHEMA,
+            annotations=_MUTATING_ANNOTATION,
+        )(
+            _make_truncating_wrapper(
+                write_handler, WRITE_TOOL_NAME, input_schema=WRITE_TOOL_SCHEMA
+            )
+        )
+        sdk_tools.append(write_tool)
+
+        read_file_handler = get_read_tool_handler()
         read_file_tool = tool(
             READ_TOOL_NAME,
             READ_TOOL_DESCRIPTION,
@@ -690,20 +688,18 @@ def create_copilot_mcp_server(*, use_e2b: bool = False):
         )
         sdk_tools.append(read_file_tool)
 
-    # Unified Edit tool — replaces the CLI's built-in Edit which has no
-    # defence against output-token truncation.
-    edit_handler = get_edit_tool_handler(use_e2b=use_e2b)
-    edit_tool = tool(
-        EDIT_TOOL_NAME,
-        EDIT_TOOL_DESCRIPTION,
-        EDIT_TOOL_SCHEMA,
-        annotations=_PARALLEL_ANNOTATION,
-    )(
-        _make_truncating_wrapper(
-            edit_handler, EDIT_TOOL_NAME, input_schema=EDIT_TOOL_SCHEMA
+        edit_handler = get_edit_tool_handler()
+        edit_tool = tool(
+            EDIT_TOOL_NAME,
+            EDIT_TOOL_DESCRIPTION,
+            EDIT_TOOL_SCHEMA,
+            annotations=_MUTATING_ANNOTATION,
+        )(
+            _make_truncating_wrapper(
+                edit_handler, EDIT_TOOL_NAME, input_schema=EDIT_TOOL_SCHEMA
+            )
         )
-    )
-    sdk_tools.append(edit_tool)
+        sdk_tools.append(edit_tool)
 
     # Read tool for SDK-truncated tool results (always needed, read-only).
     read_tool = tool(
