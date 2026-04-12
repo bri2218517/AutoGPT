@@ -1087,7 +1087,10 @@ class OrchestratorBlock(Block):
                 input_data=input_value,
             )
 
-        assert node_exec_result is not None, "node_exec_result should not be None"
+        if node_exec_result is None:
+            raise RuntimeError(
+                f"upsert_execution_input returned None for node {sink_node_id}"
+            )
 
         # Create NodeExecutionEntry for execution manager
         node_exec_entry = NodeExecutionEntry(
@@ -1122,14 +1125,20 @@ class OrchestratorBlock(Block):
                 task=node_exec_future,
             )
 
-            # Execute the node directly since we're in the Orchestrator context
-            tool_node_stats = await execution_processor.on_node_execution(
-                node_exec=node_exec_entry,
-                node_exec_progress=node_exec_progress,
-                nodes_input_masks=None,
-                graph_stats_pair=graph_stats_pair,
-            )
-            node_exec_future.set_result(tool_node_stats)
+            # Execute the node directly since we're in the Orchestrator context.
+            # Wrap in try/except so the future is always resolved, even on
+            # error — an unresolved Future would block anything awaiting it.
+            try:
+                tool_node_stats = await execution_processor.on_node_execution(
+                    node_exec=node_exec_entry,
+                    node_exec_progress=node_exec_progress,
+                    nodes_input_masks=None,
+                    graph_stats_pair=graph_stats_pair,
+                )
+                node_exec_future.set_result(tool_node_stats)
+            except Exception as exec_err:
+                node_exec_future.set_exception(exec_err)
+                raise
 
             # Charge user credits AFTER successful tool execution. Tools
             # spawned by the orchestrator bypass the main execution queue
@@ -1141,14 +1150,27 @@ class OrchestratorBlock(Block):
             # `error is None` intentionally excludes both Exception and
             # BaseException subclasses (e.g. CancelledError) so cancelled
             # or terminated tool runs are not billed.
+            #
+            # Billing errors (including non-balance exceptions) are kept
+            # in a separate try/except so they are never silently swallowed
+            # by the generic tool-error handler below.
             if (
                 not execution_params.execution_context.dry_run
                 and tool_node_stats is not None
                 and tool_node_stats.error is None
             ):
-                tool_cost, _ = await execution_processor.charge_node_usage(
-                    node_exec_entry,
-                )
+                try:
+                    tool_cost, _ = await execution_processor.charge_node_usage(
+                        node_exec_entry,
+                    )
+                except InsufficientBalanceError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "Unexpected error charging for tool node %s",
+                        sink_node_id,
+                    )
+                    raise
                 if tool_cost > 0:
                     self.merge_stats(NodeExecutionStats(extra_cost=tool_cost))
 
@@ -1163,9 +1185,11 @@ class OrchestratorBlock(Block):
                 if node_outputs
                 else "Tool executed successfully"
             )
-            return _create_tool_response(
+            resp = _create_tool_response(
                 tool_call.id, tool_response_content, responses_api=responses_api
             )
+            resp["_is_error"] = False
+            return resp
 
         except InsufficientBalanceError:
             # Don't downgrade billing failures into tool errors — let the
@@ -1176,11 +1200,13 @@ class OrchestratorBlock(Block):
         except Exception as e:
             logger.warning("Tool execution with manager failed: %s", e)
             # Return error response
-            return _create_tool_response(
+            resp = _create_tool_response(
                 tool_call.id,
                 f"Tool execution failed: {e}",
                 responses_api=responses_api,
             )
+            resp["_is_error"] = True
+            return resp
 
     async def _agent_mode_llm_caller(
         self,
@@ -1280,7 +1306,7 @@ class OrchestratorBlock(Block):
                 content = str(raw_content)
             else:
                 content = "Tool executed successfully"
-            tool_failed = content.startswith("Tool execution failed:")
+            tool_failed = result.get("_is_error", False)
             return ToolCallResult(
                 tool_call_id=tool_call.id,
                 tool_name=tool_call.name,
@@ -1501,7 +1527,7 @@ class OrchestratorBlock(Block):
                             text = content
                         else:
                             text = json.dumps(content)
-                        tool_failed = text.startswith("Tool execution failed:")
+                        tool_failed = result.get("_is_error", False)
                         return {
                             "content": [{"type": "text", "text": text}],
                             "isError": tool_failed,
