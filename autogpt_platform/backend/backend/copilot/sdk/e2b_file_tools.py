@@ -480,7 +480,7 @@ async def _handle_edit_file(args: dict[str, Any]) -> dict[str, Any]:
         remote = os.path.join(canonical_parent, os.path.basename(remote))
 
         try:
-            raw: bytes = await sandbox.files.read(remote, format="bytes")
+            raw = bytes(await sandbox.files.read(remote, format="bytes"))
             content = raw.decode("utf-8", errors="replace")
         except Exception as exc:
             return _mcp(f"Failed to read {remote}: {exc}", error=True)
