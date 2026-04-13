@@ -40,6 +40,7 @@ class TestUsdToMicrodollars:
     def test_large_value(self):
         assert usd_to_microdollars(1.0) == 1_000_000
 
+
 class TestMaskEmail:
     def test_typical_email(self):
         assert _mask_email("user@example.com") == "us***@example.com"
@@ -291,8 +292,10 @@ class TestGetPlatformCostDashboard:
             side_effect=[
                 [provider_row],  # by_provider
                 [user_row],  # by_user
+                [],  # by_user_tracking_groups (no cost_usd rows for this user)
                 [{"userId": "u1"}],  # distinct users
-                [provider_row],  # total agg
+                [provider_row],  # total agg (filtered)
+                [provider_row],  # total agg (no tracking_type filter)
             ]
         )
         mock_actions.find_many = AsyncMock(return_value=[mock_user])
@@ -306,6 +309,14 @@ class TestGetPlatformCostDashboard:
                 "backend.data.platform_cost.PrismaUser.prisma",
                 return_value=mock_actions,
             ),
+            patch(
+                "backend.data.platform_cost.query_raw_with_schema",
+                new_callable=AsyncMock,
+                side_effect=[
+                    [{"p50": 1000, "p75": 2000, "p95": 4000, "p99": 5000}],
+                    [{"bucket": "$0-0.50", "count": 3}],
+                ],
+            ),
         ):
             dashboard = await get_platform_cost_dashboard()
 
@@ -318,6 +329,130 @@ class TestGetPlatformCostDashboard:
         assert dashboard.by_provider[0].total_duration_seconds == 10.5
         assert len(dashboard.by_user) == 1
         assert dashboard.by_user[0].email == "a***@b.com"
+        assert dashboard.cost_p50_microdollars == 1000
+        assert dashboard.cost_p75_microdollars == 2000
+        assert dashboard.cost_p95_microdollars == 4000
+        assert dashboard.cost_p99_microdollars == 5000
+        assert len(dashboard.cost_buckets) == 1
+        # total_input/output_tokens come from total_agg_groups (provider_row has 1000/500)
+        assert dashboard.total_input_tokens == 1000
+        assert dashboard.total_output_tokens == 500
+        # Token averages must use token_bearing_requests (3) not cost_bearing (0)
+        assert dashboard.avg_input_tokens_per_request == pytest.approx(1000 / 3)
+        assert dashboard.avg_output_tokens_per_request == pytest.approx(500 / 3)
+        # No cost_usd rows in total_agg → avg_cost should be 0
+        assert dashboard.avg_cost_microdollars_per_request == 0.0
+
+    @pytest.mark.asyncio
+    async def test_cost_bearing_request_count_nonzero_when_filtering_by_tokens(self):
+        """When filtering by tracking_type='tokens', cost_bearing_request_count
+        must still reflect cost_usd rows because by_user_tracking_groups is
+        queried without the tracking_type constraint."""
+        # total_agg only has a tokens row (because of the tracking_type filter)
+        total_row = _make_group_by_row(
+            provider="openai", tracking_type="tokens", cost=0, count=5
+        )
+        # by_user_tracking_groups returns BOTH rows (no tracking_type filter)
+        user_tracking_cost_usd_row = {
+            "_count": {"_all": 7},
+            "userId": "u1",
+            "trackingType": "cost_usd",
+        }
+        user_tracking_tokens_row = {
+            "_count": {"_all": 5},
+            "userId": "u1",
+            "trackingType": "tokens",
+        }
+
+        mock_actions = MagicMock()
+        mock_actions.group_by = AsyncMock(
+            side_effect=[
+                [total_row],  # by_provider
+                [{"_sum": {}, "_count": {"_all": 5}, "userId": "u1"}],  # by_user
+                [
+                    user_tracking_cost_usd_row,
+                    user_tracking_tokens_row,
+                ],  # by_user_tracking
+                [{"userId": "u1"}],  # distinct users
+                [total_row],  # total agg (filtered)
+                [total_row],  # total agg (no tracking_type filter)
+            ]
+        )
+        mock_actions.find_many = AsyncMock(return_value=[])
+
+        with (
+            patch(
+                "backend.data.platform_cost.PrismaLog.prisma",
+                return_value=mock_actions,
+            ),
+            patch(
+                "backend.data.platform_cost.PrismaUser.prisma",
+                return_value=mock_actions,
+            ),
+            patch(
+                "backend.data.platform_cost.query_raw_with_schema",
+                new_callable=AsyncMock,
+                side_effect=[[], []],
+            ),
+        ):
+            dashboard = await get_platform_cost_dashboard(tracking_type="tokens")
+
+        # by_user has 1 user with 5 total requests (tokens rows only due to filter)
+        # but per-user cost_bearing count should be 7 (from cost_usd rows in
+        # by_user_tracking_groups which uses where_no_tracking_type)
+        assert len(dashboard.by_user) == 1
+        assert dashboard.by_user[0].cost_bearing_request_count == 7
+
+    @pytest.mark.asyncio
+    async def test_global_avg_cost_nonzero_when_filtering_by_tokens(self):
+        """When filtering by tracking_type='tokens', avg_cost_microdollars_per_request
+        must still reflect cost_usd rows from total_agg_no_tracking_type_groups,
+        not the filtered total_agg_groups which only has tokens rows."""
+        # filtered total_agg only has tokens rows (zero cost)
+        tokens_row = _make_group_by_row(
+            provider="openai", tracking_type="tokens", cost=0, count=5
+        )
+        # unfiltered total_agg has both rows (cost_usd carries the actual cost)
+        cost_usd_row = _make_group_by_row(
+            provider="openai", tracking_type="cost_usd", cost=10_000, count=4
+        )
+
+        mock_actions = MagicMock()
+        mock_actions.group_by = AsyncMock(
+            side_effect=[
+                [tokens_row],  # by_provider
+                [{"_sum": {}, "_count": {"_all": 5}, "userId": "u1"}],  # by_user
+                [],  # by_user_tracking_groups
+                [{"userId": "u1"}],  # distinct users
+                [tokens_row],  # total agg (filtered — tokens only)
+                [tokens_row, cost_usd_row],  # total agg (no tracking_type filter)
+            ]
+        )
+        mock_actions.find_many = AsyncMock(return_value=[])
+
+        with (
+            patch(
+                "backend.data.platform_cost.PrismaLog.prisma",
+                return_value=mock_actions,
+            ),
+            patch(
+                "backend.data.platform_cost.PrismaUser.prisma",
+                return_value=mock_actions,
+            ),
+            patch(
+                "backend.data.platform_cost.query_raw_with_schema",
+                new_callable=AsyncMock,
+                side_effect=[[], []],
+            ),
+        ):
+            dashboard = await get_platform_cost_dashboard(tracking_type="tokens")
+
+        # avg_cost_microdollars_per_request must be non-zero: cost_usd row
+        # (10_000 microdollars, 4 requests) is present in the unfiltered agg.
+        assert dashboard.avg_cost_microdollars_per_request == pytest.approx(10_000 / 4)
+        # avg token stats use token_bearing_requests from unfiltered agg (5)
+        assert dashboard.avg_input_tokens_per_request == pytest.approx(1000 / 5)
+        assert dashboard.avg_output_tokens_per_request == pytest.approx(500 / 5)
 
     @pytest.mark.asyncio
     async def test_cache_tokens_aggregated_not_hardcoded(self):
@@ -340,8 +475,10 @@ class TestGetPlatformCostDashboard:
             side_effect=[
                 [provider_row],  # by_provider
                 [user_row],  # by_user
+                [],  # by_user_tracking_groups
                 [{"userId": "u2"}],  # distinct users
-                [provider_row],  # total agg
+                [provider_row],  # total agg (filtered)
+                [provider_row],  # total agg (no tracking_type filter)
             ]
         )
         mock_actions.find_many = AsyncMock(return_value=[])
@@ -355,6 +492,14 @@ class TestGetPlatformCostDashboard:
                 "backend.data.platform_cost.PrismaUser.prisma",
                 return_value=mock_actions,
             ),
+            patch(
+                "backend.data.platform_cost.query_raw_with_schema",
+                new_callable=AsyncMock,
+                side_effect=[
+                    [{"p50": 0, "p75": 0, "p95": 0, "p99": 0}],
+                    [],
+                ],
+            ),
         ):
             dashboard = await get_platform_cost_dashboard()
 
@@ -366,7 +511,7 @@ class TestGetPlatformCostDashboard:
     @pytest.mark.asyncio
     async def test_returns_empty_dashboard(self):
         mock_actions = MagicMock()
-        mock_actions.group_by = AsyncMock(side_effect=[[], [], [], []])
+        mock_actions.group_by = AsyncMock(side_effect=[[], [], [], [], [], []])
         mock_actions.find_many = AsyncMock(return_value=[])
 
         with (
@@ -377,6 +522,11 @@ class TestGetPlatformCostDashboard:
             patch(
                 "backend.data.platform_cost.PrismaUser.prisma",
                 return_value=mock_actions,
+            ),
+            patch(
+                "backend.data.platform_cost.query_raw_with_schema",
+                new_callable=AsyncMock,
+                side_effect=[[], []],
             ),
         ):
             dashboard = await get_platform_cost_dashboard()
@@ -386,13 +536,56 @@ class TestGetPlatformCostDashboard:
         assert dashboard.total_users == 0
         assert dashboard.by_provider == []
         assert dashboard.by_user == []
+        assert dashboard.cost_p50_microdollars == 0
+        assert dashboard.cost_buckets == []
 
     @pytest.mark.asyncio
     async def test_passes_filters_to_queries(self):
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
         mock_actions = MagicMock()
-        mock_actions.group_by = AsyncMock(side_effect=[[], [], [], []])
+        mock_actions.group_by = AsyncMock(side_effect=[[], [], [], [], []])
+        mock_actions.find_many = AsyncMock(return_value=[])
+
+        raw_mock = AsyncMock(side_effect=[[], []])
+        with (
+            patch(
+                "backend.data.platform_cost.PrismaLog.prisma",
+                return_value=mock_actions,
+            ),
+            patch(
+                "backend.data.platform_cost.PrismaUser.prisma",
+                return_value=mock_actions,
+            ),
+            patch(
+                "backend.data.platform_cost.query_raw_with_schema",
+                raw_mock,
+            ),
+        ):
+            await get_platform_cost_dashboard(
+                start=start, provider="openai", user_id="u1"
+            )
+
+        # group_by called 5 times (by_provider, by_user, by_user_tracking, distinct users,
+        # total agg filtered); the 6th call (total agg no-tracking-type) only runs
+        # when tracking_type is set.
+        assert mock_actions.group_by.await_count == 5
+        # The where dict passed to the first call should include createdAt
+        first_call_kwargs = mock_actions.group_by.call_args_list[0][1]
+        assert "createdAt" in first_call_kwargs.get("where", {})
+        # Raw SQL queries should receive provider and user_id as parameters
+        assert raw_mock.await_count == 2
+        raw_call_args = raw_mock.call_args_list[0][0]  # positional args of 1st call
+        raw_params = raw_call_args[1:]  # first arg is the query template
+        assert "openai" in raw_params
+        assert "u1" in raw_params
+
+    @pytest.mark.asyncio
+    async def test_user_tracking_groups_excludes_tracking_type_filter(self):
+        """by_user_tracking_groups must NOT apply the tracking_type filter so that
+        cost_usd rows are always included even when the caller filters by 'tokens'."""
+        mock_actions = MagicMock()
+        mock_actions.group_by = AsyncMock(side_effect=[[], [], [], [], [], []])
         mock_actions.find_many = AsyncMock(return_value=[])
 
         with (
@@ -404,16 +597,23 @@ class TestGetPlatformCostDashboard:
                 "backend.data.platform_cost.PrismaUser.prisma",
                 return_value=mock_actions,
             ),
+            patch(
+                "backend.data.platform_cost.query_raw_with_schema",
+                new_callable=AsyncMock,
+                side_effect=[[], []],
+            ),
         ):
-            await get_platform_cost_dashboard(
-                start=start, provider="openai", user_id="u1"
-            )
+            await get_platform_cost_dashboard(tracking_type="tokens")
 
-        # group_by called 4 times (by_provider, by_user, distinct users, totals)
-        assert mock_actions.group_by.await_count == 4
-        # The where dict passed to the first call should include createdAt
-        first_call_kwargs = mock_actions.group_by.call_args_list[0][1]
-        assert "createdAt" in first_call_kwargs.get("where", {})
+        # Call index 2 is by_user_tracking_groups (0=by_provider, 1=by_user,
+        # 2=by_user_tracking, 3=distinct_users, 4=total_agg, 5=total_agg_no_tt).
+        tracking_call_where = mock_actions.group_by.call_args_list[2][1]["where"]
+        # The main filter applies trackingType; by_user_tracking must NOT.
+        assert "trackingType" not in tracking_call_where
+        # Other filters (e.g., date range, provider) are still passed through.
+        # The first call (by_provider) should have trackingType in its where dict.
+        provider_call_where = mock_actions.group_by.call_args_list[0][1]["where"]
+        assert "trackingType" in provider_call_where
 
 
 def _make_prisma_log_row(
