@@ -50,8 +50,8 @@ export function ContextualActionButton({
         className,
       )}
     >
-      {config.label}
       <Icon size={14} className="shrink-0" />
+      {config.label}
     </button>
   );
 }

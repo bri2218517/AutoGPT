@@ -1,7 +1,6 @@
 "use client";
 
 import { Text } from "@/components/atoms/Text/Text";
-import { Button } from "@/components/atoms/Button/Button";
 import {
   WarningCircleIcon,
   ClockCountdownIcon,
@@ -10,7 +9,9 @@ import {
   EarIcon,
   CalendarDotsIcon,
   MoonIcon,
+  EyeIcon,
 } from "@phosphor-icons/react";
+import NextLink from "next/link";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
 import type { AgentStatus } from "../../types";
@@ -100,7 +101,7 @@ export function SitrepItem({ item }: Props) {
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-medium border border-zinc-100 bg-transparent p-2",
+        "flex items-center gap-3 rounded-medium border border-zinc-200/50 bg-transparent p-2",
       )}
     >
       {item.agentImageUrl ? (
@@ -138,19 +139,29 @@ export function SitrepItem({ item }: Props) {
       </div>
 
       <div className="flex flex-shrink-0 items-center gap-1.5">
-        <ContextualActionButton
-          status={item.status}
-          agentID={item.agentID}
-          executionID={item.executionID}
-        />
-        <Button
-          variant="ghost"
-          size="small"
+        {item.priority === "success" ? (
+          <NextLink
+            href={`/library/agents/${item.agentID}${item.executionID ? `?activeItem=${item.executionID}` : ""}`}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-[13px] font-medium text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-800"
+          >
+            <EyeIcon size={14} className="shrink-0" />
+            See task
+          </NextLink>
+        ) : (
+          <ContextualActionButton
+            status={item.status}
+            agentID={item.agentID}
+            executionID={item.executionID}
+          />
+        )}
+        <button
+          type="button"
           onClick={handleAskAutoPilot}
-          leftIcon={<ChatCircleDotsIcon size={14} />}
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-[13px] font-medium text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-800"
         >
+          <ChatCircleDotsIcon size={14} className="shrink-0" />
           Ask AutoPilot
-        </Button>
+        </button>
       </div>
     </div>
   );
@@ -165,7 +176,7 @@ function buildAutoPilotPrompt(item: SitrepItemData): string {
     case "stale":
       return `${item.agentName} hasn't run recently. Should I keep it or update and re-run it?`;
     case "success":
-      return `How has ${item.agentName} been performing? Give me a quick summary of recent results.`;
+      return `Show me what ${item.agentName} found in its last run — summarize the results and any key takeaways.`;
     case "listening":
       return `What is ${item.agentName} listening for? Give me a summary of its trigger configuration.`;
     case "scheduled":

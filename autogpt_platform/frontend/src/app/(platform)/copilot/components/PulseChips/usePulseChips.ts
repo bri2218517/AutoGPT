@@ -18,6 +18,7 @@ export function usePulseChips(): PulseChipData[] {
   return useMemo(() => {
     return sitrepItems.map((item) => ({
       id: item.id,
+      agentID: item.agentID,
       name: item.agentName,
       status: item.status,
       shortMessage: item.message,

@@ -35,18 +35,18 @@ const TILES: {
     color: "text-blue-600",
   },
   {
+    label: "Recently completed",
+    key: "completed",
+    filter: "completed",
+    emoji: "🗃️",
+    color: "text-green-600",
+  },
+  {
     label: "Needs attention",
     key: "error",
     filter: "attention",
     emoji: "⚠️",
     color: "text-red-500",
-  },
-  {
-    label: "Listening",
-    key: "listening",
-    filter: "listening",
-    emoji: "🔊",
-    color: "text-purple-500",
   },
   {
     label: "Scheduled",

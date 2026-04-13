@@ -1,7 +1,11 @@
 "use client";
 
 import { Text } from "@/components/atoms/Text/Text";
-import { ArrowRightIcon } from "@phosphor-icons/react";
+import {
+  ArrowRightIcon,
+  EyeIcon,
+  ChatCircleDotsIcon,
+} from "@phosphor-icons/react";
 import NextLink from "next/link";
 import { StatusBadge } from "@/app/(platform)/library/components/StatusBadge/StatusBadge";
 import type { AgentStatus } from "@/app/(platform)/library/types";
@@ -9,6 +13,7 @@ import styles from "./PulseChips.module.css";
 
 export interface PulseChipData {
   id: string;
+  agentID: string;
   name: string;
   status: AgentStatus;
   shortMessage: string;
@@ -23,7 +28,7 @@ export function PulseChips({ chips, onChipClick }: Props) {
   if (chips.length === 0) return null;
 
   return (
-    <div className={`${styles.glassPanel} mb-6 rounded-large px-2 py-4`}>
+    <div className={`${styles.glassPanel} mx-[0.6875rem] mb-5 rounded-large p-5`}>
       <div className="mb-3 flex items-center gap-3">
         <Text variant="body-medium" className="text-zinc-600">
           What&apos;s happening with your agents
@@ -37,7 +42,7 @@ export function PulseChips({ chips, onChipClick }: Props) {
       </div>
       <div className="flex gap-2 overflow-x-auto">
         {chips.map((chip) => (
-          <PulseChip key={chip.id} chip={chip} onClick={onChipClick} />
+          <PulseChip key={chip.id} chip={chip} onAsk={onChipClick} />
         ))}
       </div>
     </div>
@@ -46,31 +51,50 @@ export function PulseChips({ chips, onChipClick }: Props) {
 
 interface ChipProps {
   chip: PulseChipData;
-  onClick?: (prompt: string) => void;
+  onAsk?: (prompt: string) => void;
 }
 
-function PulseChip({ chip, onClick }: ChipProps) {
-  function handleClick() {
+function PulseChip({ chip, onAsk }: ChipProps) {
+  function handleAsk() {
     const prompt = buildChipPrompt(chip);
-    onClick?.(prompt);
+    onAsk?.(prompt);
   }
 
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      className="flex shrink-0 items-center gap-2 rounded-medium border border-zinc-100 bg-white px-3 py-2 text-left transition-all hover:border-zinc-200"
+    <div
+      className={`${styles.chip} relative flex shrink-0 flex-col items-start gap-2 rounded-medium border border-zinc-100 bg-white px-3 py-2`}
     >
-      <StatusBadge status={chip.status} />
-      <div className="min-w-0">
-        <Text variant="small-medium" className="truncate text-zinc-900">
-          {chip.name}
-        </Text>
-        <Text variant="small" className="truncate text-zinc-500">
-          {chip.shortMessage}
-        </Text>
+      <div className={`${styles.chipContent} w-full text-left`}>
+        <StatusBadge status={chip.status} />
+        <div className="mt-2 min-w-0">
+          <Text variant="small-medium" className="truncate text-zinc-900">
+            {chip.name}
+          </Text>
+          <Text variant="small" className="truncate text-zinc-500">
+            {chip.shortMessage}
+          </Text>
+        </div>
       </div>
-    </button>
+      <div
+        className={`${styles.chipActions} absolute inset-x-0 bottom-0 flex items-center justify-center gap-1.5 rounded-b-medium bg-white/95 px-3 py-1.5 backdrop-blur-sm`}
+      >
+        <NextLink
+          href={`/library/agents/${chip.agentID}`}
+          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
+        >
+          <EyeIcon size={14} />
+          See
+        </NextLink>
+        <button
+          type="button"
+          onClick={handleAsk}
+          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
+        >
+          <ChatCircleDotsIcon size={14} />
+          Ask
+        </button>
+      </div>
+    </div>
   );
 }
 

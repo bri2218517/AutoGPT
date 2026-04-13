@@ -42,3 +42,31 @@
     --border-angle: 360deg;
   }
 }
+
+@media (hover: hover) {
+  .chip {
+    overflow: hidden;
+  }
+
+  .chipActions {
+    opacity: 0;
+    transform: translateY(100%);
+    transition:
+      opacity 0.2s ease-out,
+      transform 0.2s ease-out;
+  }
+
+  .chip:hover .chipActions {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .chipContent {
+    transition: filter 0.2s ease-out;
+  }
+
+  .chip:hover .chipContent {
+    filter: blur(2px);
+    opacity: 0.5;
+  }
+}

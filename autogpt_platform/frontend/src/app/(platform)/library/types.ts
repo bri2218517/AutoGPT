@@ -35,6 +35,7 @@ export interface AgentStatusInfo {
 export interface FleetSummary {
   running: number;
   error: number;
+  completed: number;
   listening: number;
   scheduled: number;
   idle: number;
@@ -46,6 +47,7 @@ export type AgentStatusFilter =
   | "all"
   | "running"
   | "attention"
+  | "completed"
   | "listening"
   | "scheduled"
   | "idle"

@@ -38,6 +38,17 @@ function isRecentFailure(
   return Date.now() - ts < SEVENTY_TWO_HOURS_MS;
 }
 
+function isRecentCompletion(
+  status: string,
+  endedAt?: string | Date | null,
+): boolean {
+  if (status !== AgentExecutionStatus.COMPLETED) return false;
+  if (!endedAt) return false;
+  const ts =
+    endedAt instanceof Date ? endedAt.getTime() : new Date(endedAt).getTime();
+  return Date.now() - ts < SEVENTY_TWO_HOURS_MS;
+}
+
 export function useLibraryFleetSummary(
   agents: LibraryAgent[],
 ): FleetSummary | undefined {
@@ -66,6 +77,7 @@ export function useLibraryFleetSummary(
 
     const agentsWithActiveExecution = new Set<string>();
     const agentsWithRecentFailure = new Set<string>();
+    const agentsWithRecentCompletion = new Set<string>();
 
     for (const exec of executions) {
       if (isActiveExecution(exec.status)) {
@@ -74,11 +86,15 @@ export function useLibraryFleetSummary(
       if (isRecentFailure(exec.status, exec.ended_at)) {
         agentsWithRecentFailure.add(exec.graph_id);
       }
+      if (isRecentCompletion(exec.status, exec.ended_at)) {
+        agentsWithRecentCompletion.add(exec.graph_id);
+      }
     }
 
     const summary: FleetSummary = {
       running: 0,
       error: 0,
+      completed: 0,
       listening: 0,
       scheduled: 0,
       idle: 0,
@@ -96,6 +112,9 @@ export function useLibraryFleetSummary(
         summary.scheduled += 1;
       } else {
         summary.idle += 1;
+      }
+      if (agentsWithRecentCompletion.has(agent.graph_id)) {
+        summary.completed += 1;
       }
     }
 

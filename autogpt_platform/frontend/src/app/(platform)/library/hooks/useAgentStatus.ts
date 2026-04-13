@@ -125,6 +125,7 @@ export function useFleetSummary(agents: LibraryAgent[]): FleetSummary {
     const counts: FleetSummary = {
       running: 0,
       error: 0,
+      completed: 0,
       listening: 0,
       scheduled: 0,
       idle: 0,
@@ -135,22 +136,25 @@ export function useFleetSummary(agents: LibraryAgent[]): FleetSummary {
 
     const activeGraphIds = new Set<string>();
     const errorGraphIds = new Set<string>();
+    const completedGraphIds = new Set<string>();
     const cutoff = Date.now() - SEVENTY_TWO_HOURS_MS;
 
     for (const exec of executions) {
       if (isActive(exec.status)) {
         activeGraphIds.add(exec.graph_id);
       }
-      if (
-        isFailed(exec.status) &&
-        exec.ended_at &&
-        new Date(
-          exec.ended_at instanceof Date
-            ? exec.ended_at.getTime()
-            : exec.ended_at,
-        ).getTime() > cutoff
-      ) {
+      const endedTs = exec.ended_at
+        ? new Date(
+            exec.ended_at instanceof Date
+              ? exec.ended_at.getTime()
+              : exec.ended_at,
+          ).getTime()
+        : 0;
+      if (isFailed(exec.status) && endedTs > cutoff) {
         errorGraphIds.add(exec.graph_id);
+      }
+      if (exec.status === "COMPLETED" && endedTs > cutoff) {
+        completedGraphIds.add(exec.graph_id);
       }
     }
 
@@ -165,6 +169,9 @@ export function useFleetSummary(agents: LibraryAgent[]): FleetSummary {
         counts.scheduled += 1;
       } else {
         counts.idle += 1;
+      }
+      if (completedGraphIds.has(agent.graph_id)) {
+        counts.completed += 1;
       }
     }
 

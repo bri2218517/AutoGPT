@@ -11,12 +11,12 @@
   padding: 1px;
   background: conic-gradient(
     from var(--border-angle, 0deg),
-    rgba(129, 120, 228, 0.08),
-    rgba(129, 120, 228, 0.28),
-    rgba(168, 130, 255, 0.18),
-    rgba(129, 120, 228, 0.08),
-    rgba(99, 102, 241, 0.24),
-    rgba(129, 120, 228, 0.08)
+    rgba(129, 120, 228, 0.04),
+    rgba(129, 120, 228, 0.14),
+    rgba(168, 130, 255, 0.09),
+    rgba(129, 120, 228, 0.04),
+    rgba(99, 102, 241, 0.12),
+    rgba(129, 120, 228, 0.04)
   );
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,

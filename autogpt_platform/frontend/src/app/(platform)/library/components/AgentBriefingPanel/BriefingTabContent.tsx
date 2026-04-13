@@ -29,7 +29,11 @@ export function BriefingTabContent({ activeTab, agents }: Props) {
     return <UsageSection />;
   }
 
-  if (activeTab === "running" || activeTab === "attention") {
+  if (
+    activeTab === "running" ||
+    activeTab === "attention" ||
+    activeTab === "completed"
+  ) {
     return <ExecutionListSection activeTab={activeTab} agents={agents} />;
   }
 
@@ -116,6 +120,7 @@ function ExecutionListSection({
   const filtered = allItems.filter((item) => {
     if (activeTab === "running") return item.priority === "running";
     if (activeTab === "attention") return item.priority === "error";
+    if (activeTab === "completed") return item.priority === "success";
     return false;
   });
 
@@ -315,6 +320,7 @@ function UsageMeter({
 const EMPTY_MESSAGES: Record<string, string> = {
   running: "No agents running right now",
   attention: "No agents that need attention",
+  completed: "No recently completed runs",
   listening: "No agents listening for events",
   scheduled: "No agents with scheduled runs",
   idle: "No idle agents",

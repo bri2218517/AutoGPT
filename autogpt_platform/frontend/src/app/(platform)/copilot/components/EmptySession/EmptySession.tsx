@@ -16,6 +16,7 @@ import { SuggestionThemes } from "./components/SuggestionThemes/SuggestionThemes
 import { PulseChips } from "../PulseChips/PulseChips";
 import { usePulseChips } from "../PulseChips/usePulseChips";
 import { Flag, useGetFlag } from "@/services/feature-flags/use-get-flag";
+import { EditNameDialog } from "./components/EditNameDialog/EditNameDialog";
 
 interface Props {
   inputLayoutId: string;
@@ -79,7 +80,9 @@ export function EmptySession({
       >
         <div className="mx-auto max-w-[52rem]">
           <Text variant="h3" className="mb-1 !text-[1.375rem] text-zinc-700">
-            Hey, <span className="text-violet-600">{greetingName}</span>
+            Hey,{" "}
+            <span className="text-violet-600">{greetingName}</span>
+            <EditNameDialog currentName={greetingName} />
           </Text>
           <Text variant="h3" className="mb-8 !font-normal">
             Tell me about your work — I&apos;ll find what to automate.
