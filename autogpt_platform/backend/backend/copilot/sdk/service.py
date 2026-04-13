@@ -12,7 +12,8 @@ import sys
 import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 if TYPE_CHECKING:
@@ -92,10 +93,10 @@ from ..service import (
     _is_langfuse_configured,
     _update_title_async,
 )
+from ..thinking_stripper import ThinkingStripper
 from ..token_tracking import persist_and_record_usage
 from ..tools.e2b_sandbox import get_or_create_sandbox, pause_sandbox_direct
 from ..tools.sandbox import WORKSPACE_PREFIX, make_session_path
-from ..thinking_stripper import ThinkingStripper
 from ..tracking import track_user_message
 from .compaction import CompactionTracker, filter_compaction_messages
 from .env import build_sdk_env  # noqa: F401 — re-export for backward compat
@@ -1810,7 +1811,11 @@ async def _run_stream_attempt(
     tail = acc.thinking_stripper.flush()
     if tail:
         acc.assistant_response.content = (acc.assistant_response.content or "") + tail
-        yield StreamTextDelta(id="", delta=tail)
+        # Only yield to the client when the stream succeeded; on error the outer
+        # retry loop rolls back session.messages, so emitting tail would create
+        # a UI-to-session inconsistency (text shown but not persisted).
+        if not ended_with_stream_error:
+            yield StreamTextDelta(id="", delta=tail)
 
     # --- Post-stream processing (only on success) ---
     if state.adapter.has_unresolved_tool_calls:
