@@ -66,3 +66,4 @@ class LlmProvidersResponse(pydantic.BaseModel):
     """Response for GET /llm/providers."""
 
     providers: list[LlmProvider]
+    total: int
