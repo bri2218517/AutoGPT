@@ -15757,6 +15757,16 @@
             "type": "integer",
             "title": "Cost Bearing Request Count",
             "default": 0
+          },
+          "total_cache_read_tokens": {
+            "default": 0,
+            "title": "Total Cache Read Tokens",
+            "type": "integer"
+          },
+          "total_cache_creation_tokens": {
+            "default": 0,
+            "title": "Total Cache Creation Tokens",
+            "type": "integer"
           }
         },
         "type": "object",
