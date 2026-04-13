@@ -1113,7 +1113,6 @@ async def stream_chat_completion_baseline(
         prompt_task = _build_cacheable_system_prompt(None)
 
     # Run download + prompt build concurrently — both are independent I/O
-<<<<<<< HEAD
     # on the request critical path.  Use the pre-drain count so pending
     # messages drained at turn start don't spuriously trigger a transcript
     # load on an actual first turn.
@@ -1130,21 +1129,6 @@ async def stream_chat_completion_baseline(
                 ),
                 prompt_task,
             )
-=======
-    # on the request critical path.
-    if user_id and len(session.messages) > 1:
-        (
-            transcript_covers_prefix,
-            (base_system_prompt, understanding),
-        ) = await asyncio.gather(
-            _load_prior_transcript(
-                user_id=user_id,
-                session_id=session_id,
-                session_msg_count=len(session.messages),
-                transcript_builder=transcript_builder,
-            ),
-            prompt_task,
->>>>>>> c6af52033dc97f673af7a968564d14fbb2949707
         )
     else:
         base_system_prompt, understanding = await prompt_task
