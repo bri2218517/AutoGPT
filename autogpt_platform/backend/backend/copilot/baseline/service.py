@@ -26,6 +26,7 @@ from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolPara
 from opentelemetry import trace as otel_trace
 
 from backend.copilot.config import CopilotMode
+from backend.copilot.thinking_stripper import ThinkingStripper as _ThinkingStripper
 from backend.copilot.context import get_workspace_manager, set_execution_context
 from backend.copilot.db import update_message_content_by_sequence
 from backend.copilot.graphiti.config import is_enabled_for_user
@@ -266,10 +267,6 @@ def _resolve_baseline_model(mode: CopilotMode | None) -> str:
     if mode == "fast":
         return config.fast_model
     return config.model
-
-
-# Re-export from shared module so existing references keep working.
-from backend.copilot.thinking_stripper import ThinkingStripper as _ThinkingStripper
 
 
 @dataclass

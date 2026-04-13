@@ -33,7 +33,6 @@ class _SystemPromptPreset(TypedDict):
     append: NotRequired[str]
     exclude_dynamic_sections: NotRequired[bool]
 
-
 if TYPE_CHECKING:
     from backend.copilot.permissions import CopilotPermissions
 
@@ -119,6 +118,7 @@ from ..service import (
 from ..token_tracking import persist_and_record_usage
 from ..tools.e2b_sandbox import get_or_create_sandbox, pause_sandbox_direct
 from ..tools.sandbox import WORKSPACE_PREFIX, make_session_path
+from ..thinking_stripper import ThinkingStripper
 from ..tracking import track_user_message
 from ..thinking_stripper import ThinkingStripper
 from .compaction import CompactionTracker, filter_compaction_messages
