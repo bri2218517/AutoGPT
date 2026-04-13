@@ -156,14 +156,18 @@ class ChatConfig(BaseSettings):
         ge=1,
         le=10000,
         description="Maximum number of agentic turns (tool-use loops) per query. "
-        "Prevents runaway tool loops from burning budget.",
+        "Prevents runaway tool loops from burning budget. "
+        "Changed from 1000 to 50 in SDK 0.1.58 upgrade — override via "
+        "CHAT_CLAUDE_AGENT_MAX_TURNS env var if your workflows need more.",
     )
     claude_agent_max_budget_usd: float = Field(
         default=5.0,
         ge=0.01,
         le=1000.0,
         description="Maximum spend in USD per SDK query. The CLI aborts the "
-        "request if this budget is exceeded.",
+        "request if this budget is exceeded. "
+        "Changed from $100 to $5 in SDK 0.1.58 upgrade — override via "
+        "CHAT_CLAUDE_AGENT_MAX_BUDGET_USD env var if needed.",
     )
     claude_agent_max_thinking_tokens: int = Field(
         default=8192,
@@ -335,11 +339,22 @@ class ChatConfig(BaseSettings):
             v = os.getenv("CHAT_CLAUDE_AGENT_CLI_PATH")
             if not v:
                 v = os.getenv("CLAUDE_AGENT_CLI_PATH")
-        if v and os.path.exists(v) and not os.access(v, os.X_OK):
-            raise ValueError(
-                f"claude_agent_cli_path '{v}' exists but is not executable. "
-                "Check file permissions."
-            )
+        if v:
+            if not os.path.exists(v):
+                raise ValueError(
+                    f"claude_agent_cli_path '{v}' does not exist. "
+                    "Check the path or unset CLAUDE_AGENT_CLI_PATH to use "
+                    "the bundled CLI."
+                )
+            if not os.path.isfile(v):
+                raise ValueError(
+                    f"claude_agent_cli_path '{v}' is not a regular file."
+                )
+            if not os.access(v, os.X_OK):
+                raise ValueError(
+                    f"claude_agent_cli_path '{v}' exists but is not executable. "
+                    "Check file permissions."
+                )
         return v
 
     # Prompt paths for different contexts

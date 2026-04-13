@@ -122,3 +122,33 @@ class TestClaudeAgentCliPathEnvFallback:
     def test_no_env_var_defaults_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = ChatConfig()
         assert cfg.claude_agent_cli_path is None
+
+    def test_nonexistent_path_raises_validation_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-existent CLI path must be rejected at config time, not at
+        runtime when subprocess.run fails with an opaque OS error."""
+        monkeypatch.setenv(
+            "CLAUDE_AGENT_CLI_PATH", "/opt/nonexistent/claude-cli-binary"
+        )
+        with pytest.raises(Exception, match="does not exist"):
+            ChatConfig()
+
+    def test_non_executable_path_raises_validation_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Path that exists but is not executable must be rejected."""
+        non_exec = tmp_path / "claude-not-executable"
+        non_exec.write_text("#!/bin/sh\n")
+        non_exec.chmod(0o644)  # readable but not executable
+        monkeypatch.setenv("CLAUDE_AGENT_CLI_PATH", str(non_exec))
+        with pytest.raises(Exception, match="not executable"):
+            ChatConfig()
+
+    def test_directory_path_raises_validation_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Path pointing to a directory must be rejected."""
+        monkeypatch.setenv("CLAUDE_AGENT_CLI_PATH", str(tmp_path))
+        with pytest.raises(Exception, match="not a regular file"):
+            ChatConfig()

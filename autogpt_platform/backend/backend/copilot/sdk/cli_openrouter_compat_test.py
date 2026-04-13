@@ -295,7 +295,7 @@ def _resolve_cli_path() -> Path | None:
 
         bundled = cast(str, SubprocessCLITransport._find_bundled_cli(None))
         return Path(bundled) if bundled else None
-    except Exception as e:  # pragma: no cover - import-time guard
+    except (ImportError, AttributeError) as e:  # pragma: no cover - import-time guard
         logger.warning("Could not locate bundled Claude CLI: %s", e)
         return None
 
