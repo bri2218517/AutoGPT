@@ -55,6 +55,76 @@ export function PlatformCostContent({ searchParams }: Props) {
     handleExport,
   } = usePlatformCostContent(searchParams);
 
+  const summaryCards: { label: string; value: string; subtitle?: string }[] =
+    dashboard
+      ? [
+          {
+            label: "Known Cost",
+            value: formatMicrodollars(dashboard.total_cost_microdollars),
+            subtitle: "From providers that report USD cost",
+          },
+          {
+            label: "Estimated Total",
+            value: formatMicrodollars(totalEstimatedCost),
+            subtitle: "Including per-run cost estimates",
+          },
+          {
+            label: "Total Requests",
+            value: dashboard.total_requests.toLocaleString(),
+          },
+          {
+            label: "Active Users",
+            value: dashboard.total_users.toLocaleString(),
+          },
+          {
+            label: "Avg Cost / Request",
+            value: formatMicrodollars(
+              dashboard.avg_cost_microdollars_per_request ?? 0,
+            ),
+            subtitle: "Known cost divided by cost-bearing requests",
+          },
+          {
+            label: "Avg Input Tokens",
+            value: Math.round(
+              dashboard.avg_input_tokens_per_request ?? 0,
+            ).toLocaleString(),
+            subtitle: "Prompt tokens per request (context size)",
+          },
+          {
+            label: "Avg Output Tokens",
+            value: Math.round(
+              dashboard.avg_output_tokens_per_request ?? 0,
+            ).toLocaleString(),
+            subtitle: "Completion tokens per request (response length)",
+          },
+          {
+            label: "Total Tokens",
+            value: `${formatTokens(dashboard.total_input_tokens ?? 0)} in / ${formatTokens(dashboard.total_output_tokens ?? 0)} out`,
+            subtitle: "Prompt vs completion token split",
+          },
+          {
+            label: "Typical Cost (P50)",
+            value: formatMicrodollars(dashboard.cost_p50_microdollars ?? 0),
+            subtitle: "Median cost per request",
+          },
+          {
+            label: "Upper Cost (P75)",
+            value: formatMicrodollars(dashboard.cost_p75_microdollars ?? 0),
+            subtitle: "75th percentile cost",
+          },
+          {
+            label: "High Cost (P95)",
+            value: formatMicrodollars(dashboard.cost_p95_microdollars ?? 0),
+            subtitle: "95th percentile cost",
+          },
+          {
+            label: "Peak Cost (P99)",
+            value: formatMicrodollars(dashboard.cost_p99_microdollars ?? 0),
+            subtitle: "99th percentile cost",
+          },
+        ]
+      : [];
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-end gap-3 rounded-lg border p-4">
@@ -219,100 +289,16 @@ export function PlatformCostContent({ searchParams }: Props) {
         <>
           {dashboard && (
             <>
-              {(() => {
-                const summaryCards: {
-                  label: string;
-                  value: string;
-                  subtitle?: string;
-                }[] = [
-                  {
-                    label: "Known Cost",
-                    value: formatMicrodollars(
-                      dashboard.total_cost_microdollars,
-                    ),
-                    subtitle: "From providers that report USD cost",
-                  },
-                  {
-                    label: "Estimated Total",
-                    value: formatMicrodollars(totalEstimatedCost),
-                    subtitle: "Including per-run cost estimates",
-                  },
-                  {
-                    label: "Total Requests",
-                    value: dashboard.total_requests.toLocaleString(),
-                  },
-                  {
-                    label: "Active Users",
-                    value: dashboard.total_users.toLocaleString(),
-                  },
-                  {
-                    label: "Avg Cost / Request",
-                    value: formatMicrodollars(
-                      dashboard.avg_cost_microdollars_per_request ?? 0,
-                    ),
-                    subtitle: "Known cost divided by cost-bearing requests",
-                  },
-                  {
-                    label: "Avg Input Tokens",
-                    value: Math.round(
-                      dashboard.avg_input_tokens_per_request ?? 0,
-                    ).toLocaleString(),
-                    subtitle: "Prompt tokens per request (context size)",
-                  },
-                  {
-                    label: "Avg Output Tokens",
-                    value: Math.round(
-                      dashboard.avg_output_tokens_per_request ?? 0,
-                    ).toLocaleString(),
-                    subtitle: "Completion tokens per request (response length)",
-                  },
-                  {
-                    label: "Total Tokens",
-                    value: `${formatTokens(dashboard.total_input_tokens ?? 0)} in / ${formatTokens(dashboard.total_output_tokens ?? 0)} out`,
-                    subtitle: "Prompt vs completion token split",
-                  },
-                  {
-                    label: "Typical Cost (P50)",
-                    value: formatMicrodollars(
-                      dashboard.cost_p50_microdollars ?? 0,
-                    ),
-                    subtitle: "Median cost per request",
-                  },
-                  {
-                    label: "Upper Cost (P75)",
-                    value: formatMicrodollars(
-                      dashboard.cost_p75_microdollars ?? 0,
-                    ),
-                    subtitle: "75th percentile cost",
-                  },
-                  {
-                    label: "High Cost (P95)",
-                    value: formatMicrodollars(
-                      dashboard.cost_p95_microdollars ?? 0,
-                    ),
-                    subtitle: "95th percentile cost",
-                  },
-                  {
-                    label: "Peak Cost (P99)",
-                    value: formatMicrodollars(
-                      dashboard.cost_p99_microdollars ?? 0,
-                    ),
-                    subtitle: "99th percentile cost",
-                  },
-                ];
-                return (
-                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
-                    {summaryCards.map((card) => (
-                      <SummaryCard
-                        key={card.label}
-                        label={card.label}
-                        value={card.value}
-                        subtitle={card.subtitle}
-                      />
-                    ))}
-                  </div>
-                );
-              })()}
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
+                {summaryCards.map((card) => (
+                  <SummaryCard
+                    key={card.label}
+                    label={card.label}
+                    value={card.value}
+                    subtitle={card.subtitle}
+                  />
+                ))}
+              </div>
 
               {dashboard.cost_buckets && dashboard.cost_buckets.length > 0 && (
                 <div className="rounded-lg border p-4">

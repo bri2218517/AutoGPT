@@ -288,8 +288,7 @@ class TestGetPlatformCostDashboard:
                 [user_row],  # by_user
                 [],  # by_user_tracking_groups (no cost_usd rows for this user)
                 [{"userId": "u1"}],  # distinct users
-                [provider_row],  # total agg (filtered)
-                [provider_row],  # total agg (no tracking_type filter)
+                [provider_row],  # total agg (tracking_type=None → same as unfiltered)
             ]
         )
         mock_actions.find_many = AsyncMock(return_value=[mock_user])
@@ -472,8 +471,7 @@ class TestGetPlatformCostDashboard:
                 [user_row],  # by_user
                 [],  # by_user_tracking_groups
                 [{"userId": "u2"}],  # distinct users
-                [provider_row],  # total agg (filtered)
-                [provider_row],  # total agg (no tracking_type filter)
+                [provider_row],  # total agg (tracking_type=None → same as unfiltered)
             ]
         )
         mock_actions.find_many = AsyncMock(return_value=[])
@@ -506,7 +504,7 @@ class TestGetPlatformCostDashboard:
     @pytest.mark.asyncio
     async def test_returns_empty_dashboard(self):
         mock_actions = MagicMock()
-        mock_actions.group_by = AsyncMock(side_effect=[[], [], [], [], [], []])
+        mock_actions.group_by = AsyncMock(side_effect=[[], [], [], [], []])
         mock_actions.find_many = AsyncMock(return_value=[])
 
         with (
