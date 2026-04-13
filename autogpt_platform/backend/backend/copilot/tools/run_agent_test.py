@@ -516,9 +516,13 @@ async def test_build_setup_requirements_from_credential_validation_error(
     assert response.graph_version == graph.version
     assert response.setup_info.user_readiness.has_all_credentials is False
     assert response.setup_info.user_readiness.ready_to_run is False
-    # Firecrawl agent has at least one credentials field — make sure the
-    # rebuilt missing-credentials map matches the graph schema.
-    assert len(response.setup_info.user_readiness.missing_credentials) > 0
+    # The firecrawl fixture defines exactly one credential field (firecrawl
+    # API key).  Pin the count so fixture drift is caught immediately.
+    missing_credentials = response.setup_info.user_readiness.missing_credentials
+    assert len(missing_credentials) == 1, (
+        f"Expected exactly 1 credential from the firecrawl fixture, "
+        f"got {len(missing_credentials)}: {list(missing_credentials.keys())}"
+    )
     assert "credentials" in response.message.lower()
     # Message must be action-neutral: this helper is shared by the run
     # path and the schedule path, so hardcoding "scheduling again" would
@@ -554,6 +558,29 @@ async def test_build_setup_requirements_shows_all_creds_missing_in_race(
     requirements_creds = response.setup_info.requirements["credentials"]
     assert len(missing) > 0
     assert set(missing.keys()) == {c["id"] for c in requirements_creds}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_build_setup_requirements_returns_none_for_empty_node_errors(
+    setup_firecrawl_test_data,
+):
+    """Empty node_errors={} should fall through (helper returns None) because
+    there are no messages to classify as credential-related."""
+    graph = setup_firecrawl_test_data["graph"]
+    tool = RunAgentTool()
+
+    error = GraphValidationError(
+        message="Graph is invalid",
+        node_errors={},
+    )
+
+    response = tool._build_setup_requirements_from_validation_error(
+        graph=graph,
+        error=error,
+        session_id="test-session",
+    )
+
+    assert response is None
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -650,6 +677,9 @@ async def test_run_agent_schedule_credential_race_returns_setup_card(
     assert result_data.get("type") == "setup_requirements"
     assert "setup_info" in result_data
     assert result_data["setup_info"]["user_readiness"]["ready_to_run"] is False
+    # The setup card must list at least one missing credential — an empty
+    # missing_credentials map would render a useless card.
+    assert len(result_data["setup_info"]["user_readiness"]["missing_credentials"]) > 0
 
 
 @pytest.mark.asyncio(loop_scope="session")

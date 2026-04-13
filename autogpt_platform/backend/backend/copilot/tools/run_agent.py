@@ -382,18 +382,27 @@ class RunAgentTool(BaseTool):
         fields are shown as missing so the user sees exactly which
         accounts to reconnect.
         """
-        all_messages = [
-            msg
-            for node_errors in error.node_errors.values()
-            for msg in node_errors.values()
-        ]
         # Only surface the credential-setup UI when ALL errors are credential-
         # related.  If there are also structural errors (missing inputs, invalid
         # node config), fall through to the plain error path so those errors are
         # not hidden from the user — they would surface on the next run attempt
         # after the credential fix, creating a confusing two-step failure.
-        if not all_messages or not all(
-            is_credential_validation_error_message(msg) for msg in all_messages
+        #
+        # Use ``any()`` for the emptiness check and a generator inside
+        # ``all()`` so we can short-circuit without materializing the full
+        # message list.
+        has_messages = any(
+            True
+            for _ in (
+                msg
+                for node_errors in error.node_errors.values()
+                for msg in node_errors.values()
+            )
+        )
+        if not has_messages or not all(
+            is_credential_validation_error_message(msg)
+            for node_errors in error.node_errors.values()
+            for msg in node_errors.values()
         ):
             return None
 
@@ -432,6 +441,43 @@ class RunAgentTool(BaseTool):
             ),
             graph_id=graph.id,
             graph_version=graph.version,
+        )
+
+    def _handle_graph_validation_race(
+        self,
+        error: GraphValidationError,
+        graph: GraphModel,
+        user_id: str,
+        session_id: str,
+        action_verb: str,
+    ) -> ToolResponseBase:
+        """Handle a ``GraphValidationError`` that slipped past the prereq check.
+
+        Shared by both the run and schedule paths — logs the race, attempts to
+        rebuild the credential setup card, and falls back to a user-friendly
+        ``ErrorResponse`` when the error is structural (not credential-related).
+        """
+        logger.warning(
+            "Race: GraphValidationError after prereq check passed "
+            "(user_id=%s graph_id=%s failing_fields=%s)",
+            user_id,
+            graph.id,
+            {node_id: list(fields) for node_id, fields in error.node_errors.items()},
+        )
+        creds_setup = self._build_setup_requirements_from_validation_error(
+            graph=graph,
+            error=error,
+            session_id=session_id,
+        )
+        if creds_setup is not None:
+            return creds_setup
+        return ErrorResponse(
+            message=(
+                f"Agent has configuration issues that need to be resolved "
+                f"before {action_verb}: {error}"
+            ),
+            error="graph_validation_failed",
+            session_id=session_id,
         )
 
     async def _check_prerequisites(
@@ -583,30 +629,12 @@ class RunAgentTool(BaseTool):
                 dry_run=dry_run,
             )
         except GraphValidationError as e:
-            # Reaching here means ``_check_prerequisites`` passed but the
-            # executor's validator re-raised milliseconds later — surface
-            # the race/drift so oncall can monitor how often this fires.
-            # Log only node IDs and field names — omit the error message
-            # text, which may contain credential IDs or provider details
-            # from the credential store (e.g. CredentialNotFoundError).
-            logger.warning(
-                "Race: GraphValidationError from add_graph_execution after "
-                "prereq check passed (user_id=%s graph_id=%s failing_fields=%s)",
-                user_id,
-                graph.id,
-                {node_id: list(fields) for node_id, fields in e.node_errors.items()},
-            )
-            creds_setup = self._build_setup_requirements_from_validation_error(
-                graph=graph,
+            return self._handle_graph_validation_race(
                 error=e,
+                graph=graph,
+                user_id=user_id,
                 session_id=session_id,
-            )
-            if creds_setup is not None:
-                return creds_setup
-            return ErrorResponse(
-                message=f"Failed to run agent: {e}",
-                error="graph_validation_failed",
-                session_id=session_id,
+                action_verb="running",
             )
 
         # Track successful run (dry runs don't count against the session limit)
@@ -791,31 +819,12 @@ class RunAgentTool(BaseTool):
                 user_timezone=user_timezone,
             )
         except GraphValidationError as e:
-            # Reaching here means ``_check_prerequisites`` passed but the
-            # scheduler's re-validation raised — surface the race/drift so
-            # oncall can monitor how often this fires.
-            # Log only node IDs and field names — omit the error message
-            # text, which may contain credential IDs or provider details
-            # from the credential store (e.g. CredentialNotFoundError).
-            logger.warning(
-                "Race: GraphValidationError from add_execution_schedule after "
-                "prereq check passed (user_id=%s graph_id=%s failing_fields=%s)",
-                user_id,
-                graph.id,
-                {node_id: list(fields) for node_id, fields in e.node_errors.items()},
-            )
-            creds_setup = self._build_setup_requirements_from_validation_error(
-                graph=graph,
+            return self._handle_graph_validation_race(
                 error=e,
+                graph=graph,
+                user_id=user_id,
                 session_id=session_id,
-            )
-            if creds_setup is not None:
-                return creds_setup
-            # Not a credential issue — surface the raw validation error.
-            return ErrorResponse(
-                message=f"Failed to schedule agent: {e}",
-                error="graph_validation_failed",
-                session_id=session_id,
+                action_verb="scheduling",
             )
 
         # Convert next_run_time to user timezone for display

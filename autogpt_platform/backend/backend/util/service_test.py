@@ -564,6 +564,36 @@ class TestHTTPErrorRetryBehavior:
         assert "Graph validation failed" in str(exc_info.value)
         assert exc_info.value.node_errors == {}
 
+    def test_graph_validation_error_with_extras_but_null_node_errors(self):
+        """When ``extras`` is present but ``node_errors`` is explicitly
+        ``None``, the guard ``error_response.extras.node_errors if
+        error_response.extras else None`` must still yield an empty
+        ``node_errors`` mapping on the reconstructed exception."""
+        mock_response = Mock()
+        mock_response.status_code = 400
+        mock_response.json.return_value = {
+            "type": "GraphValidationError",
+            "args": ["Graph validation failed: 1 issues on 1 nodes"],
+            "extras": {"node_errors": None},
+        }
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "400 Bad Request", request=Mock(), response=mock_response
+        )
+
+        client = cast(
+            _SupportsHandleCallMethodResponse,
+            get_service_client(ServiceTestClient),
+        )
+
+        with pytest.raises(GraphValidationError) as exc_info:
+            client._handle_call_method_response(
+                response=mock_response, method_name="test_method"
+            )
+
+        assert "Graph validation failed" in str(exc_info.value)
+        # node_errors should default to empty dict when extras.node_errors is None
+        assert exc_info.value.node_errors == {}
+
     def test_graph_validation_error_server_handler_packs_node_errors(self):
         """Server-side symmetry: ``_handle_internal_http_error`` must pack
         ``GraphValidationError.node_errors`` into the ``extras`` field so
