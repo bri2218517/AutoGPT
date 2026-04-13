@@ -114,6 +114,7 @@ from ..service import (
     _build_cacheable_system_prompt,
     _is_langfuse_configured,
     _update_title_async,
+    strip_user_context_tags,
 )
 from ..token_tracking import persist_and_record_usage
 from ..tools.e2b_sandbox import get_or_create_sandbox, pause_sandbox_direct
@@ -1980,6 +1981,11 @@ async def stream_chat_completion_sdk(
         )
         session.messages.pop()
 
+    # Strip any <user_context> tags the user may have injected.
+    # Only server-injected context (first turn) should be trusted.
+    if message:
+        message = strip_user_context_tags(message)
+
     if maybe_append_user_message(session, message, is_user_message):
         if is_user_message:
             track_user_message(
@@ -2433,6 +2439,10 @@ async def stream_chat_completion_sdk(
                 code="empty_prompt",
             )
             return
+
+        # Strip any <user_context> tags the user may have injected.
+        # Only server-injected context (first turn) should be trusted.
+        current_message = strip_user_context_tags(current_message)
 
         query_message, was_compacted = await _build_query_message(
             current_message,
