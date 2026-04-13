@@ -340,6 +340,10 @@ async def test_cancel_stripe_subscription_multi_partial_failure():
             "backend.data.credit.stripe.Subscription.cancel",
             side_effect=stripe.StripeError("first cancel failed"),
         ) as mock_cancel,
+        patch(
+            "backend.data.credit.set_subscription_tier",
+            new_callable=AsyncMock,
+        ) as mock_set_tier,
     ):
         with pytest.raises(stripe.StripeError):
             await cancel_stripe_subscription("user-1")
@@ -349,6 +353,9 @@ async def test_cancel_stripe_subscription_multi_partial_failure():
         # is attempted. This is intentional fail-fast behaviour — the caller
         # (cancel_stripe_subscription) re-raises and the API handler returns 502.
         mock_cancel.assert_called_once_with("sub_first")
+        # DB tier must NOT be updated on the error path — the caller raises
+        # before reaching set_subscription_tier.
+        mock_set_tier.assert_not_called()
 
 
 @pytest.mark.asyncio

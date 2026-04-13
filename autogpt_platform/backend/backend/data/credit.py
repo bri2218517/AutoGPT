@@ -1427,7 +1427,14 @@ async def sync_subscription_from_stripe(stripe_subscription: dict) -> None:
         id:       str                  — Stripe subscription ID
         items.data[].price.id: str     — Stripe price ID identifying the tier
     """
-    customer_id = stripe_subscription["customer"]
+    customer_id = stripe_subscription.get("customer")
+    if not customer_id:
+        logger.warning(
+            "sync_subscription_from_stripe: missing 'customer' field in event, "
+            "skipping (keys: %s)",
+            list(stripe_subscription.keys()),
+        )
+        return
     user = await User.prisma().find_first(where={"stripeCustomerId": customer_id})
     if not user:
         logger.warning(
@@ -1545,6 +1552,16 @@ async def sync_subscription_from_stripe(stripe_subscription: dict) -> None:
     # (which could otherwise cancel a legitimately new subscription the user
     # signed up for between the original event and its replay).
     if status in ("active", "trialing") and new_sub_id:
+        # NOTE: paid-to-paid upgrade race (e.g. PRO → BUSINESS):
+        # _cleanup_stale_subscriptions cancels the old PRO sub before
+        # set_subscription_tier writes BUSINESS to the DB.  If Stripe delivers
+        # the PRO `customer.subscription.deleted` event concurrently and it
+        # processes after the PRO cancel but before set_subscription_tier
+        # commits, the user could momentarily appear as FREE in the DB.
+        # This window is very short in practice (two sequential awaits),
+        # but is a known limitation of the current webhook-driven approach.
+        # A future improvement would be to write the new tier first, then
+        # cancel the old sub.
         await _cleanup_stale_subscriptions(customer_id, new_sub_id)
     await set_subscription_tier(user.id, tier)
 
