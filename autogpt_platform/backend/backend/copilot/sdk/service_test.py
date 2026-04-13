@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from backend.copilot import config as cfg_mod
+
 from .service import (
     _build_system_prompt_value,
     _is_sdk_disconnect_error,
@@ -689,8 +691,6 @@ class TestSystemPromptPreset:
 
     def test_default_config_is_enabled(self, _clean_config_env):
         """The default value for claude_agent_cross_user_prompt_cache is True."""
-        from backend.copilot import config as cfg_mod
-
         cfg = cfg_mod.ChatConfig(
             use_openrouter=False,
             api_key=None,

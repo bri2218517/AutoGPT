@@ -90,6 +90,25 @@ def test_agent_options_accepts_required_fields():
     assert opts.cwd == "/tmp"
 
 
+def test_agent_options_accepts_system_prompt_preset_dict():
+    """Verify ClaudeAgentOptions accepts a SystemPromptPreset dict for system_prompt.
+
+    The cross-user prompt caching path passes a SystemPromptPreset dict instead
+    of a plain string. This test guards against SDK upgrades that change
+    SystemPromptPreset handling (e.g. renaming fields, rejecting unknown keys).
+    """
+    from claude_agent_sdk import ClaudeAgentOptions
+    from claude_agent_sdk.types import SystemPromptPreset
+
+    preset: SystemPromptPreset = {
+        "type": "preset",
+        "preset": "claude_code",
+        "append": "custom system prompt",
+    }
+    opts = ClaudeAgentOptions(system_prompt=preset)
+    assert opts.system_prompt == preset
+
+
 def test_agent_options_accepts_all_our_fields():
     """Comprehensive check of every field we use in service.py."""
     from claude_agent_sdk import ClaudeAgentOptions
