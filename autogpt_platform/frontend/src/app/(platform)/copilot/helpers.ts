@@ -154,24 +154,34 @@ export function shouldSuppressDuplicateSend(
 }
 
 /**
- * Deduplicate messages by ID and by consecutive content fingerprint.
+ * Deduplicate messages by ID and by content fingerprint.
  *
  * ID dedup catches exact duplicates within the same source.
- * Content dedup only compares each assistant message to its **immediate
- * predecessor** — this catches hydration/stream boundary duplicates (where
- * the same content appears under different IDs) without accidentally
- * removing legitimately repeated assistant responses that are far apart.
+ * Content dedup uses a composite key of `role + preceding-user-text +
+ * content-fingerprint` to detect replayed messages that arrive with new
+ * IDs after an SSE reconnection replays from the beginning of the Redis
+ * stream. The preceding-user-text component prevents false positives when
+ * the assistant legitimately gives the same answer to different questions.
  */
 export function deduplicateMessages(messages: UIMessage[]): UIMessage[] {
   const seenIds = new Set<string>();
-  let lastAssistantFingerprint = "";
+  const seenFingerprints = new Set<string>();
+  let lastUserText = "";
 
   return messages.filter((msg) => {
     if (seenIds.has(msg.id)) return false;
     seenIds.add(msg.id);
 
+    if (msg.role === "user") {
+      // Track the latest user message text so we can scope assistant
+      // fingerprints to their conversational context.
+      lastUserText = msg.parts
+        .map((p) => ("text" in p ? p.text : ""))
+        .join("|");
+    }
+
     if (msg.role === "assistant") {
-      const fingerprint = msg.parts
+      const contentFingerprint = msg.parts
         .map(
           (p) =>
             ("text" in p && p.text) ||
@@ -180,13 +190,13 @@ export function deduplicateMessages(messages: UIMessage[]): UIMessage[] {
         )
         .join("|");
 
-      // Only dedup if this assistant message is identical to the previous one
-      if (fingerprint && fingerprint === lastAssistantFingerprint) return false;
-      if (fingerprint) lastAssistantFingerprint = fingerprint;
-    } else {
-      // Reset on non-assistant messages so that identical assistant responses
-      // separated by a user message (e.g. "Done!" → user → "Done!") are kept.
-      lastAssistantFingerprint = "";
+      if (contentFingerprint) {
+        // Scope to the preceding user message so that identical assistant
+        // replies to *different* user prompts are preserved.
+        const contextKey = `assistant:${lastUserText}:${contentFingerprint}`;
+        if (seenFingerprints.has(contextKey)) return false;
+        seenFingerprints.add(contextKey);
+      }
     }
 
     return true;

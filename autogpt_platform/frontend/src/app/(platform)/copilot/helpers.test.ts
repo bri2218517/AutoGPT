@@ -2,6 +2,7 @@ import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
 import {
   ORIGINAL_TITLE,
+  deduplicateMessages,
   extractSendMessageText,
   formatNotificationTitle,
   getSendSuppressionReason,
@@ -289,5 +290,107 @@ describe("getSendSuppressionReason", () => {
         messages: [],
       }),
     ).toBeNull();
+  });
+});
+
+// Helper that creates messages with explicit IDs for dedup tests
+function makeMsgWithId(
+  id: string,
+  role: "user" | "assistant",
+  text: string,
+): UIMessage {
+  return { id, role, parts: [{ type: "text", text }] };
+}
+
+describe("deduplicateMessages", () => {
+  it("removes messages with duplicate IDs", () => {
+    const msgs = [
+      makeMsgWithId("1", "user", "hello"),
+      makeMsgWithId("1", "user", "hello"),
+    ];
+    expect(deduplicateMessages(msgs)).toHaveLength(1);
+  });
+
+  it("removes non-adjacent assistant duplicates with different IDs (SSE replay)", () => {
+    const msgs = [
+      makeMsgWithId("u1", "user", "hello"),
+      makeMsgWithId("a1", "assistant", "Plan of Attack"),
+      makeMsgWithId("a2", "assistant", "Next step"),
+      // SSE replay appends the same content with new IDs
+      makeMsgWithId("a3", "assistant", "Plan of Attack"),
+      makeMsgWithId("a4", "assistant", "Next step"),
+    ];
+    const result = deduplicateMessages(msgs);
+    expect(result).toHaveLength(3); // user + 2 unique assistant msgs
+    expect(result.map((m) => m.id)).toEqual(["u1", "a1", "a2"]);
+  });
+
+  it("keeps identical assistant replies to different user prompts", () => {
+    const msgs = [
+      makeMsgWithId("u1", "user", "What is 2+2?"),
+      makeMsgWithId("a1", "assistant", "4"),
+      makeMsgWithId("u2", "user", "What is 1+3?"),
+      makeMsgWithId("a2", "assistant", "4"),
+    ];
+    const result = deduplicateMessages(msgs);
+    expect(result).toHaveLength(4);
+  });
+
+  it("removes adjacent assistant duplicates", () => {
+    const msgs = [
+      makeMsgWithId("u1", "user", "hello"),
+      makeMsgWithId("a1", "assistant", "hi there"),
+      makeMsgWithId("a2", "assistant", "hi there"),
+    ];
+    const result = deduplicateMessages(msgs);
+    expect(result).toHaveLength(2);
+  });
+
+  it("handles empty message list", () => {
+    expect(deduplicateMessages([])).toEqual([]);
+  });
+
+  it("passes through unique messages unchanged", () => {
+    const msgs = [
+      makeMsgWithId("u1", "user", "question 1"),
+      makeMsgWithId("a1", "assistant", "answer 1"),
+      makeMsgWithId("u2", "user", "question 2"),
+      makeMsgWithId("a2", "assistant", "answer 2"),
+    ];
+    expect(deduplicateMessages(msgs)).toHaveLength(4);
+  });
+
+  it("deduplicates by toolCallId for tool-call parts", () => {
+    const msgs: UIMessage[] = [
+      makeMsgWithId("u1", "user", "run tool"),
+      {
+        id: "a1",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-invocation",
+            toolCallId: "tc-1",
+            toolName: "test",
+            args: {},
+            state: "call",
+          },
+        ],
+      },
+      {
+        id: "a2",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-invocation",
+            toolCallId: "tc-1",
+            toolName: "test",
+            args: {},
+            state: "call",
+          },
+        ],
+      },
+    ];
+    const result = deduplicateMessages(msgs);
+    expect(result).toHaveLength(2); // user + first tool call
   });
 });
