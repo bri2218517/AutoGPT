@@ -208,10 +208,6 @@ export function useLibraryAgentList({
 
   const showFolders = !isFavoritesTab;
 
-  // Unfiltered agent list — used by AgentBriefingPanel so the sitrep
-  // always covers the full fleet, not just the currently filtered view.
-  const allAgents = agents;
-
   const { data: executions } = useGetV1ListAllExecutions({
     query: { select: okData },
   });
@@ -303,7 +299,6 @@ export function useLibraryAgentList({
     agentCount,
     allAgentsCount,
     displayedCount,
-    allAgents,
     favoritesCount: favoriteAgentsData.agentCount,
     agents: filteredAgents,
     hasNextPage: agentsHasNextPage && !filteredExhausted,

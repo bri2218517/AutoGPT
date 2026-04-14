@@ -109,7 +109,6 @@ export function LibraryAgentList({
     isFavoritesTab,
     agentLoading,
     displayedCount,
-    allAgents,
     favoritesCount,
     agents,
     hasNextPage,
@@ -140,11 +139,12 @@ export function LibraryAgentList({
       {isAgentBriefingEnabled &&
         !selectedFolderId &&
         fleetSummary &&
-        allAgents.length > 0 && (
+        briefingAgents &&
+        briefingAgents.length > 0 && (
           <div className="mb-4">
             <AgentBriefingPanel
               summary={fleetSummary}
-              agents={briefingAgents ?? allAgents}
+              agents={briefingAgents}
             />
           </div>
         )}
