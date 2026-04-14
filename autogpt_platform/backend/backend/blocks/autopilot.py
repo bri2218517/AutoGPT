@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import json
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from typing_extensions import TypedDict  # Needed for Python <3.12 compatibility
@@ -413,6 +414,26 @@ class AutoPilotBlock(Block):
         except Exception as exc:
             yield "session_id", sid
             yield "error", str(exc)
+            if not _is_deliberate_block(exc):
+                effective_prompt = input_data.prompt
+                if input_data.system_context:
+                    effective_prompt = (
+                        f"[System Context: {input_data.system_context}]\n\n"
+                        f"{input_data.prompt}"
+                    )
+                try:
+                    await _enqueue_for_recovery(
+                        sid,
+                        execution_context.user_id,
+                        effective_prompt,
+                        input_data.dry_run or execution_context.dry_run,
+                    )
+                except Exception:
+                    logger.warning(
+                        "AutoPilot session %s: recovery enqueue raised unexpectedly",
+                        sid[:12],
+                        exc_info=True,
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -536,3 +557,60 @@ def _merge_inherited_permissions(
     # Return the token so the caller can restore the previous value in finally.
     token = _inherited_permissions.set(merged)
     return merged, token
+
+
+# ---------------------------------------------------------------------------
+# Recovery helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_deliberate_block(exc: Exception) -> bool:
+    """Return True for exceptions that are intentional blocks, not transient failures.
+
+    Recursion-limit errors are deliberate — re-enqueueing would immediately
+    hit the limit again, so we skip recovery for those.
+    """
+    return isinstance(exc, RuntimeError) and "recursion depth limit" in str(exc)
+
+
+async def _enqueue_for_recovery(
+    session_id: str,
+    user_id: str,
+    message: str,
+    dry_run: bool,
+) -> None:
+    """Re-enqueue an orphaned sub-agent session so a fresh executor picks it up.
+
+    When ``execute_copilot`` raises an unexpected exception the sub-agent
+    session is left with ``last_role=user`` and no active consumer — identical
+    to the state that caused Toran's reports of silent sub-agents.  Publishing
+    the original prompt back to the copilot queue lets the executor service
+    resume the session without manual intervention.
+
+    Skipped for dry-run sessions (no real consumers listen to the queue for
+    simulated sessions).  Any failure to publish is logged and swallowed so
+    it never masks the original exception.
+    """
+    if dry_run:
+        return
+    try:
+        from backend.copilot.executor.utils import (  # avoid circular import
+            enqueue_copilot_turn,
+        )
+
+        await asyncio.wait_for(
+            enqueue_copilot_turn(
+                session_id=session_id,
+                user_id=user_id,
+                message=message,
+                turn_id=str(uuid.uuid4()),
+            ),
+            timeout=10,
+        )
+        logger.info("AutoPilot session %s enqueued for recovery", session_id[:12])
+    except Exception:
+        logger.warning(
+            "AutoPilot session %s: failed to enqueue for recovery",
+            session_id[:12],
+            exc_info=True,
+        )
