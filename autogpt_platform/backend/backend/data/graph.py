@@ -1113,9 +1113,9 @@ async def get_graph(
         # Prefer team_id scoping over user_id when both are available
         if not skip_access_check:
             if team_id is not None:
-                graph_where_clause["teamId"] = team_id
+                graph_where_clause["organizationId"] = team_id
             elif user_id is not None:
-                graph_where_clause["userId"] = user_id
+                graph_where_clause["organizationId"] = user_id
 
         graph = await AgentGraph.prisma().find_first(
             where=graph_where_clause,
@@ -1342,9 +1342,12 @@ async def get_graph_all_versions(
     user_id: str,
     limit: int = MAX_GRAPH_VERSIONS_FETCH,
     team_id: str | None = None,
+    organization_id: str | None = None,
 ) -> list[GraphModel]:
     where_clause: AgentGraphWhereInput = {"id": graph_id}
-    if team_id is not None:
+    if organization_id is not None:
+        where_clause["organizationId"] = organization_id
+    elif team_id is not None:
         where_clause["teamId"] = team_id
     else:
         where_clause["userId"] = user_id
@@ -1362,7 +1365,9 @@ async def get_graph_all_versions(
     return [GraphModel.from_db(graph) for graph in graph_versions]
 
 
-async def delete_graph(graph_id: str, user_id: str) -> int:
+async def delete_graph(
+    graph_id: str, user_id: str, organization_id: str | None = None
+) -> int:
     entries_count = await AgentGraph.prisma().delete_many(
         where={"id": graph_id, "userId": user_id}
     )

@@ -532,8 +532,10 @@ async def get_graph_executions(
     # Prefer team_id scoping over user_id when available
     if team_id:
         where_filter["teamId"] = team_id
+        where_filter["organizationId"] = team_id
     elif user_id:
         where_filter["userId"] = user_id
+        where_filter["organizationId"] = user_id
     if graph_id:
         where_filter["agentGraphId"] = graph_id
     if graph_version is not None:

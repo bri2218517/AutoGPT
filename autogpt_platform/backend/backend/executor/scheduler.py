@@ -392,7 +392,7 @@ class GraphExecutionJobArgs(BaseModel):
     cron: str
     input_data: GraphInput
     input_credentials: dict[str, CredentialsMetaInput] = Field(default_factory=dict)
-    organization_id: str | None = None
+    organization_id: str = ""
     team_id: str | None = None
 
 

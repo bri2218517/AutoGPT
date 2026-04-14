@@ -63,7 +63,9 @@ class UsageTransactionMetadata(BaseModel):
 
 class UserCreditBase(ABC):
     @abstractmethod
-    async def get_credits(self, user_id: str) -> int:
+    async def get_credits(
+        self, user_id: str, organization_id: str | None = None
+    ) -> int:
         """
         Get the current credits for the user.
 
@@ -128,13 +130,16 @@ class UserCreditBase(ABC):
         pass
 
     @abstractmethod
-    async def top_up_credits(self, user_id: str, amount: int):
+    async def top_up_credits(
+        self, user_id: str, amount: int, organization_id: str | None = None
+    ):
         """
         Top up the credits for the user.
 
         Args:
             user_id (str): The user ID.
             amount (int): The amount to top up.
+            organization_id (str | None): The organization ID.
         """
         pass
 
@@ -636,6 +641,7 @@ class UserCredit(UserCreditBase):
         user_id: str,
         amount: int,
         top_up_type: TopUpType = TopUpType.UNCATEGORIZED,
+        organization_id: str | None = None,
     ):
         await self._top_up_credits(
             user_id=user_id, amount=amount, top_up_type=top_up_type
@@ -1037,7 +1043,9 @@ class UserCredit(UserCreditBase):
                 metadata=SafeJson(checkout_session),
             )
 
-    async def get_credits(self, user_id: str) -> int:
+    async def get_credits(
+        self, user_id: str, organization_id: str | None = None
+    ) -> int:
         balance, _ = await self._get_credits(user_id)
         return balance
 
@@ -1138,7 +1146,9 @@ class BetaUserCredit(UserCredit):
     def __init__(self, num_user_credits_refill: int):
         self.num_user_credits_refill = num_user_credits_refill
 
-    async def get_credits(self, user_id: str) -> int:
+    async def get_credits(
+        self, user_id: str, organization_id: str | None = None
+    ) -> int:
         cur_time = self.time_now().date()
         balance, snapshot_time = await self._get_credits(user_id)
         if (snapshot_time.year, snapshot_time.month) == (cur_time.year, cur_time.month):

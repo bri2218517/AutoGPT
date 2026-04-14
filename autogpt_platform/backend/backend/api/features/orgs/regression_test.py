@@ -154,9 +154,9 @@ class TestGraphCrudUserIdIsolation:
     """Verify that graph CRUD functions filter/set userId correctly."""
 
     @pytest.mark.asyncio
-    async def test_regression_get_graph_filters_by_user_id(self):
-        """get_graph() must include userId in the Prisma where clause
-        when called with a user_id so that only the owner's graph is returned."""
+    async def test_regression_get_graph_filters_by_org_id(self):
+        """get_graph() must include organizationId in the Prisma where clause
+        when called with a user_id so that only the org's graph is returned."""
         graph_row = _make_graph_row()
 
         mock_actions = AsyncMock()
@@ -170,17 +170,17 @@ class TestGraphCrudUserIdIsolation:
 
             result = await get_graph(GRAPH_ID, version=None, user_id=USER_ID)
 
-        # The function must have queried Prisma with userId in the where clause
+        # The function must have queried Prisma with organizationId in the where clause
         mock_actions.find_first.assert_called_once()
         where_arg = mock_actions.find_first.call_args.kwargs.get(
             "where", mock_actions.find_first.call_args[1].get("where")
         )
         assert where_arg["id"] == GRAPH_ID
-        assert where_arg["userId"] == USER_ID
+        assert where_arg["organizationId"] == USER_ID
         assert result is not None
 
     @pytest.mark.asyncio
-    async def test_regression_get_graph_wrong_user_returns_none(self):
+    async def test_regression_get_graph_wrong_org_returns_none(self):
         """get_graph() with a non-owner user_id should return None when
         the graph is not store-listed and not in the user's library."""
         mock_actions = AsyncMock()
@@ -210,11 +210,11 @@ class TestGraphCrudUserIdIsolation:
 
             result = await get_graph(GRAPH_ID, version=None, user_id=OTHER_USER_ID)
 
-        # First call is the ownership query — must filter by OTHER_USER_ID
+        # First call is the ownership query — must filter by organizationId
         where_arg = mock_actions.find_first.call_args.kwargs.get(
             "where", mock_actions.find_first.call_args[1].get("where")
         )
-        assert where_arg["userId"] == OTHER_USER_ID
+        assert where_arg["organizationId"] == OTHER_USER_ID
         assert result is None
 
     @pytest.mark.asyncio
@@ -2716,7 +2716,6 @@ class TestPR18Cutover:
         ), "get_graph should filter by organizationId"
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="PR18: delete_graph doesn't check org")
     async def test_delete_graph_requires_org_ownership(self):
         """delete_graph should accept organization_id and use it in the
         where clause instead of userId."""
@@ -2738,7 +2737,6 @@ class TestPR18Cutover:
             ), "delete_graph should accept organization_id"
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="PR18: executions not scoped by team")
     async def test_list_executions_scoped_by_team(self):
         """get_graph_executions with org context should filter by
         organizationId, not just userId or teamId."""
@@ -2764,7 +2762,6 @@ class TestPR18Cutover:
         ), "Executions should also be scoped by organizationId"
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="PR18: get_execution doesn't check org")
     async def test_get_execution_requires_org_membership(self):
         """Getting a single execution should verify the caller's org
         matches the execution's organizationId."""
@@ -2790,7 +2787,6 @@ class TestPR18Cutover:
         ), "Single execution fetch should verify org membership"
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="PR18: schedule not scoped to org")
     async def test_create_schedule_scoped_to_org(self):
         """add_graph_execution_schedule should store organizationId in the
         job args so scheduled runs are scoped to the org."""
@@ -2811,7 +2807,6 @@ class TestPR18Cutover:
         # Once cutover, organization_id should be required (not None)
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="PR18: file upload not scoped to org")
     async def test_upload_file_scoped_to_org(self):
         """File upload should store files under org-scoped paths so that
         org isolation applies to uploaded assets."""
@@ -2827,7 +2822,6 @@ class TestPR18Cutover:
         ), "store_media_file should accept organization_id for scoping"
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="PR18: credits still user-scoped")
     async def test_get_credits_returns_org_balance(self):
         """UserCredit.get_credits should accept organization_id and return
         the org-level balance instead of per-user balance."""
@@ -2843,7 +2837,6 @@ class TestPR18Cutover:
         ), "get_credits should accept organization_id"
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="PR18: top-up still user-scoped")
     async def test_top_up_credits_org_balance(self):
         """UserCredit.top_up_credits should accept organization_id and
         credit the org balance."""
@@ -2859,7 +2852,6 @@ class TestPR18Cutover:
         ), "top_up_credits should accept organization_id"
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="PR18: credit history still user-scoped")
     async def test_credit_history_returns_org_transactions(self):
         """Credit transaction history should be queryable by org, not just
         by user."""
@@ -2900,7 +2892,6 @@ class TestPR18Cutover:
         ), "list_user_api_keys should filter by organizationId after cutover"
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="PR18: API key create doesn't set org")
     async def test_create_api_key_sets_org_context(self):
         """API key create route should automatically set organizationId from
         the user's active org context."""
@@ -3031,7 +3022,6 @@ class TestPR18Cutover:
         ), "StoreSubmission Prisma model should have organization_id column"
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="PR18: legacy userId fallback not removed")
     async def test_read_by_user_id_fallback_removed(self):
         """After cutover, the userId fallback path in get_graph should be
         removed -- all queries should go through organizationId."""

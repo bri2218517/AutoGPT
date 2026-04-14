@@ -1539,7 +1539,7 @@ async def create_api_key(
         user_id=user_id,
         permissions=request.permissions,
         description=request.description,
-        organization_id=ctx.org_id if ctx.org_id else None,
+        organization_id=ctx.org_id,
     )
     return CreateAPIKeyResponse(api_key=api_key_info, plain_text_key=plain_text_key)
 
