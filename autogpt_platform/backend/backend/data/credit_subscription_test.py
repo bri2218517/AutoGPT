@@ -313,15 +313,15 @@ async def test_cancel_stripe_subscription_cancels_active():
             "backend.data.credit.stripe.Subscription.list",
             return_value=mock_subscriptions,
         ),
-        patch("backend.data.credit.stripe.Subscription.cancel") as mock_cancel,
+        patch("backend.data.credit.stripe.Subscription.modify") as mock_modify,
     ):
         await cancel_stripe_subscription("user-1")
-        mock_cancel.assert_called_once_with("sub_abc123")
+        mock_modify.assert_called_once_with("sub_abc123", cancel_at_period_end=True)
 
 
 @pytest.mark.asyncio
 async def test_cancel_stripe_subscription_multi_partial_failure():
-    """First cancel raises → error propagates and subsequent subs are not cancelled."""
+    """First modify raises → error propagates and subsequent subs are not scheduled."""
     mock_subscriptions = MagicMock()
     mock_subscriptions.data = [{"id": "sub_first"}, {"id": "sub_second"}]
     mock_subscriptions.has_more = False
@@ -337,9 +337,9 @@ async def test_cancel_stripe_subscription_multi_partial_failure():
             return_value=mock_subscriptions,
         ),
         patch(
-            "backend.data.credit.stripe.Subscription.cancel",
-            side_effect=stripe.StripeError("first cancel failed"),
-        ) as mock_cancel,
+            "backend.data.credit.stripe.Subscription.modify",
+            side_effect=stripe.StripeError("first modify failed"),
+        ) as mock_modify,
         patch(
             "backend.data.credit.set_subscription_tier",
             new_callable=AsyncMock,
@@ -347,12 +347,12 @@ async def test_cancel_stripe_subscription_multi_partial_failure():
     ):
         with pytest.raises(stripe.StripeError):
             await cancel_stripe_subscription("user-1")
-        # Only the first cancel should have been attempted.
+        # Only the first modify should have been attempted.
         # _cancel_customer_subscriptions has no per-cancel try/except, so the
         # StripeError propagates immediately, aborting the loop before sub_second
         # is attempted. This is intentional fail-fast behaviour — the caller
         # (cancel_stripe_subscription) re-raises and the API handler returns 502.
-        mock_cancel.assert_called_once_with("sub_first")
+        mock_modify.assert_called_once_with("sub_first", cancel_at_period_end=True)
         # DB tier must NOT be updated on the error path — the caller raises
         # before reaching set_subscription_tier.
         mock_set_tier.assert_not_called()
@@ -400,7 +400,7 @@ async def test_cancel_stripe_subscription_raises_on_list_failure():
 
 @pytest.mark.asyncio
 async def test_cancel_stripe_subscription_cancels_trialing():
-    """Trialing subs must also be cancelled, else users get billed after trial end."""
+    """Trialing subs must also be scheduled for cancellation, else users get billed after trial end."""
     active_subs = MagicMock()
     active_subs.data = []
     active_subs.has_more = False
@@ -421,15 +421,15 @@ async def test_cancel_stripe_subscription_cancels_trialing():
             "backend.data.credit.stripe.Subscription.list",
             side_effect=list_side_effect,
         ),
-        patch("backend.data.credit.stripe.Subscription.cancel") as mock_cancel,
+        patch("backend.data.credit.stripe.Subscription.modify") as mock_modify,
     ):
         await cancel_stripe_subscription("user-1")
-        mock_cancel.assert_called_once_with("sub_trial_123")
+        mock_modify.assert_called_once_with("sub_trial_123", cancel_at_period_end=True)
 
 
 @pytest.mark.asyncio
 async def test_cancel_stripe_subscription_cancels_active_and_trialing():
-    """Both active AND trialing subs present → both get cancelled, no duplicates."""
+    """Both active AND trialing subs present → both get scheduled for cancellation, no duplicates."""
     active_subs = MagicMock()
     active_subs.data = [{"id": "sub_active_1"}]
     active_subs.has_more = False
@@ -450,11 +450,11 @@ async def test_cancel_stripe_subscription_cancels_active_and_trialing():
             "backend.data.credit.stripe.Subscription.list",
             side_effect=list_side_effect,
         ),
-        patch("backend.data.credit.stripe.Subscription.cancel") as mock_cancel,
+        patch("backend.data.credit.stripe.Subscription.modify") as mock_modify,
     ):
         await cancel_stripe_subscription("user-1")
-        cancelled_ids = {call.args[0] for call in mock_cancel.call_args_list}
-        assert cancelled_ids == {"sub_active_1", "sub_trial_2"}
+        modified_ids = {call.args[0] for call in mock_modify.call_args_list}
+        assert modified_ids == {"sub_active_1", "sub_trial_2"}
 
 
 @pytest.mark.asyncio
@@ -795,7 +795,7 @@ async def test_get_subscription_price_id_none_not_cached():
 
 @pytest.mark.asyncio
 async def test_cancel_stripe_subscription_raises_on_cancel_error():
-    """Stripe errors during cancellation are re-raised so the DB tier is not updated."""
+    """Stripe errors during period-end scheduling are re-raised so the DB tier is not updated."""
     import stripe as stripe_mod
 
     mock_subscriptions = MagicMock()
@@ -813,7 +813,7 @@ async def test_cancel_stripe_subscription_raises_on_cancel_error():
             return_value=mock_subscriptions,
         ),
         patch(
-            "backend.data.credit.stripe.Subscription.cancel",
+            "backend.data.credit.stripe.Subscription.modify",
             side_effect=stripe_mod.StripeError("network error"),
         ),
     ):
