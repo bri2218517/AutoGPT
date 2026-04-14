@@ -608,3 +608,47 @@ def test_stripe_webhook_dispatches_invoice_payment_failed(
 
     assert response.status_code == 200
     failure_mock.assert_awaited_once_with(invoice_obj)
+
+
+def test_update_subscription_tier_free_no_stripe_subscription(
+    client: fastapi.testclient.TestClient,
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """Downgrading to FREE when no Stripe subscription exists updates DB tier directly.
+
+    Admin-granted paid tiers have no associated Stripe subscription.  When such a
+    user requests a self-service downgrade, cancel_stripe_subscription returns False
+    (nothing to cancel), so the endpoint must immediately call set_subscription_tier
+    rather than waiting for a webhook that will never arrive.
+    """
+    mock_user = Mock()
+    mock_user.subscription_tier = SubscriptionTier.PRO
+
+    mocker.patch(
+        "backend.api.features.v1.get_user_by_id",
+        new_callable=AsyncMock,
+        return_value=mock_user,
+    )
+    mocker.patch(
+        "backend.api.features.v1.is_feature_enabled",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    # Simulate no active Stripe subscriptions — returns False
+    cancel_mock = mocker.patch(
+        "backend.api.features.v1.cancel_stripe_subscription",
+        new_callable=AsyncMock,
+        return_value=False,
+    )
+    set_tier_mock = mocker.patch(
+        "backend.api.features.v1.set_subscription_tier",
+        new_callable=AsyncMock,
+    )
+
+    response = client.post("/credits/subscription", json={"tier": "FREE"})
+
+    assert response.status_code == 200
+    assert response.json()["url"] == ""
+    cancel_mock.assert_awaited_once_with(TEST_USER_ID)
+    # DB tier must be updated immediately — no webhook will fire for a missing sub
+    set_tier_mock.assert_awaited_once_with(TEST_USER_ID, SubscriptionTier.FREE)

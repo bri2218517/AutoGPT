@@ -1286,7 +1286,7 @@ async def _cancel_customer_subscriptions(
     customer_id: str,
     exclude_sub_id: str | None = None,
     at_period_end: bool = False,
-) -> None:
+) -> int:
     """Cancel all billable Stripe subscriptions for a customer, optionally excluding one.
 
     Cancels both ``active`` and ``trialing`` subscriptions, since trialing subs will
@@ -1301,6 +1301,8 @@ async def _cancel_customer_subscriptions(
     Wraps every synchronous Stripe SDK call with run_in_threadpool so the async event
     loop is never blocked. Raises stripe.StripeError on list/cancel failure so callers
     that need strict consistency can react; cleanup callers can catch and log instead.
+
+    Returns the number of subscriptions cancelled/scheduled for cancellation.
     """
     # Query active and trialing separately; Stripe's list API accepts a single status
     # filter at a time (no OR), and we explicitly want to skip canceled/incomplete/
@@ -1333,21 +1335,30 @@ async def _cancel_customer_subscriptions(
                 )
             else:
                 await run_in_threadpool(stripe.Subscription.cancel, sub_id)
+    return len(seen_ids)
 
 
-async def cancel_stripe_subscription(user_id: str) -> None:
+async def cancel_stripe_subscription(user_id: str) -> bool:
     """Schedule cancellation of all active/trialing Stripe subscriptions at period end.
 
     The subscription stays active until the end of the billing period so the user
     keeps their tier for the time they already paid for. The ``customer.subscription.deleted``
     webhook fires at period end and downgrades the DB tier to FREE.
 
+    Returns True if at least one subscription was found and scheduled for cancellation,
+    False if the customer had no active/trialing subscriptions (e.g., admin-granted tier
+    with no associated Stripe subscription). When False, the caller should update the
+    DB tier directly since no webhook will fire to do it.
+
     Raises stripe.StripeError if any modification fails, so the caller can avoid
     updating the DB tier when Stripe is inconsistent.
     """
     customer_id = await get_stripe_customer_id(user_id)
     try:
-        await _cancel_customer_subscriptions(customer_id, at_period_end=True)
+        cancelled_count = await _cancel_customer_subscriptions(
+            customer_id, at_period_end=True
+        )
+        return cancelled_count > 0
     except stripe.StripeError:
         logger.warning(
             "cancel_stripe_subscription: Stripe error while cancelling subs for user %s",

@@ -839,13 +839,16 @@ async def update_subscription_tier(
 
     # Downgrade to FREE: schedule Stripe cancellation at period end so the user
     # keeps their tier for the time they already paid for. The DB tier is NOT
-    # updated here — the customer.subscription.deleted webhook fires at period
-    # end and downgrades to FREE then. When payment is disabled there is no
-    # Stripe subscription, so update the DB tier directly.
+    # updated here when a subscription exists — the customer.subscription.deleted
+    # webhook fires at period end and downgrades to FREE then.
+    # Exception: if the user has no active Stripe subscription (e.g. admin-granted
+    # tier), cancel_stripe_subscription returns False and we update the DB tier
+    # immediately since no webhook will ever fire.
+    # When payment is disabled entirely, update the DB tier directly.
     if tier == SubscriptionTier.FREE:
         if payment_enabled:
             try:
-                await cancel_stripe_subscription(user_id)
+                had_subscription = await cancel_stripe_subscription(user_id)
             except stripe.StripeError as e:
                 # Log full Stripe error server-side but return a generic message
                 # to the client — raw Stripe errors can leak customer/sub IDs and
@@ -862,6 +865,11 @@ async def update_subscription_tier(
                         "Please try again or contact support."
                     ),
                 )
+            if not had_subscription:
+                # No active Stripe subscription found — the user was on an
+                # admin-granted tier. Update DB immediately since the
+                # subscription.deleted webhook will never fire.
+                await set_subscription_tier(user_id, tier)
             return SubscriptionCheckoutResponse(url="")
         await set_subscription_tier(user_id, tier)
         return SubscriptionCheckoutResponse(url="")
