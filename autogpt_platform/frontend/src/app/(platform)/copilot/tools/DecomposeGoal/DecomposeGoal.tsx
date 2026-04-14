@@ -1,5 +1,6 @@
 "use client";
 
+import { postV2CancelAutoApproveTask } from "@/app/api/__generated__/endpoints/chat/chat";
 import { Button } from "@/components/atoms/Button/Button";
 import {
   CheckIcon,
@@ -166,7 +167,18 @@ export function DecomposeGoalTool({
     if (!output || !isDecompositionOutput(output)) return;
     setTimerActive(false);
     setIsEditing(true);
-    setEditableSteps(output.steps.map((s) => ({ ...s })));
+    setEditableSteps(
+      output.steps.map((s) => ({ ...s, status: s.status ?? "pending" })),
+    );
+
+    // Cancel the server-side auto-approve timer so it doesn't fire the
+    // default "Approved" message while the user is editing steps.
+    if (output.session_id) {
+      postV2CancelAutoApproveTask(output.session_id).catch(() => {
+        // Best-effort — if the timer already fired or the request fails,
+        // the predicate check will still prevent a duplicate.
+      });
+    }
   }
 
   function handleStepChange(index: number, description: string) {
@@ -321,7 +333,7 @@ export function DecomposeGoalTool({
                       index={i}
                       description={step.description}
                       blockName={step.block_name}
-                      status={step.status}
+                      status={step.status ?? "pending"}
                     />
                   ))}
                 </div>

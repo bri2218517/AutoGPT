@@ -718,6 +718,31 @@ async def cancel_session_task(
 
 
 @router.post(
+    "/sessions/{session_id}/cancel-auto-approve",
+    status_code=200,
+)
+async def cancel_auto_approve_task(
+    session_id: str,
+    user_id: Annotated[str, Security(auth.get_user_id)],
+) -> CancelSessionResponse:
+    """Cancel the pending auto-approve timer for a decompose_goal plan.
+
+    Called by the frontend when the user clicks "Modify" on the build-plan
+    box. Without this, the server-side timer would fire the default
+    "Approved" message while the user is still editing.
+    """
+    await _validate_and_get_session(session_id, user_id)
+
+    from backend.copilot.tools.decompose_goal import cancel_auto_approve
+
+    cancelled = cancel_auto_approve(session_id)
+    return CancelSessionResponse(
+        cancelled=cancelled,
+        reason=None if cancelled else "no_pending_auto_approve",
+    )
+
+
+@router.post(
     "/sessions/{session_id}/stream",
 )
 async def stream_chat_post(

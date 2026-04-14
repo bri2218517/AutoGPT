@@ -1606,6 +1606,46 @@
         }
       }
     },
+    "/api/chat/sessions/{session_id}/cancel-auto-approve": {
+      "post": {
+        "tags": ["v2", "chat", "chat"],
+        "summary": "Cancel Auto Approve Task",
+        "description": "Cancel the pending auto-approve timer for a decompose_goal plan.\n\nCalled by the frontend when the user clicks \"Modify\" on the build-plan\nbox. Without this, the server-side timer would fire the default\n\"Approved\" message while the user is still editing.",
+        "operationId": "postV2CancelAutoApproveTask",
+        "security": [{ "HTTPBearerJWT": [] }],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "title": "Session Id" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelSessionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/HTTP401NotAuthenticatedError"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HTTPValidationError" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/chat/sessions/{session_id}/stream": {
       "get": {
         "tags": ["v2", "chat", "chat"],

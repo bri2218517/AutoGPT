@@ -29,9 +29,10 @@ AUTO_APPROVE_CLIENT_SECONDS = 60
 AUTO_APPROVE_SERVER_SECONDS = AUTO_APPROVE_CLIENT_SECONDS
 AUTO_APPROVE_MESSAGE = "Approved. Please build the agent."
 
-# Fire-and-forget tasks held to keep them alive and self-clean on completion.
-# Same pattern as ``backend/copilot/tools/agent_browser.py``.
-_auto_approve_tasks: set[asyncio.Task] = set()
+# Pending auto-approve tasks keyed by session_id. The dict allows
+# cancel_auto_approve() to look up and cancel the task for a specific
+# session when the user clicks "Modify" in the frontend.
+_pending_auto_approvals: dict[str, asyncio.Task] = {}
 
 
 def _no_user_action_since(baseline_index: int):
@@ -67,14 +68,11 @@ async def _run_auto_approve(
     """Wait the server-side timeout and inject a synthetic approval if the
     user has not acted in the meantime.
 
+    Cancelled when the user clicks "Modify" (via ``cancel_auto_approve``).
+
     Limitation: this lives in the executor process; if the worker restarts
     during the wait, the pending approval is lost (the user falls back to
     manual approve). Restart-resilience would need a Redis-backed scheduler.
-
-    Modify-mode caveat: clicking "Modify" stops the *client* timer, not this
-    one. Users have ``AUTO_APPROVE_SERVER_SECONDS`` total to finish editing
-    and click Approve, otherwise the server fires the default approval. A
-    follow-up should add an explicit cancel endpoint.
     """
     try:
         await asyncio.sleep(AUTO_APPROVE_SERVER_SECONDS)
@@ -119,6 +117,21 @@ async def _run_auto_approve(
         )
 
 
+def cancel_auto_approve(session_id: str) -> bool:
+    """Cancel the pending auto-approve task for a session.
+
+    Called by the ``/sessions/{session_id}/cancel-auto-approve`` endpoint
+    when the user clicks "Modify" in the build-plan UI. Returns True if a
+    pending task was found and cancelled, False otherwise.
+    """
+    task = _pending_auto_approvals.pop(session_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+        logger.info("decompose_goal auto-approve cancelled for session %s", session_id)
+        return True
+    return False
+
+
 def _schedule_auto_approve(
     session_id: str | None, user_id: str | None, session: ChatSession
 ) -> None:
@@ -131,10 +144,13 @@ def _schedule_auto_approve(
     """
     if not session_id:
         return
+    # Cancel any existing pending approval for this session (e.g. if the
+    # LLM called decompose_goal twice in one turn).
+    cancel_auto_approve(session_id)
     baseline_index = len(session.messages)
     task = asyncio.create_task(_run_auto_approve(session_id, user_id, baseline_index))
-    _auto_approve_tasks.add(task)
-    task.add_done_callback(_auto_approve_tasks.discard)
+    _pending_auto_approvals[session_id] = task
+    task.add_done_callback(lambda t: _pending_auto_approvals.pop(session_id, None))
 
 
 class DecomposeGoalTool(BaseTool):

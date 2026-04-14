@@ -1,5 +1,6 @@
 "use client";
 
+import type { DecompositionStepModel } from "@/app/api/__generated__/models/decompositionStepModel";
 import {
   CheckCircleIcon,
   CircleDashedIcon,
@@ -11,25 +12,23 @@ import {
 import type { ToolUIPart } from "ai";
 import { ScaleLoader } from "../../components/ScaleLoader/ScaleLoader";
 
-interface DecompositionStep {
-  step_id: string;
-  description: string;
-  action: string;
-  block_name?: string | null;
-  status: string;
-}
+// Re-export generated step type for consumers that need it.
+export type DecompositionStep = DecompositionStepModel;
 
+// Hand-rolled because the tool output is parsed from opaque JSON (not through
+// the generated API client), so the runtime shape differs from the generated
+// TaskDecompositionResponse — notably ``created_at`` is an ISO 8601 string at
+// runtime, whereas the generated type declares ``Date``. Keep fields in sync
+// with backend ``TaskDecompositionResponse`` in tools/models.py.
 export interface TaskDecompositionOutput {
   type: string;
   message: string;
+  session_id?: string | null;
   goal: string;
   steps: DecompositionStep[];
   step_count: number;
   requires_approval: boolean;
   auto_approve_seconds?: number;
-  // ISO 8601 UTC timestamp stamped by the backend when the tool returned.
-  // Used to compute the actual remaining countdown when the user reopens
-  // the session, so the timer doesn't restart from full each time.
   created_at?: string;
 }
 

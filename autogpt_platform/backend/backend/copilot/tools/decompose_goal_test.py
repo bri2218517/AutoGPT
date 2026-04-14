@@ -16,6 +16,7 @@ from .decompose_goal import (
     MAX_STEPS,
     DecomposeGoalTool,
     _no_user_action_since,
+    cancel_auto_approve,
 )
 from .models import ErrorResponse, TaskDecompositionResponse
 
@@ -516,7 +517,7 @@ async def test_schedule_auto_approve_creates_task(monkeypatch):
 
     # Wait for the scheduled task to complete.
     await asyncio.sleep(0)
-    while decompose_goal_module._auto_approve_tasks:
+    while decompose_goal_module._pending_auto_approvals:
         await asyncio.sleep(0)
 
     fake_run.assert_awaited_once_with("session-schedule", _USER_ID, 2)
@@ -528,4 +529,34 @@ def test_schedule_auto_approve_no_op_without_session_id():
     decompose_goal_module._schedule_auto_approve(
         session_id=None, user_id=_USER_ID, session=session
     )
-    assert len(decompose_goal_module._auto_approve_tasks) == 0
+    assert len(decompose_goal_module._pending_auto_approvals) == 0
+
+
+# ---------------------------------------------------------------------------
+# cancel_auto_approve
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancel_auto_approve_cancels_pending_task(monkeypatch):
+    """Calling cancel_auto_approve should cancel the pending task and return True."""
+    monkeypatch.setattr(decompose_goal_module, "AUTO_APPROVE_SERVER_SECONDS", 999)
+    fake_run = AsyncMock()
+    monkeypatch.setattr(decompose_goal_module, "_run_auto_approve", fake_run)
+
+    session = make_session(_USER_ID)
+    _REAL_SCHEDULE_AUTO_APPROVE(
+        session_id="session-cancel-test",
+        user_id=_USER_ID,
+        session=session,
+    )
+
+    assert "session-cancel-test" in decompose_goal_module._pending_auto_approvals
+    result = cancel_auto_approve("session-cancel-test")
+    assert result is True
+    assert "session-cancel-test" not in decompose_goal_module._pending_auto_approvals
+
+
+def test_cancel_auto_approve_returns_false_for_unknown_session():
+    """Cancelling a session with no pending task should return False."""
+    assert cancel_auto_approve("nonexistent-session") is False
