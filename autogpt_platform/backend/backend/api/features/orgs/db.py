@@ -41,9 +41,7 @@ async def get_user_default_team(
         return None, None
 
     org_id = member.orgId
-    workspace = await prisma.team.find_first(
-        where={"orgId": org_id, "isDefault": True}
-    )
+    workspace = await prisma.team.find_first(where={"orgId": org_id, "isDefault": True})
     ws_id = workspace.id if workspace else None
     return org_id, ws_id
 
@@ -485,9 +483,7 @@ async def remove_org_member(org_id: str, user_id: str, requesting_user_id: str) 
     # Remove from all workspaces in this org
     workspaces = await prisma.team.find_many(where={"orgId": org_id})
     for ws in workspaces:
-        await prisma.teammember.delete_many(
-            where={"teamId": ws.id, "userId": user_id}
-        )
+        await prisma.teammember.delete_many(where={"teamId": ws.id, "userId": user_id})
 
     # Remove org membership
     await prisma.orgmember.delete(

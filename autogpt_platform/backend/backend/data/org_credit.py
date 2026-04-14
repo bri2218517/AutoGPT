@@ -49,18 +49,22 @@ async def spend_org_credits(
     if amount <= 0:
         raise ValueError("Spend amount must be positive")
 
-    # Atomic deduct — only succeeds if balance >= amount
-    rows_affected = await prisma.execute_raw(
+    # Atomic deduct — only succeeds if balance >= amount.
+    # Uses RETURNING to get the new balance in the same statement,
+    # avoiding a stale read from a separate query.
+    result = await prisma.query_raw(
         """
         UPDATE "OrgBalance"
         SET "balance" = "balance" - $1, "updatedAt" = NOW()
         WHERE "orgId" = $2 AND "balance" >= $1
+        RETURNING "balance"
         """,
         amount,
         org_id,
     )
 
-    if rows_affected == 0:
+    if not result:
+        # No row matched — insufficient balance
         current = await get_org_credits(org_id)
         raise InsufficientBalanceError(
             f"Organization has {current} credits but needs {amount}",
@@ -69,8 +73,7 @@ async def spend_org_credits(
             amount=amount,
         )
 
-    # Read the new balance for the transaction record
-    new_balance = await get_org_credits(org_id)
+    new_balance = result[0]["balance"]
 
     # Record the transaction
     tx_data: dict = {
@@ -105,19 +108,22 @@ async def top_up_org_credits(
     if amount <= 0:
         raise ValueError("Top-up amount must be positive")
 
-    # Atomic upsert — INSERT or UPDATE in one statement
-    await prisma.execute_raw(
+    # Atomic upsert — INSERT or UPDATE in one statement.
+    # Uses RETURNING to get the new balance in the same statement,
+    # avoiding a stale read from a separate query.
+    result = await prisma.query_raw(
         """
         INSERT INTO "OrgBalance" ("orgId", "balance", "updatedAt")
         VALUES ($1, $2, NOW())
         ON CONFLICT ("orgId")
         DO UPDATE SET "balance" = "OrgBalance"."balance" + $2, "updatedAt" = NOW()
+        RETURNING "balance"
         """,
         org_id,
         amount,
     )
 
-    new_balance = await get_org_credits(org_id)
+    new_balance = result[0]["balance"]
 
     # Record the transaction
     tx_data: dict = {

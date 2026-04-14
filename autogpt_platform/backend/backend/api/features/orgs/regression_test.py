@@ -3145,9 +3145,6 @@ class TestReviewFindings:
     # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="Review: InvitationResponse includes raw token in list endpoints"
-    )
     async def test_invitation_list_response_excludes_token(self):
         """GET /invitations should NOT return the raw token -- only the
         create response should."""
@@ -3182,23 +3179,15 @@ class TestReviewFindings:
         declining_user.email = accepted_inv.email
 
         with (
-            patch(
-                "backend.api.features.orgs.invitation_routes.prisma"
-            ) as mock_prisma,
+            patch("backend.api.features.orgs.invitation_routes.prisma") as mock_prisma,
         ):
-            mock_prisma.orginvitation.find_unique = AsyncMock(
-                return_value=accepted_inv
-            )
+            mock_prisma.orginvitation.find_unique = AsyncMock(return_value=accepted_inv)
             mock_prisma.user.find_unique = AsyncMock(return_value=declining_user)
 
-            from backend.api.features.orgs.invitation_routes import (
-                decline_invitation,
-            )
+            from backend.api.features.orgs.invitation_routes import decline_invitation
 
             with pytest.raises(HTTPException) as exc_info:
-                await decline_invitation(
-                    token=accepted_inv.token, user_id=USER_ID
-                )
+                await decline_invitation(token=accepted_inv.token, user_id=USER_ID)
             assert exc_info.value.status_code == 400
 
     # ------------------------------------------------------------------
@@ -3216,23 +3205,15 @@ class TestReviewFindings:
         declining_user.email = revoked_inv.email
 
         with (
-            patch(
-                "backend.api.features.orgs.invitation_routes.prisma"
-            ) as mock_prisma,
+            patch("backend.api.features.orgs.invitation_routes.prisma") as mock_prisma,
         ):
-            mock_prisma.orginvitation.find_unique = AsyncMock(
-                return_value=revoked_inv
-            )
+            mock_prisma.orginvitation.find_unique = AsyncMock(return_value=revoked_inv)
             mock_prisma.user.find_unique = AsyncMock(return_value=declining_user)
 
-            from backend.api.features.orgs.invitation_routes import (
-                decline_invitation,
-            )
+            from backend.api.features.orgs.invitation_routes import decline_invitation
 
             with pytest.raises(HTTPException) as exc_info:
-                await decline_invitation(
-                    token=revoked_inv.token, user_id=USER_ID
-                )
+                await decline_invitation(token=revoked_inv.token, user_id=USER_ID)
             assert exc_info.value.status_code == 400
 
     # ------------------------------------------------------------------
@@ -3271,10 +3252,6 @@ class TestReviewFindings:
     # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="Review: team admin can mutate other teams via "
-        "path/header mismatch"
-    )
     async def test_update_team_rejects_mismatched_team_id(self):
         """PATCH /teams/{ws_id} should reject when ctx.team_id != ws_id."""
         from backend.api.features.orgs.team_model import UpdateTeamRequest
@@ -3308,12 +3285,8 @@ class TestReviewFindings:
             targetOrganizationId="org-B",
         )
 
-        with patch(
-            "backend.api.features.transfers.db.prisma"
-        ) as mock_prisma:
-            mock_prisma.transferrequest.find_unique = AsyncMock(
-                return_value=transfer
-            )
+        with patch("backend.api.features.transfers.db.prisma") as mock_prisma:
+            mock_prisma.transferrequest.find_unique = AsyncMock(return_value=transfer)
 
             from backend.api.features.transfers.db import reject_transfer
 
@@ -3336,14 +3309,10 @@ class TestReviewFindings:
         from backend.api.features.orgs.model import UpdateOrgData
 
         old_org = self._make_org(id="org-1", slug="old-slug", name="Old Name")
-        updated_org = self._make_org(
-            id="org-1", slug="new-slug", name="New Name"
-        )
+        updated_org = self._make_org(id="org-1", slug="new-slug", name="New Name")
         updated_org.Members = [MagicMock()]
 
-        with patch(
-            "backend.api.features.orgs.db.prisma"
-        ) as mock_prisma:
+        with patch("backend.api.features.orgs.db.prisma") as mock_prisma:
             mock_prisma.organization.find_unique = AsyncMock(
                 side_effect=[
                     None,  # slug uniqueness check
@@ -3352,9 +3321,7 @@ class TestReviewFindings:
                     updated_org,  # get_org call at end
                 ]
             )
-            mock_prisma.organizationalias.find_unique = AsyncMock(
-                return_value=None
-            )
+            mock_prisma.organizationalias.find_unique = AsyncMock(return_value=None)
             mock_prisma.organizationalias.create = AsyncMock()
             mock_prisma.organization.update = AsyncMock()
             mock_prisma.organizationprofile.update = AsyncMock()
@@ -3369,9 +3336,7 @@ class TestReviewFindings:
 
             # The key assertion: profile must have been updated
             mock_prisma.organizationprofile.update.assert_called_once()
-            call_kwargs = (
-                mock_prisma.organizationprofile.update.call_args.kwargs
-            )
+            call_kwargs = mock_prisma.organizationprofile.update.call_args.kwargs
             assert call_kwargs["where"] == {"organizationId": "org-1"}
             assert call_kwargs["data"]["displayName"] == "New Name"
             assert call_kwargs["data"]["username"] == "new-slug"
@@ -3402,15 +3367,11 @@ class TestReviewFindings:
             )
             return result
 
-        with patch(
-            "backend.api.features.transfers.db.prisma"
-        ) as mock_prisma:
+        with patch("backend.api.features.transfers.db.prisma") as mock_prisma:
             mock_prisma.transferrequest.find_unique = AsyncMock(
                 return_value=source_approved
             )
-            mock_prisma.transferrequest.update = AsyncMock(
-                side_effect=capture_update
-            )
+            mock_prisma.transferrequest.update = AsyncMock(side_effect=capture_update)
 
             from backend.api.features.transfers.db import approve_transfer
 

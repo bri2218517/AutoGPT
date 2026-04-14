@@ -443,21 +443,43 @@ async def create_store_listing_aliases() -> int:
 
 
 async def run_migration() -> None:
-    """Orchestrate the full org bootstrap migration. Idempotent."""
-    start = time.monotonic()
-    logger.info("Org migration: starting personal org bootstrap")
+    """Orchestrate the full org bootstrap migration. Idempotent.
 
-    orgs_created = await create_orgs_for_existing_users()
-    await migrate_org_balances()
-    await migrate_credit_transactions()
-    resource_counts = await assign_resources_to_teams()
-    await migrate_store_listings()
-    await create_store_listing_aliases()
+    Uses a Redis-based distributed lock so that only one pod runs the
+    migration concurrently in multi-pod deployments.
+    """
+    from backend.data.redis_client import get_redis_async
 
-    total_resources = sum(resource_counts.values())
-    elapsed = time.monotonic() - start
+    redis = await get_redis_async()
+    lock_key = "org-migration-bootstrap-lock"
+    lock_timeout = 300  # 5 min max
 
-    logger.info(
-        f"Org migration: complete in {elapsed:.2f}s — "
-        f"{orgs_created} orgs created, {total_resources} resources assigned"
-    )
+    # SET NX EX — acquire only if no other pod holds it
+    acquired = await redis.set(lock_key, "1", nx=True, ex=lock_timeout)
+    if not acquired:
+        logger.info("Org migration: another pod holds the lock, skipping")
+        return
+
+    try:
+        start = time.monotonic()
+        logger.info("Org migration: starting personal org bootstrap")
+
+        orgs_created = await create_orgs_for_existing_users()
+        await migrate_org_balances()
+        await migrate_credit_transactions()
+        resource_counts = await assign_resources_to_teams()
+        await migrate_store_listings()
+        await create_store_listing_aliases()
+
+        total_resources = sum(resource_counts.values())
+        elapsed = time.monotonic() - start
+
+        logger.info(
+            f"Org migration: complete in {elapsed:.2f}s — "
+            f"{orgs_created} orgs created, {total_resources} resources assigned"
+        )
+    finally:
+        try:
+            await redis.delete(lock_key)
+        except Exception:
+            pass

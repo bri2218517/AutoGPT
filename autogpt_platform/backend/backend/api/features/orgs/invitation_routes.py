@@ -13,7 +13,7 @@ from backend.data.db import prisma
 from backend.util.exceptions import NotFoundError
 
 from . import db as org_db
-from .model import CreateInvitationRequest, InvitationResponse
+from .model import CreateInvitationRequest, InvitationCreateResponse, InvitationResponse
 
 router = APIRouter()
 
@@ -43,7 +43,7 @@ async def create_invitation(
         RequestContext,
         Security(requires_org_permission(OrgAction.MANAGE_MEMBERS)),
     ],
-) -> InvitationResponse:
+) -> InvitationCreateResponse:
     _verify_org_path(ctx, org_id)
     expires_at = datetime.now(timezone.utc) + timedelta(days=INVITATION_TTL_DAYS)
 
@@ -62,7 +62,7 @@ async def create_invitation(
     # TODO: Send email via Postmark with invitation link
     # link = f"{frontend_base_url}/org/invite/{invitation.token}"
 
-    return InvitationResponse.from_db(invitation)
+    return InvitationCreateResponse.from_db(invitation)
 
 
 @org_router.get(
@@ -213,7 +213,9 @@ async def decline_invitation(
     if declining_user is None:
         raise HTTPException(401, detail="User not found")
     if declining_user.email.lower() != invitation.email.lower():
-        raise HTTPException(403, detail="This invitation was sent to a different email address")
+        raise HTTPException(
+            403, detail="This invitation was sent to a different email address"
+        )
 
     await prisma.orginvitation.update(
         where={"id": invitation.id},

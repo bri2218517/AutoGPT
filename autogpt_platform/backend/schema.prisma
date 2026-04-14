@@ -220,6 +220,8 @@ model BuilderSearchHistory {
 
   // Tenancy
   organizationId String?
+
+  @@index([organizationId])
 }
 
 ////////////////////////////////////////////////////////////
@@ -261,6 +263,7 @@ model ChatSession {
 
   @@index([userId, updatedAt])
   @@index([teamId, updatedAt])
+  @@index([organizationId])
 }
 
 model ChatMessage {
@@ -328,6 +331,7 @@ model AgentGraph {
   @@index([userId, isActive, id, version])
   @@index([forkedFromId, forkedFromVersion])
   @@index([teamId, isActive, id, version])
+  @@index([organizationId])
 }
 
 ////////////////////////////////////////////////////////////
@@ -378,6 +382,7 @@ model AgentPreset {
   @@index([agentGraphId, agentGraphVersion])
   @@index([webhookId])
   @@index([teamId])
+  @@index([organizationId])
 }
 
 enum NotificationType {
@@ -427,6 +432,7 @@ model UserNotificationBatch {
 
   // Each user can only have one batch of a notification type at a time
   @@unique([userId, type])
+  @@index([organizationId])
 }
 
 // For the library page
@@ -471,6 +477,7 @@ model LibraryAgent {
   @@index([creatorId])
   @@index([folderId])
   @@index([teamId])
+  @@index([organizationId])
 }
 
 model LibraryFolder {
@@ -500,6 +507,7 @@ model LibraryFolder {
   Team           Team?              @relation(fields: [teamId], references: [id], onDelete: SetNull)
 
   @@unique([userId, parentId, name]) // Name unique per parent per user
+  @@index([organizationId])
 }
 
 ////////////////////////////////////////////////////////////
@@ -645,6 +653,7 @@ model AgentGraphExecution {
   @@index([shareToken])
   @@index([parentGraphExecutionId])
   @@index([teamId, isDeleted, createdAt])
+  @@index([organizationId])
 }
 
 // This model describes the execution of an AgentNode.
@@ -744,6 +753,7 @@ model PendingHumanReview {
   @@unique([nodeExecId]) // One pending review per node execution
   @@index([userId, status])
   @@index([graphExecId, status])
+  @@index([organizationId])
 }
 
 // Webhook that is registered with a provider and propagates to one or more nodes
@@ -773,6 +783,8 @@ model IntegrationWebhook {
   teamId         String?
   visibility     ResourceVisibility @default(PRIVATE)
   Team           Team?              @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
 }
 
 model AnalyticsDetails {
@@ -1222,6 +1234,7 @@ model StoreListingVersion {
   @@index([submissionStatus])
   @@index([reviewerId])
   @@index([agentGraphId, agentGraphVersion]) // Non-unique index for efficient lookups
+  @@index([organizationId])
 }
 
 // Content type enum for unified search across store agents, blocks, docs
@@ -1335,6 +1348,7 @@ model APIKey {
   @@index([head, name])
   @@index([userId, status])
   @@index([teamId])
+  @@index([organizationId])
 }
 
 model UserBalance {
@@ -1395,6 +1409,7 @@ model OAuthApplication {
 
   @@index([clientId])
   @@index([ownerId])
+  @@index([organizationId])
 }
 
 // Temporary authorization codes (10 min TTL)
@@ -1715,6 +1730,7 @@ model OrgCreditTransaction {
   @@id(name: "orgCreditTransactionIdentifier", [transactionKey, orgId])
   @@index([orgId, createdAt])
   @@index([initiatedByUserId])
+  @@index([teamId])
 }
 
 model TransferRequest {

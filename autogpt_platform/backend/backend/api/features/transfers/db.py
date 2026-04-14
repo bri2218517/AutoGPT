@@ -38,9 +38,7 @@ async def create_transfer(
     if source_org_id == target_org_id:
         raise ValueError("Source and target organizations must be different")
 
-    target_org = await prisma.organization.find_unique(
-        where={"id": target_org_id}
-    )
+    target_org = await prisma.organization.find_unique(where={"id": target_org_id})
     if target_org is None or target_org.deletedAt is not None:
         raise NotFoundError(f"Target organization {target_org_id} not found")
 
@@ -115,9 +113,7 @@ async def approve_transfer(
             update_data["status"] = "TARGET_APPROVED"
 
     else:
-        raise ValueError(
-            "Your active organization is not a party to this transfer"
-        )
+        raise ValueError("Your active organization is not a party to this transfer")
 
     updated = await prisma.transferrequest.update(
         where={"id": transfer_id},
@@ -140,9 +136,7 @@ async def reject_transfer(
         raise ValueError(f"Cannot reject a transfer with status '{tr.status}'")
 
     if org_id not in (tr.sourceOrganizationId, tr.targetOrganizationId):
-        raise ValueError(
-            "Your active organization is not a party to this transfer"
-        )
+        raise ValueError("Your active organization is not a party to this transfer")
 
     updated = await prisma.transferrequest.update(
         where={"id": transfer_id},
@@ -211,20 +205,14 @@ async def _validate_resource_ownership(
         if graph is None:
             raise NotFoundError(f"AgentGraph '{resource_id}' not found")
         if graph.organizationId != org_id:
-            raise ValueError(
-                "AgentGraph does not belong to the source organization"
-            )
+            raise ValueError("AgentGraph does not belong to the source organization")
 
     elif resource_type == "StoreListing":
-        listing = await prisma.storelisting.find_unique(
-            where={"id": resource_id}
-        )
+        listing = await prisma.storelisting.find_unique(where={"id": resource_id})
         if listing is None or listing.isDeleted:
             raise NotFoundError(f"StoreListing '{resource_id}' not found")
         if listing.owningOrgId != org_id:
-            raise ValueError(
-                "StoreListing does not belong to the source organization"
-            )
+            raise ValueError("StoreListing does not belong to the source organization")
 
 
 async def _move_resource(

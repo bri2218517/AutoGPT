@@ -57,9 +57,7 @@ async def list_teams(org_id: str, user_id: str) -> list[TeamResponse]:
     return [TeamResponse.from_db(ws) for ws in workspaces]
 
 
-async def get_team(
-    ws_id: str, expected_org_id: str | None = None
-) -> TeamResponse:
+async def get_team(ws_id: str, expected_org_id: str | None = None) -> TeamResponse:
     """Get workspace details. Validates org ownership if expected_org_id is given."""
     ws = await prisma.team.find_unique(where={"id": ws_id})
     if ws is None:
@@ -138,9 +136,7 @@ async def leave_team(ws_id: str, user_id: str) -> None:
     if ws.isDefault:
         raise ValueError("Cannot leave the default workspace")
 
-    await prisma.teammember.delete_many(
-        where={"teamId": ws_id, "userId": user_id}
-    )
+    await prisma.teammember.delete_many(where={"teamId": ws_id, "userId": user_id})
 
 
 async def list_team_members(ws_id: str) -> list[TeamMemberResponse]:

@@ -129,7 +129,7 @@ class InvitationResponse(BaseModel):
     email: str
     is_admin: bool
     is_billing_manager: bool
-    token: str
+    # token intentionally excluded — only returned on creation
     expires_at: datetime
     created_at: datetime
     team_ids: list[str]
@@ -137,6 +137,24 @@ class InvitationResponse(BaseModel):
     @staticmethod
     def from_db(inv) -> "InvitationResponse":
         return InvitationResponse(
+            id=inv.id,
+            email=inv.email,
+            is_admin=inv.isAdmin,
+            is_billing_manager=inv.isBillingManager,
+            expires_at=inv.expiresAt,
+            created_at=inv.createdAt,
+            team_ids=inv.teamIds,
+        )
+
+
+class InvitationCreateResponse(InvitationResponse):
+    """Extended response returned only from POST /invitations -- includes the token."""
+
+    token: str
+
+    @staticmethod
+    def from_db(inv) -> "InvitationCreateResponse":
+        return InvitationCreateResponse(
             id=inv.id,
             email=inv.email,
             is_admin=inv.isAdmin,

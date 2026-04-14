@@ -859,7 +859,11 @@ async def create_store_submission(
                                 "agentGraphId": graph_id,
                                 "OwningUser": {"connect": {"id": user_id}},
                                 "CreatorProfile": {"connect": {"userId": user_id}},
-                                **({"owningOrgId": organization_id} if organization_id else {}),
+                                **(
+                                    {"owningOrgId": organization_id}
+                                    if organization_id
+                                    else {}
+                                ),
                             },
                         }
                     },

@@ -215,9 +215,7 @@ async def get_request_context(
     seat_status = "ACTIVE"  # validated above; seat assignment checked separately
 
     # --- 4. team_id (optional) -------------------------------------------
-    team_id: str | None = (
-        request.headers.get(TEAM_HEADER_NAME, "").strip() or None
-    )
+    team_id: str | None = request.headers.get(TEAM_HEADER_NAME, "").strip() or None
     is_team_admin = False
     is_team_billing_manager = False
 

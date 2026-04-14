@@ -23,7 +23,7 @@ from backend.util.exceptions import InsufficientBalanceError
 def mock_prisma(mocker):
     mock = MagicMock()
     mock.orgbalance.find_unique = AsyncMock(return_value=MagicMock(balance=1000))
-    mock.execute_raw = AsyncMock(return_value=1)  # 1 row affected = success
+    mock.query_raw = AsyncMock(return_value=[{"balance": 1000}])  # RETURNING data
     mock.orgcredittransaction.create = AsyncMock()
     mock.orgcredittransaction.find_many = AsyncMock(return_value=[])
     mock.organizationseatassignment.find_many = AsyncMock(return_value=[])
@@ -51,12 +51,8 @@ class TestGetOrgCredits:
 class TestSpendOrgCredits:
     @pytest.mark.asyncio
     async def test_spend_success_returns_remaining(self, mock_prisma):
-        # execute_raw returns 1 (row affected) = success
-        mock_prisma.execute_raw = AsyncMock(return_value=1)
-        # After spend, balance reads 900
-        mock_prisma.orgbalance.find_unique = AsyncMock(
-            return_value=MagicMock(balance=900)
-        )
+        # query_raw returns RETURNING data with new balance
+        mock_prisma.query_raw = AsyncMock(return_value=[{"balance": 900}])
 
         result = await spend_org_credits("org-1", "user-1", 100)
         assert result == 900
@@ -70,8 +66,8 @@ class TestSpendOrgCredits:
 
     @pytest.mark.asyncio
     async def test_spend_insufficient_balance_raises(self, mock_prisma):
-        # execute_raw returns 0 = no row matched (insufficient balance)
-        mock_prisma.execute_raw = AsyncMock(return_value=0)
+        # query_raw returns empty list = no row matched (insufficient balance)
+        mock_prisma.query_raw = AsyncMock(return_value=[])
         mock_prisma.orgbalance.find_unique = AsyncMock(
             return_value=MagicMock(balance=50)
         )
@@ -96,10 +92,7 @@ class TestSpendOrgCredits:
 
     @pytest.mark.asyncio
     async def test_spend_records_workspace_attribution(self, mock_prisma):
-        mock_prisma.execute_raw = AsyncMock(return_value=1)
-        mock_prisma.orgbalance.find_unique = AsyncMock(
-            return_value=MagicMock(balance=800)
-        )
+        mock_prisma.query_raw = AsyncMock(return_value=[{"balance": 800}])
 
         await spend_org_credits(
             "org-1", "user-1", 200, team_id="ws-1", metadata={"block": "llm"}
@@ -113,13 +106,12 @@ class TestSpendOrgCredits:
 class TestTopUpOrgCredits:
     @pytest.mark.asyncio
     async def test_top_up_success(self, mock_prisma):
-        mock_prisma.orgbalance.find_unique = AsyncMock(
-            return_value=MagicMock(balance=1500)
-        )
+        # query_raw returns RETURNING data with new balance
+        mock_prisma.query_raw = AsyncMock(return_value=[{"balance": 1500}])
 
         result = await top_up_org_credits("org-1", 500, user_id="user-1")
         assert result == 1500
-        mock_prisma.execute_raw.assert_called_once()  # Atomic upsert
+        mock_prisma.query_raw.assert_called_once()  # Atomic upsert
         # Verify transaction data
         mock_prisma.orgcredittransaction.create.assert_called_once()
         tx_data = mock_prisma.orgcredittransaction.create.call_args[1]["data"]
@@ -140,9 +132,8 @@ class TestTopUpOrgCredits:
 
     @pytest.mark.asyncio
     async def test_top_up_no_user_id_omits_from_transaction(self, mock_prisma):
-        mock_prisma.orgbalance.find_unique = AsyncMock(
-            return_value=MagicMock(balance=500)
-        )
+        # query_raw returns RETURNING data with new balance
+        mock_prisma.query_raw = AsyncMock(return_value=[{"balance": 500}])
 
         await top_up_org_credits("org-1", 500)
 

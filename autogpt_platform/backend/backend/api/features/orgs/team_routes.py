@@ -15,10 +15,10 @@ from . import team_db as team_db
 from .team_model import (
     AddTeamMemberRequest,
     CreateTeamRequest,
-    UpdateTeamMemberRequest,
-    UpdateTeamRequest,
     TeamMemberResponse,
     TeamResponse,
+    UpdateTeamMemberRequest,
+    UpdateTeamRequest,
 )
 
 router = APIRouter()
@@ -91,6 +91,8 @@ async def update_team(
         Security(requires_team_permission(TeamAction.MANAGE_SETTINGS)),
     ],
 ) -> TeamResponse:
+    if ctx.team_id != ws_id:
+        raise HTTPException(403, detail="Team context does not match the target team")
     # Verify workspace belongs to org (ctx validates workspace membership)
     await team_db.get_team(ws_id, expected_org_id=org_id)
     return await team_db.update_team(
@@ -185,6 +187,8 @@ async def add_member(
         Security(requires_team_permission(TeamAction.MANAGE_MEMBERS)),
     ],
 ) -> TeamMemberResponse:
+    if ctx.team_id != ws_id:
+        raise HTTPException(403, detail="Team context does not match the target team")
     return await team_db.add_team_member(
         ws_id=ws_id,
         user_id=request.user_id,
@@ -210,6 +214,8 @@ async def update_member(
         Security(requires_team_permission(TeamAction.MANAGE_MEMBERS)),
     ],
 ) -> TeamMemberResponse:
+    if ctx.team_id != ws_id:
+        raise HTTPException(403, detail="Team context does not match the target team")
     return await team_db.update_team_member(
         ws_id=ws_id,
         user_id=uid,
@@ -233,4 +239,6 @@ async def remove_member(
         Security(requires_team_permission(TeamAction.MANAGE_MEMBERS)),
     ],
 ) -> None:
+    if ctx.team_id != ws_id:
+        raise HTTPException(403, detail="Team context does not match the target team")
     await team_db.remove_team_member(ws_id, uid)

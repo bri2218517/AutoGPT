@@ -144,9 +144,7 @@ def _owner_ctx(org_id=ORG_ID, user_id=USER_ID, team_id=None) -> RequestContext:
     )
 
 
-def _member_ctx(
-    org_id=ORG_ID, user_id=OTHER_USER_ID, team_id=None
-) -> RequestContext:
+def _member_ctx(org_id=ORG_ID, user_id=OTHER_USER_ID, team_id=None) -> RequestContext:
     return RequestContext(
         user_id=user_id,
         org_id=org_id,
@@ -840,9 +838,7 @@ class TestWorkspaceDbJoinLeave:
         self.prisma.orgmember.find_unique = AsyncMock(
             return_value=_make_member(userId=USER_ID)
         )
-        self.prisma.teammember.find_unique = AsyncMock(
-            return_value=_make_ws_member()
-        )
+        self.prisma.teammember.find_unique = AsyncMock(return_value=_make_ws_member())
 
         await join_team(WS_ID, USER_ID, ORG_ID)
 
@@ -1331,11 +1327,8 @@ class TestOrgCreditsSpend:
     async def test_spend_credits_success(self):
         from backend.data.org_credit import spend_org_credits
 
-        # Atomic deduct succeeds (1 row affected)
-        self.prisma.execute_raw = AsyncMock(return_value=1)
-        # Balance after spend
-        balance_row = MagicMock(balance=90)
-        self.prisma.orgbalance.find_unique = AsyncMock(return_value=balance_row)
+        # Atomic deduct succeeds — query_raw returns RETURNING data
+        self.prisma.query_raw = AsyncMock(return_value=[{"balance": 90}])
         self.prisma.orgcredittransaction.create = AsyncMock()
 
         remaining = await spend_org_credits(org_id=ORG_ID, user_id=USER_ID, amount=10)
@@ -1352,8 +1345,8 @@ class TestOrgCreditsSpend:
     async def test_spend_credits_insufficient_balance_raises(self):
         from backend.data.org_credit import spend_org_credits
 
-        # Atomic deduct fails (0 rows affected)
-        self.prisma.execute_raw = AsyncMock(return_value=0)
+        # Atomic deduct fails — query_raw returns empty list (no row matched)
+        self.prisma.query_raw = AsyncMock(return_value=[])
         balance_row = MagicMock(balance=5)
         self.prisma.orgbalance.find_unique = AsyncMock(return_value=balance_row)
 
@@ -1381,10 +1374,7 @@ class TestOrgCreditsSpend:
     async def test_spend_credits_with_metadata_and_workspace(self):
         from backend.data.org_credit import spend_org_credits
 
-        self.prisma.execute_raw = AsyncMock(return_value=1)
-        self.prisma.orgbalance.find_unique = AsyncMock(
-            return_value=MagicMock(balance=50)
-        )
+        self.prisma.query_raw = AsyncMock(return_value=[{"balance": 50}])
         self.prisma.orgcredittransaction.create = AsyncMock()
 
         await spend_org_credits(
@@ -1403,7 +1393,8 @@ class TestOrgCreditsSpend:
     async def test_spend_credits_no_balance_row_returns_zero_in_error(self):
         from backend.data.org_credit import spend_org_credits
 
-        self.prisma.execute_raw = AsyncMock(return_value=0)
+        # Atomic deduct fails — query_raw returns empty list (no row matched)
+        self.prisma.query_raw = AsyncMock(return_value=[])
         # No balance row at all
         self.prisma.orgbalance.find_unique = AsyncMock(return_value=None)
 
@@ -1423,11 +1414,8 @@ class TestOrgCreditsTopUp:
     async def test_top_up_creates_balance_if_not_exists(self):
         from backend.data.org_credit import top_up_org_credits
 
-        self.prisma.execute_raw = AsyncMock(return_value=1)
-        # Balance after top-up
-        self.prisma.orgbalance.find_unique = AsyncMock(
-            return_value=MagicMock(balance=100)
-        )
+        # Atomic upsert — query_raw returns RETURNING data
+        self.prisma.query_raw = AsyncMock(return_value=[{"balance": 100}])
         self.prisma.orgcredittransaction.create = AsyncMock()
 
         new_balance = await top_up_org_credits(
@@ -1437,7 +1425,7 @@ class TestOrgCreditsTopUp:
         assert new_balance == 100
 
         # Verify raw SQL uses INSERT ... ON CONFLICT (upsert)
-        raw_sql = self.prisma.execute_raw.call_args[0][0]
+        raw_sql = self.prisma.query_raw.call_args[0][0]
         assert "INSERT" in raw_sql
         assert "ON CONFLICT" in raw_sql
 
@@ -1463,10 +1451,8 @@ class TestOrgCreditsTopUp:
     async def test_top_up_without_user_id_omits_field(self):
         from backend.data.org_credit import top_up_org_credits
 
-        self.prisma.execute_raw = AsyncMock(return_value=1)
-        self.prisma.orgbalance.find_unique = AsyncMock(
-            return_value=MagicMock(balance=50)
-        )
+        # Atomic upsert — query_raw returns RETURNING data
+        self.prisma.query_raw = AsyncMock(return_value=[{"balance": 50}])
         self.prisma.orgcredittransaction.create = AsyncMock()
 
         await top_up_org_credits(org_id=ORG_ID, amount=50)
@@ -1874,7 +1860,9 @@ class TestConversionSpawnsNewPersonalOrg:
         self.prisma = MagicMock()
         self.prisma.organization.find_unique = AsyncMock(return_value=None)
         self.prisma.organization.create = AsyncMock(
-            return_value=_make_org(id="new-personal", isPersonal=True, slug="acme-personal-1")
+            return_value=_make_org(
+                id="new-personal", isPersonal=True, slug="acme-personal-1"
+            )
         )
         self.prisma.organization.update = AsyncMock()
         self.prisma.orgmember.create = AsyncMock()
@@ -1884,7 +1872,9 @@ class TestConversionSpawnsNewPersonalOrg:
         self.prisma.organizationseatassignment.create = AsyncMock()
         self.prisma.orgbalance.create = AsyncMock()
         self.prisma.organizationalias.find_unique = AsyncMock(return_value=None)
-        self.prisma.user.find_unique = AsyncMock(return_value=MagicMock(name="Test User"))
+        self.prisma.user.find_unique = AsyncMock(
+            return_value=MagicMock(name="Test User")
+        )
         mocker.patch("backend.api.features.orgs.db.prisma", self.prisma)
         # Also mock _resolve_unique_slug since it hits prisma
         mocker.patch(
@@ -1903,7 +1893,7 @@ class TestConversionSpawnsNewPersonalOrg:
             side_effect=[personal_org, converted_org]
         )
 
-        result = await convert_personal_org(ORG_ID, USER_ID)
+        await convert_personal_org(ORG_ID, USER_ID)
 
         # Old org should have isPersonal flipped
         update_calls = self.prisma.organization.update.call_args_list
@@ -1969,7 +1959,8 @@ class TestConversionSpawnsNewPersonalOrg:
 
         # Should have rolled back isPersonal
         rollback_calls = [
-            c for c in self.prisma.organization.update.call_args_list
+            c
+            for c in self.prisma.organization.update.call_args_list
             if c[1]["data"].get("isPersonal") is True
         ]
         assert len(rollback_calls) == 1
@@ -2168,7 +2159,7 @@ class TestDefaultWorkspaceProtection:
         self.prisma.team.find_unique = AsyncMock(return_value=default_ws)
         self.prisma.team.update = AsyncMock()
 
-        result = await update_team(WS_ID, {"name": "General"})
+        await update_team(WS_ID, {"name": "General"})
         self.prisma.team.update.assert_called_once()
 
     @pytest.mark.asyncio
@@ -2182,7 +2173,7 @@ class TestDefaultWorkspaceProtection:
         )
         self.prisma.team.update = AsyncMock()
 
-        result = await update_team("ws-other", {"joinPolicy": "PRIVATE"})
+        await update_team("ws-other", {"joinPolicy": "PRIVATE"})
         self.prisma.team.update.assert_called_once()
 
 
@@ -2279,7 +2270,9 @@ class TestInvitationIdempotency:
         inv = MagicMock()
         inv.acceptedAt = None
         inv.revokedAt = None
-        inv.expiresAt = datetime.now(timezone.utc) + timedelta(days=7)  # Must be in future
+        inv.expiresAt = datetime.now(timezone.utc) + timedelta(
+            days=7
+        )  # Must be in future
         inv.email = "alice@example.com"
         self.prisma.orginvitation.find_unique = AsyncMock(return_value=inv)
 
@@ -2334,7 +2327,7 @@ class TestUpdateOrgTypedModel:
         org.deletedAt = None
         self.prisma.organization.find_unique = AsyncMock(return_value=org)
 
-        result = await update_org(ORG_ID, UpdateOrgData())
+        await update_org(ORG_ID, UpdateOrgData())
 
         # Should not have called update
         self.prisma.organization.update.assert_not_called()
@@ -2527,7 +2520,9 @@ class TestPRReviewBugsRound2:
         self.prisma.orgmember.find_many = AsyncMock(return_value=[])
 
         with pytest.raises(NotFoundError):
-            await update_org_member(ORG_ID, OTHER_USER_ID, is_admin=True, is_billing_manager=None)
+            await update_org_member(
+                ORG_ID, OTHER_USER_ID, is_admin=True, is_billing_manager=None
+            )
 
     # --- Bug: test_assign_seat asserts wrong seat type ---
 
@@ -2570,6 +2565,4 @@ class TestPRReviewBugsRound2:
         )
 
         with pytest.raises(ValueError, match="does not belong"):
-            await add_team_member(
-                ws_id=WS_ID, user_id=OTHER_USER_ID, org_id="org-A"
-            )
+            await add_team_member(ws_id=WS_ID, user_id=OTHER_USER_ID, org_id="org-A")
