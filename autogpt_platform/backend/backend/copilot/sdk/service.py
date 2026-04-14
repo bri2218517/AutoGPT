@@ -35,6 +35,10 @@ from opentelemetry import trace as otel_trace
 from pydantic import BaseModel
 
 from backend.copilot.context import get_workspace_manager
+from backend.copilot.pending_messages import (
+    drain_pending_messages,
+    format_pending_as_user_message,
+)
 from backend.copilot.permissions import apply_tool_permissions
 from backend.copilot.rate_limit import get_user_tier
 from backend.copilot.transcript import (
@@ -958,17 +962,33 @@ async def _build_query_message(
     use_resume: bool,
     transcript_msg_count: int,
     session_id: str,
+    *,
+    session_msg_ceiling: int | None = None,
 ) -> tuple[str, bool]:
     """Build the query message with appropriate context.
+
+    Args:
+        session_msg_ceiling: If provided, treat ``session.messages`` as if it
+            only has this many entries when computing the gap slice.  Pass
+            ``len(session.messages)`` captured *before* appending any pending
+            messages so that mid-turn drains do not skew the gap calculation
+            and cause pending messages to be duplicated in both the gap context
+            and ``current_message``.
 
     Returns:
         Tuple of (query_message, was_compacted).
     """
     msg_count = len(session.messages)
+    # Use the ceiling if supplied (prevents pending-message duplication when
+    # messages were appended to session.messages after the drain but before
+    # this function is called).
+    effective_count = (
+        session_msg_ceiling if session_msg_ceiling is not None else msg_count
+    )
 
     if use_resume and transcript_msg_count > 0:
-        if transcript_msg_count < msg_count - 1:
-            gap = session.messages[transcript_msg_count:-1]
+        if transcript_msg_count < effective_count - 1:
+            gap = session.messages[transcript_msg_count : effective_count - 1]
             compressed, was_compressed = await _compress_messages(gap)
             gap_context = _format_conversation_context(compressed)
             if gap_context:
@@ -984,12 +1004,14 @@ async def _build_query_message(
                     f"{gap_context}\n\nNow, the user says:\n{current_message}",
                     was_compressed,
                 )
-    elif not use_resume and msg_count > 1:
+    elif not use_resume and effective_count > 1:
         logger.warning(
             f"[SDK] Using compression fallback for session "
-            f"{session_id} ({msg_count} messages) — no transcript for --resume"
+            f"{session_id} ({effective_count} messages) — no transcript for --resume"
         )
-        compressed, was_compressed = await _compress_messages(session.messages[:-1])
+        compressed, was_compressed = await _compress_messages(
+            session.messages[: effective_count - 1]
+        )
         history_context = _format_conversation_context(compressed)
         if history_context:
             return (
@@ -2106,6 +2128,7 @@ async def stream_chat_completion_sdk(
 
         async def _fetch_transcript():
             """Download transcript for --resume if applicable."""
+            assert session is not None  # narrowed at line 1898
             if not (
                 config.claude_agent_use_resume and user_id and len(session.messages) > 1
             ):
@@ -2359,6 +2382,69 @@ async def stream_chat_completion_sdk(
             if last_user:
                 current_message = last_user[-1].content or ""
 
+        # Capture the message count *before* draining so _build_query_message
+        # can compute the gap slice without including the newly-drained pending
+        # messages.  Pending messages are both appended to session.messages AND
+        # concatenated into current_message; without the ceiling the gap slice
+        # would extend into the pending messages and duplicate them in the
+        # model's input context (gap_context + current_message both containing
+        # them).
+        _pre_drain_msg_count = len(session.messages)
+
+        # Drain any messages the user queued via POST /messages/pending
+        # while the previous turn was running (or since the session was
+        # idle).  Messages are drained ATOMICALLY — one LPOP with count
+        # removes them all at once, so a concurrent push lands *after*
+        # the drain and stays queued for the next turn instead of being
+        # lost between LPOP and clear.  File IDs and context are
+        # preserved via format_pending_as_user_message.
+        #
+        # The drained content is concatenated into ``current_message``
+        # so the SDK CLI sees it in the new user message, AND appended
+        # directly to ``session.messages`` (no dedup — pending messages are
+        # atomically-popped from Redis and are never stale-cache duplicates)
+        # so the durable transcript records it too.  Session is persisted
+        # immediately after the drain so a crash doesn't lose the messages.
+        # The endpoint deliberately does NOT persist to session.messages —
+        # Redis is the single source of truth until this drain runs.
+        try:
+            pending_at_start = await drain_pending_messages(session_id)
+        except Exception:
+            logger.warning(
+                "%s drain_pending_messages failed at turn start, skipping",
+                log_prefix,
+                exc_info=True,
+            )
+            pending_at_start = []
+        if pending_at_start:
+            logger.info(
+                "%s Draining %d pending message(s) at turn start",
+                log_prefix,
+                len(pending_at_start),
+            )
+            pending_texts: list[str] = [
+                format_pending_as_user_message(pm)["content"] for pm in pending_at_start
+            ]
+            for pt in pending_texts:
+                # Append directly — pending messages are atomically-popped from
+                # Redis and are never stale-cache duplicates, so the
+                # maybe_append_user_message dedup is wrong here.
+                session.messages.append(ChatMessage(role="user", content=pt))
+            if current_message.strip():
+                current_message = current_message + "\n\n" + "\n\n".join(pending_texts)
+            else:
+                current_message = "\n\n".join(pending_texts)
+            # Persist immediately so a crash between here and the finally block
+            # doesn't lose messages that were already drained from Redis.
+            try:
+                session = await upsert_chat_session(session)
+            except Exception as _persist_err:
+                logger.warning(
+                    "%s Failed to persist drained pending messages: %s",
+                    log_prefix,
+                    _persist_err,
+                )
+
         if not current_message.strip():
             yield StreamError(
                 errorText="Message cannot be empty.",
@@ -2394,6 +2480,7 @@ async def stream_chat_completion_sdk(
             use_resume,
             transcript_msg_count,
             session_id,
+            session_msg_ceiling=_pre_drain_msg_count,
         )
         # If files are attached, prepare them: images become vision
         # content blocks in the user message, other files go to sdk_cwd.
@@ -2507,6 +2594,7 @@ async def stream_chat_completion_sdk(
                     state.use_resume,
                     state.transcript_msg_count,
                     session_id,
+                    session_msg_ceiling=_pre_drain_msg_count,
                 )
                 if attachments.hint:
                     state.query_message = f"{state.query_message}\n\n{attachments.hint}"
@@ -2836,6 +2924,11 @@ async def stream_chat_completion_sdk(
 
         raise
     finally:
+        # Pending messages are drained atomically at the start of each
+        # turn (see drain_pending_messages call above), so there's
+        # nothing to clean up here — any message pushed after that
+        # point belongs to the next turn.
+
         # --- Close OTEL context (with cost attributes) ---
         if _otel_ctx is not None:
             try:
