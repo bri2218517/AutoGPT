@@ -133,10 +133,12 @@ export function DecomposeGoalTool({
       const filledSteps = editableStepsRef.current.filter((s) =>
         s.description.trim(),
       );
-      const list = filledSteps
-        .map((s, i) => `${i + 1}. ${s.description}`)
-        .join("; ");
-      return `Approved with modifications. Please build the agent following these steps: ${list}`;
+      if (filledSteps.length > 0) {
+        const list = filledSteps
+          .map((s, i) => `${i + 1}. ${s.description}`)
+          .join("; ");
+        return `Approved with modifications. Please build the agent following these steps: ${list}`;
+      }
     }
     return "Approved. Please build the agent.";
   }
