@@ -482,11 +482,20 @@ async def get_platform_cost_dashboard(
         results[7] if tracking_type is not None else total_agg_groups
     )
 
-    # Compute token grand-totals BEFORE slicing so the cap doesn't skew totals.
-    # by_provider_groups already groups by (provider, trackingType, model) with
-    # the same filter scope as total_agg_groups — no extra query needed.
-    total_input_tokens = sum(_si(r, "inputTokens") for r in by_provider_groups)
-    total_output_tokens = sum(_si(r, "outputTokens") for r in by_provider_groups)
+    # Compute token grand-totals from the unfiltered aggregate so they remain
+    # consistent with the avg-token stats (which also use unfiltered data).
+    # Using by_provider_groups here would give 0 tokens when tracking_type='cost_usd'
+    # because cost_usd rows carry no token data, contradicting non-zero averages.
+    total_input_tokens = sum(
+        _si(r, "inputTokens")
+        for r in total_agg_no_tracking_type_groups
+        if r.get("trackingType") == "tokens"
+    )
+    total_output_tokens = sum(
+        _si(r, "outputTokens")
+        for r in total_agg_no_tracking_type_groups
+        if r.get("trackingType") == "tokens"
+    )
 
     # Sort by_provider by total cost descending and cap at MAX_PROVIDER_ROWS.
     by_provider_groups.sort(key=lambda r: _si(r, "costMicrodollars"), reverse=True)
