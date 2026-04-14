@@ -1,5 +1,7 @@
 import {
   getGetV2ListSessionsQueryKey,
+  getV2GetPendingMessages,
+  postV2QueuePendingMessage,
   useDeleteV2DeleteSession,
   useGetV2ListSessions,
   type getV2ListSessionsResponse,
@@ -33,6 +35,7 @@ export function useCopilotPage() {
   const { isUserLoading, isLoggedIn } = useSupabase();
   const [isUploadingFiles, setIsUploadingFiles] = useState(false);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
+  const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const isModeToggleEnabled = useGetFlag(Flag.CHAT_MODE_OPTION);
@@ -248,6 +251,36 @@ export function useCopilotPage() {
     isUserStoppingRef.current = false;
 
     if (sessionId) {
+      const isInFlight = status === "streaming" || status === "submitted";
+
+      if (isInFlight) {
+        // File attachments cannot be included in a queued pending message —
+        // the queue API does not support file_ids.  Inform the user and bail.
+        if (files && files.length > 0) {
+          toast({
+            title: "Please wait to attach files",
+            description:
+              "File attachments can't be queued until the current response finishes.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        // Queue the message into the pending buffer so it is picked up between
+        // tool-call rounds by the currently running executor turn.
+        try {
+          await postV2QueuePendingMessage(sessionId, { message: trimmed });
+          setQueuedMessage(trimmed);
+        } catch {
+          toast({
+            title: "Could not queue message",
+            description: "Please wait for the current response to finish.",
+            variant: "destructive",
+          });
+        }
+        return;
+      }
+
       if (files && files.length > 0) {
         setIsUploadingFiles(true);
         try {
@@ -286,6 +319,43 @@ export function useCopilotPage() {
 
   const sessions =
     sessionsResponse?.status === 200 ? sessionsResponse.data.sessions : [];
+
+  // When a session loads (or changes), restore any queued message from the
+  // backend buffer so the indicator survives a page refresh (Fix 2).
+  useEffect(() => {
+    if (!sessionId) {
+      setQueuedMessage(null);
+      return;
+    }
+    void getV2GetPendingMessages(sessionId).then((res) => {
+      if (res.status === 200 && res.data.count > 0) {
+        setQueuedMessage(
+          res.data.messages[res.data.messages.length - 1] ?? null,
+        );
+      }
+    });
+  }, [sessionId]);
+
+  // When a turn ends, peek the buffer.  Only clear the indicator if the
+  // buffer is empty — on the SDK path pending messages are drained at the
+  // *start* of the next turn, so the buffer may still be non-empty after
+  // Turn 1 finishes (Fix 3).
+  useEffect(() => {
+    if (status !== "ready" && status !== "error") return;
+    if (!sessionId) {
+      setQueuedMessage(null);
+      return;
+    }
+    void getV2GetPendingMessages(sessionId).then((res) => {
+      if (res.status !== 200 || res.data.count === 0) {
+        setQueuedMessage(null);
+      } else {
+        setQueuedMessage(
+          res.data.messages[res.data.messages.length - 1] ?? null,
+        );
+      }
+    });
+  }, [status, sessionId]);
 
   // Start title polling when stream ends cleanly — sidebar title animates in
   const titlePollRef = useRef<ReturnType<typeof setInterval>>();
@@ -374,6 +444,10 @@ export function useCopilotPage() {
     }
   }
 
+  async function onEnqueue(message: string) {
+    await onSend(message);
+  }
+
   return {
     sessionId,
     messages,
@@ -390,6 +464,8 @@ export function useCopilotPage() {
     isLoggedIn,
     createSession,
     onSend,
+    onEnqueue,
+    queuedMessage,
     // Pagination
     hasMoreMessages: hasMore,
     isLoadingMore,
