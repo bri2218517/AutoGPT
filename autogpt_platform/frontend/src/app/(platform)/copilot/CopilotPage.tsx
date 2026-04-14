@@ -159,7 +159,7 @@ export function CopilotPage() {
 
   return (
     <div
-      className="relative flex h-full w-full flex-col overflow-hidden bg-background px-0"
+      className="relative flex h-full w-full flex-col overflow-hidden bg-zinc-100 px-0"
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}

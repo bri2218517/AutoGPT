@@ -6,37 +6,38 @@ import {
   useGetV2ListSessions,
   usePatchV2UpdateSessionTitle,
 } from "@/app/api/__generated__/endpoints/chat/chat";
-import { Button } from "@/components/atoms/Button/Button";
 import { LoadingSpinner } from "@/components/atoms/LoadingSpinner/LoadingSpinner";
 import { Text } from "@/components/atoms/Text/Text";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/molecules/DropdownMenu/DropdownMenu";
 import { toast } from "@/components/molecules/Toast/use-toast";
 import { cn } from "@/lib/utils";
 import { ErrorCard } from "@/components/molecules/ErrorCard/ErrorCard";
 import {
   CheckCircle,
   CircleNotch,
-  DotsThree,
-  PlusIcon,
+  PencilSimple,
+  Trash,
+  X,
 } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import { parseAsString, useQueryState } from "nuqs";
 import { useEffect, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useCopilotUIStore } from "@/app/(platform)/copilot/store";
+import { Button } from "@/components/atoms/Button/Button";
+import { Dialog } from "@/components/molecules/Dialog/Dialog";
 import { DeleteChatDialog } from "@/app/(platform)/copilot/components/DeleteChatDialog/DeleteChatDialog";
-import { UsageLimits } from "@/app/(platform)/copilot/components/UsageLimits/UsageLimits";
-import { NotificationToggle } from "@/app/(platform)/copilot/components/ChatSidebar/components/NotificationToggle/NotificationToggle";
 
 export function ChatSessionList() {
   const isMobile = useIsMobile();
+  const pathname = usePathname();
+  const router = useRouter();
+  const isCopilotPage = pathname === "/" || pathname.startsWith("/copilot");
   const [sessionId, setSessionId] = useQueryState("sessionId", parseAsString);
+  const activeSessionId = isCopilotPage ? sessionId : null;
+  const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
+  const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null);
   const {
     sessionToDelete,
     setSessionToDelete,
@@ -82,9 +83,8 @@ export function ChatSessionList() {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
-  const renameCancelledRef = useRef(false);
 
-  const { mutate: renameSession } = usePatchV2UpdateSessionTitle({
+  const { mutate: renameSession, isPending: isRenaming } = usePatchV2UpdateSessionTitle({
     mutation: {
       onSuccess: () => {
         queryClient.invalidateQueries({
@@ -112,6 +112,10 @@ export function ChatSessionList() {
   }, [editingSessionId]);
 
   useEffect(() => {
+    setLoadingSessionId(null);
+  }, [pathname]);
+
+  useEffect(() => {
     if (!sessionId || !completedSessionIDs.has(sessionId)) return;
     clearCompletedSession(sessionId);
     const remaining = completedSessionIDs.size - 1;
@@ -127,7 +131,12 @@ export function ChatSessionList() {
   }
 
   function handleSelectSession(id: string) {
-    setSessionId(id);
+    if (!isCopilotPage) {
+      setLoadingSessionId(id);
+      router.push(`/copilot?sessionId=${id}`);
+    } else {
+      setSessionId(id);
+    }
   }
 
   function handleRenameClick(
@@ -136,7 +145,6 @@ export function ChatSessionList() {
     title: string | null | undefined,
   ) {
     e.stopPropagation();
-    renameCancelledRef.current = false;
     setEditingSessionId(id);
     setEditingTitle(title || "");
   }
@@ -172,7 +180,7 @@ export function ChatSessionList() {
     }
   }
 
-  function formatDate(dateString: string) {
+  function getDateGroup(dateString: string) {
     const date = new Date(dateString);
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
@@ -180,52 +188,42 @@ export function ChatSessionList() {
 
     if (diffDays === 0) return "Today";
     if (diffDays === 1) return "Yesterday";
-    if (diffDays < 7) return `${diffDays} days ago`;
+    if (diffDays < 7) return "Previous 7 days";
+    if (diffDays < 30) return "Previous 30 days";
 
-    const day = date.getDate();
-    const ordinal =
-      day % 10 === 1 && day !== 11
-        ? "st"
-        : day % 10 === 2 && day !== 12
-          ? "nd"
-          : day % 10 === 3 && day !== 13
-            ? "rd"
-            : "th";
-    const month = date.toLocaleDateString("en-US", { month: "short" });
+    const month = date.toLocaleDateString("en-US", { month: "long" });
     const year = date.getFullYear();
+    return `${month} ${year}`;
+  }
 
-    return `${day}${ordinal} ${month} ${year}`;
+  function groupSessions(
+    items: typeof sessions,
+  ): { label: string; items: typeof sessions }[] {
+    const groups: Map<string, typeof sessions> = new Map();
+    for (const session of items) {
+      const label = getDateGroup(session.updated_at);
+      const existing = groups.get(label);
+      if (existing) {
+        existing.push(session);
+      } else {
+        groups.set(label, [session]);
+      }
+    }
+    return Array.from(groups, ([label, items]) => ({ label, items }));
   }
 
   return (
     <>
-      <div className="flex flex-col gap-3 px-3 pb-3">
-        <div className="flex items-center justify-between">
-          <Text variant="h3" size="body-medium">
-            Your chats
-          </Text>
-          <div className="flex items-center">
-            <UsageLimits />
-            <NotificationToggle />
-          </div>
-        </div>
-        {sessionId ? (
-          <Button
-            variant="primary"
-            size="small"
-            onClick={handleNewChat}
-            className="w-full"
-            leftIcon={<PlusIcon className="h-4 w-4" weight="bold" />}
-          >
-            New Chat
-          </Button>
-        ) : null}
+      <div className="flex flex-col px-3 pb-4">
+        <span className="text-sm font-medium text-zinc-600">
+          All tasks
+        </span>
       </div>
 
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-5">
         {isLoadingSessions ? (
           <div className="flex min-h-[30rem] items-center justify-center py-4">
-            <LoadingSpinner size="small" className="text-neutral-600" />
+            <LoadingSpinner size="medium" className="text-neutral-600" />
           </div>
         ) : isSessionsError ? (
           <div className="px-3 py-4">
@@ -236,122 +234,132 @@ export function ChatSessionList() {
             No conversations yet
           </p>
         ) : (
-          sessions.map((session) => (
-            <div
-              key={session.id}
-              className={cn(
-                "group relative w-full rounded-lg transition-colors",
-                session.id === sessionId ? "bg-zinc-100" : "hover:bg-zinc-50",
-              )}
-            >
-              {editingSessionId === session.id ? (
-                <div className="px-3 py-2.5">
-                  <input
-                    ref={renameInputRef}
-                    type="text"
-                    aria-label="Rename chat"
-                    value={editingTitle}
-                    onChange={(e) => setEditingTitle(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.currentTarget.blur();
-                      } else if (e.key === "Escape") {
-                        renameCancelledRef.current = true;
-                        setEditingSessionId(null);
-                      }
-                    }}
-                    onBlur={() => {
-                      if (renameCancelledRef.current) {
-                        renameCancelledRef.current = false;
-                        return;
-                      }
-                      handleRenameSubmit(session.id);
-                    }}
-                    className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-800 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
-                  />
-                </div>
-              ) : (
-                <button
-                  onClick={() => handleSelectSession(session.id)}
-                  className="w-full px-3 py-2.5 pr-10 text-left"
+          groupSessions(sessions).map((group) => (
+            <div key={group.label} className="flex flex-col">
+              <span className="px-3 pb-0.5 text-xs font-medium text-zinc-600">
+                {group.label}
+              </span>
+              {group.items.map((session) => (
+                <div
+                  key={session.id}
+                  className={cn(
+                    "relative w-full rounded-xl transition-colors",
+                    session.id === activeSessionId
+                      ? "bg-zinc-200/60"
+                      : "hover:bg-sidebar-accent",
+                  )}
+                  onMouseEnter={() => setHoveredSessionId(session.id)}
+                  onMouseLeave={() => setHoveredSessionId(null)}
                 >
-                  <div className="flex min-w-0 max-w-full items-center gap-2">
-                    <div className="min-w-0 flex-1">
-                      <Text
-                        variant="body"
-                        className={cn(
-                          "truncate font-normal",
-                          session.id === sessionId
-                            ? "text-zinc-600"
-                            : "text-zinc-800",
-                        )}
-                      >
-                        <AnimatePresence mode="wait" initial={false}>
-                          <motion.span
-                            key={session.title || "untitled"}
-                            initial={{ opacity: 0, y: 4 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -4 }}
-                            transition={{ duration: 0.2 }}
-                            className="block truncate"
+                  <button
+                      onClick={() => handleSelectSession(session.id)}
+                      className="w-full px-3 py-2.5 pr-10 text-left"
+                    >
+                      <div className="flex min-w-0 max-w-full items-center gap-2">
+                        <div className="min-w-0 flex-1">
+                          <Text
+                            variant="body"
+                            className={cn(
+                              "truncate text-sm font-normal",
+                              session.id === activeSessionId
+                                ? "text-zinc-900"
+                                : "text-zinc-900",
+                            )}
                           >
-                            {session.title || "Untitled chat"}
-                          </motion.span>
-                        </AnimatePresence>
-                      </Text>
-                      <Text variant="small" className="text-neutral-400">
-                        {formatDate(session.updated_at)}
-                      </Text>
-                    </div>
-                    {session.is_processing &&
-                      session.id !== sessionId &&
-                      !completedSessionIDs.has(session.id) && (
-                        <CircleNotch
-                          className="h-4 w-4 shrink-0 animate-spin text-zinc-400"
-                          weight="bold"
-                        />
-                      )}
-                    {completedSessionIDs.has(session.id) &&
-                      session.id !== sessionId && (
-                        <CheckCircle
-                          className="h-4 w-4 shrink-0 text-green-500"
-                          weight="fill"
-                        />
-                      )}
-                  </div>
-                </button>
-              )}
-              {editingSessionId !== session.id && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      onClick={(e) => e.stopPropagation()}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1.5 text-zinc-600 transition-all hover:bg-neutral-100"
-                      aria-label="More actions"
-                    >
-                      <DotsThree className="h-4 w-4" />
+                            <AnimatePresence mode="wait" initial={false}>
+                              <motion.span
+                                key={session.title || "untitled"}
+                                initial={{ opacity: 0, y: 4 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -4 }}
+                                transition={{ duration: 0.2 }}
+                                className="block truncate"
+                              >
+                                {session.title || "Untitled chat"}
+                              </motion.span>
+                            </AnimatePresence>
+                          </Text>
+                        </div>
+                        {loadingSessionId === session.id && (
+                          <CircleNotch
+                            className="h-4 w-4 shrink-0 animate-spin text-zinc-600"
+                            weight="bold"
+                          />
+                        )}
+                        {!loadingSessionId &&
+                          session.is_processing &&
+                          session.id !== activeSessionId &&
+                          !completedSessionIDs.has(session.id) && (
+                            <CircleNotch
+                              className="h-4 w-4 shrink-0 animate-spin text-zinc-400"
+                              weight="bold"
+                            />
+                          )}
+                        {!loadingSessionId &&
+                          completedSessionIDs.has(session.id) &&
+                          session.id !== activeSessionId && (
+                            <CheckCircle
+                              className="h-4 w-4 shrink-0 text-green-500"
+                              weight="fill"
+                            />
+                          )}
+                      </div>
                     </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      onClick={(e) =>
-                        handleRenameClick(e, session.id, session.title)
-                      }
-                    >
-                      Rename
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={(e) =>
-                        handleDeleteClick(e, session.id, session.title)
-                      }
-                      disabled={isDeleting}
-                      className="text-red-600 focus:bg-red-50 focus:text-red-600"
-                    >
-                      Delete chat
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
+                  <AnimatePresence>
+                    {hoveredSessionId === session.id && (
+                        <motion.div
+                          initial={{ x: "100%" }}
+                          animate={{ x: 0 }}
+                          exit={{ x: "100%" }}
+                          transition={{
+                            duration: 0.25,
+                            ease: [0.32, 0.72, 0, 1],
+                          }}
+                          className="absolute right-0 top-0 flex h-full items-center"
+                        >
+                          <div
+                            className="pointer-events-none h-full w-8 bg-gradient-to-r from-transparent"
+                            style={{
+                              ["--tw-gradient-to" as string]:
+                                session.id === activeSessionId
+                                  ? "rgb(235 235 238)"
+                                  : "hsl(var(--sidebar-accent))",
+                            }}
+                          />
+                          <div
+                            className="flex h-full items-center gap-0.5 rounded-r-xl pr-2"
+                            style={{
+                              backgroundColor:
+                                session.id === activeSessionId
+                                  ? "rgb(235 235 238)"
+                                  : "hsl(var(--sidebar-accent))",
+                            }}
+                          >
+                            <button
+                              onClick={(e) =>
+                                handleRenameClick(e, session.id, session.title)
+                              }
+                              className="flex size-7 items-center justify-center rounded-xl transition-colors hover:bg-zinc-200"
+                              aria-label="Rename chat"
+                            >
+                              <PencilSimple className="!size-[18px]" />
+                            </button>
+                            <button
+                              onClick={(e) =>
+                                handleDeleteClick(e, session.id, session.title)
+                              }
+                              disabled={isDeleting}
+                              className="flex size-7 items-center justify-center rounded-xl transition-colors hover:bg-red-100 hover:text-red-600"
+                              aria-label="Delete chat"
+                            >
+                              <Trash className="!size-[18px]" />
+                            </button>
+                          </div>
+                        </motion.div>
+                      )}
+                  </AnimatePresence>
+                </div>
+              ))}
             </div>
           ))
         )}
@@ -365,6 +373,64 @@ export function ChatSessionList() {
           onCancel={handleCancelDelete}
         />
       )}
+
+      <Dialog
+        title="Edit title"
+        styling={{ maxWidth: "28rem", minWidth: "auto" }}
+        controlled={{
+          isOpen: !!editingSessionId,
+          set: async (open) => {
+            if (!open) setEditingSessionId(null);
+          },
+        }}
+      >
+        <Dialog.Content>
+          <p className="text-sm text-zinc-500">Please enter a new title</p>
+          <div className="relative mt-3">
+            <input
+              ref={renameInputRef}
+              type="text"
+              value={editingTitle}
+              onChange={(e) => setEditingTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && editingSessionId) {
+                  handleRenameSubmit(editingSessionId);
+                }
+              }}
+              className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5 pr-10 text-sm text-zinc-900 outline-none focus:border-zinc-300 focus:ring-1 focus:ring-zinc-300"
+            />
+            {editingTitle && (
+              <button
+                onClick={() => setEditingTitle("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+              >
+                <X className="size-4" weight="bold" />
+              </button>
+            )}
+          </div>
+          <Dialog.Footer>
+            <Button
+              variant="secondary"
+              size="medium"
+              onClick={() => setEditingSessionId(null)}
+              disabled={isRenaming}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="medium"
+              onClick={() => {
+                if (editingSessionId) handleRenameSubmit(editingSessionId);
+              }}
+              disabled={!editingTitle.trim() || isRenaming}
+              loading={isRenaming}
+            >
+              Confirm
+            </Button>
+          </Dialog.Footer>
+        </Dialog.Content>
+      </Dialog>
     </>
   );
 }

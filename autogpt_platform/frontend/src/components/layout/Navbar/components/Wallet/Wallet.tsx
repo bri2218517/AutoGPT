@@ -296,7 +296,7 @@ export function Wallet() {
         <div className="relative inline-block">
           <button
             ref={walletRef}
-            className="group relative flex flex-nowrap items-center gap-2 rounded-md bg-zinc-50 px-3 py-2 text-sm"
+            className="group relative flex flex-nowrap items-center gap-2 rounded-xl border border-violet-400 bg-violet-50 px-3 py-2 text-sm text-violet-900"
             onClick={onWalletOpen}
           >
             <WalletIcon size={20} className="inline-block xl:hidden" />

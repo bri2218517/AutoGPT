@@ -6,6 +6,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/__legacy__/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useSidebar } from "@/components/ui/sidebar";
 import { Pulse } from "@phosphor-icons/react";
 import { ActivityDropdown } from "./components/ActivityDropdown/ActivityDropdown";
 import { formatNotificationCount } from "./helpers";
@@ -19,44 +25,43 @@ export function AgentActivityDropdown() {
     isOpen,
     setIsOpen,
   } = useAgentActivityDropdown();
+  const { state } = useSidebar();
+  const isSidebarCollapsed = state === "collapsed";
 
   const activeCount = activeExecutions.length;
 
   return (
     <Popover open={isOpen} onOpenChange={setIsOpen}>
-      <PopoverTrigger asChild>
-        <button
-          className={`group relative h-[2.5rem] w-[2.5rem] rounded-full p-2 transition-colors hover:bg-white ${isOpen ? "bg-white" : ""}`}
-          data-testid="agent-activity-button"
-          aria-label="View Agent Activity"
-        >
-          <Pulse size={22} className="text-black" />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              className={`group relative flex size-8 items-center justify-center rounded-md transition-colors hover:bg-sidebar-accent ${isOpen ? "bg-sidebar-accent" : ""}`}
+              data-testid="agent-activity-button"
+              aria-label="View Agent Activity"
+            >
+              <Pulse className="!size-5" />
 
-          {activeCount > 0 && (
-            <>
-              {/* Running Agents Rotating Badge */}
-              <div
-                data-testid="agent-activity-badge"
-                className="absolute right-[1px] top-[0.5px] flex h-5 w-5 items-center justify-center rounded-full bg-purple-600 text-[10px] font-medium text-white"
-              >
-                {formatNotificationCount(activeCount)}
-                <div className="absolute -inset-0.5 animate-spin rounded-full border-[3px] border-transparent border-r-purple-200 border-t-purple-200" />
-              </div>
-              {/* Running Agent Hover Hint */}
-              <div
-                data-testid="agent-activity-hover-hint"
-                className="absolute bottom-[-2.5rem] left-1/2 z-50 hidden -translate-x-1/2 transform whitespace-nowrap rounded-small bg-white px-4 py-2 shadow-md group-hover:block"
-              >
-                <Text variant="body-medium">
-                  {activeCount} active agent{activeCount > 1 ? "s" : ""}
-                </Text>
-              </div>
-            </>
-          )}
-        </button>
-      </PopoverTrigger>
+              {activeCount > 0 && (
+                <div
+                  data-testid="agent-activity-badge"
+                  className="absolute -right-0.5 -top-0.5 flex size-3.5 items-center justify-center rounded-full bg-purple-600 text-[8px] font-medium text-white"
+                >
+                  {formatNotificationCount(activeCount)}
+                  <div className="absolute -inset-0.5 animate-spin rounded-full border-2 border-transparent border-r-purple-200 border-t-purple-200" />
+                </div>
+              )}
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side={isSidebarCollapsed ? "right" : "bottom"}>
+          {activeCount > 0
+            ? `${activeCount} active agent${activeCount > 1 ? "s" : ""}`
+            : "Agent Activity"}
+        </TooltipContent>
+      </Tooltip>
 
-      <PopoverContent className="w-80 p-0" align="center" sideOffset={8}>
+      <PopoverContent className="w-80 p-0" side={isSidebarCollapsed ? "right" : "bottom"} align="start" sideOffset={8}>
         <ActivityDropdown
           activeExecutions={activeExecutions}
           recentCompletions={recentCompletions}
