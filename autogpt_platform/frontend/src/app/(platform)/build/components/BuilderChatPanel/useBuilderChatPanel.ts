@@ -78,7 +78,6 @@ interface UseBuilderChatPanelArgs {
  * - Input: owns the textarea value and keyboard shortcuts (Enter / Shift+Enter / Escape).
  */
 export function useBuilderChatPanel({
-  isGraphLoaded = false,
   onGraphEdited,
   panelRef,
 }: UseBuilderChatPanelArgs = {}) {
@@ -217,7 +216,19 @@ export function useBuilderChatPanel({
                 throw new Error(
                   "Authentication failed — please sign in again.",
                 );
-              const messageText = extractTextFromParts(last.parts ?? []);
+              let messageText = extractTextFromParts(last.parts ?? []);
+              // Inject graph context into the first user message so the model
+              // knows the current graph state without requiring an auto-sent
+              // seed turn. hasSentSeedMessageRef is a stable ref so reading
+              // .current here always reflects the latest value even though this
+              // callback is created inside a useMemo.
+              if (last.role === "user" && !hasSentSeedMessageRef.current) {
+                hasSentSeedMessageRef.current = true;
+                const edges = useEdgeStore.getState().edges;
+                const currentNodes = useNodeStore.getState().nodes;
+                const summary = serializeGraphForChat(currentNodes, edges);
+                messageText = buildSeedPrompt(summary, messageText);
+              }
               return {
                 body: {
                   message: messageText,
@@ -243,19 +254,9 @@ export function useBuilderChatPanel({
   // in their dependency arrays.
   sendMessageRef.current = sendMessage;
 
-  // Send the seed message once per session when the session becomes available
-  // and the graph is loaded. The ref guard prevents duplicate sends when the
-  // effect re-runs due to dependency changes.
-  useEffect(() => {
-    if (!sessionId || !isGraphLoaded || hasSentSeedMessageRef.current) return;
-    hasSentSeedMessageRef.current = true;
-    const edges = useEdgeStore.getState().edges;
-    const summary = serializeGraphForChat(nodes, edges);
-    sendMessageRef.current?.({ text: buildSeedPrompt(summary) });
-    // nodes is intentionally excluded: the seed only fires once per session and
-    // reading the live value here is sufficient. edges are read via getState().
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, isGraphLoaded]);
+  // Graph context is injected into the first user message via the transport's
+  // prepareSendMessagesRequest — no auto-send needed. The hasSentSeedMessageRef
+  // ref guards the single injection so subsequent turns send the user's raw text.
 
   // Parsed actions from all assistant messages, accumulated across turns.
   // Gated on `status === "ready"` so parsing only runs on completed turns.
