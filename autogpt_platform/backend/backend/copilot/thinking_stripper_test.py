@@ -112,3 +112,26 @@ def test_nested_tags_split_across_chunks() -> None:
     assert "inner" not in out
     assert "still_inside" not in out
     assert out == "visible"
+
+
+def test_flush_tail_not_re_suppressed_on_next_process() -> None:
+    """Regression: a stream ending with a partial tag opener must survive flush().
+
+    flush() returns the buffered prefix that was withheld because it *might* be
+    the start of a reasoning tag (e.g. "Hello <inter").  After flush() the
+    buffer is empty.  Calling process() on that flushed tail in a fresh context
+    must return it unchanged — the tail is safe plain text, not a live tag.
+    """
+    s = ThinkingStripper()
+    # Stream ends mid-way through a potential tag opener — stripper buffers " <inter".
+    out = s.process("Hello <inter")
+    tail = s.flush()
+    # The full text "Hello <inter" must be delivered.
+    assert out + tail == "Hello <inter"
+    # After flush, the stripper is reset.  Calling process on the flushed tail
+    # (simulating what _dispatch_response does when skip_strip=False) would
+    # re-buffer " <inter" and return "".  This test documents that flush() clears
+    # the buffer so a new process() call starts clean — caller must use skip_strip.
+    s2 = ThinkingStripper()
+    out2 = s2.process("safe text")
+    assert out2 == "safe text"  # unaffected by prior flush

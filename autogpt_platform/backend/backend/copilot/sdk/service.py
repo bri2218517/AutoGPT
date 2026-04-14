@@ -1145,6 +1145,7 @@ def _dispatch_response(
     state: "_RetryState",
     entries_replaced: bool,
     log_prefix: str,
+    skip_strip: bool = False,
 ) -> StreamBaseResponse | None:
     """Process a single adapter response and update session/accumulator state.
 
@@ -1157,6 +1158,10 @@ def _dispatch_response(
     - Accumulating text deltas into `assistant_response`
     - Appending tool input/output to session messages and transcript
     - Detecting `StreamFinish`
+
+    Args:
+        skip_strip: When True, bypass ThinkingStripper.process() for this delta.
+            Used for the flushed tail delta which is already stripped content.
     """
     if isinstance(response, StreamStart):
         return None
@@ -1193,12 +1198,17 @@ def _dispatch_response(
 
     if isinstance(response, StreamTextDelta):
         raw_delta = response.delta or ""
-        # Strip <internal_reasoning> / <thinking> tags that non-extended-
-        # thinking models (e.g. Sonnet) may emit as visible text.
-        delta = acc.thinking_stripper.process(raw_delta)
-        if not delta:
-            # Stripper is buffering a potential tag — suppress this event.
-            return None
+        if skip_strip:
+            # Pre-stripped tail from ThinkingStripper.flush() — bypass process()
+            # to avoid re-suppressing content that looks like a partial tag opener.
+            delta = raw_delta
+        else:
+            # Strip <internal_reasoning> / <thinking> tags that non-extended-
+            # thinking models (e.g. Sonnet) may emit as visible text.
+            delta = acc.thinking_stripper.process(raw_delta)
+            if not delta:
+                # Stripper is buffering a potential tag — suppress this event.
+                return None
         # Replace the delta with the stripped version for the SSE client.
         response = StreamTextDelta(id=response.id, delta=delta)
         if acc.has_tool_results and acc.has_appended_assistant:
@@ -1750,12 +1760,17 @@ async def _run_stream_attempt(
             # StreamTextDelta BEFORE the StreamTextEnd so the Vercel AI SDK
             # receives the tail inside the still-open text block (correct
             # protocol order: TextDelta → TextEnd → FinishStep → Finish).
+            tail_delta: StreamTextDelta | None = None
             if any(isinstance(r, StreamFinish) for r in adapter_responses):
                 tail = acc.thinking_stripper.flush()
                 if tail and not ended_with_stream_error:
-                    acc.assistant_response.content = (
-                        acc.assistant_response.content or ""
-                    ) + tail
+                    # Do NOT manually append tail to acc.assistant_response.content
+                    # here — _dispatch_response handles that.  Doing it here would
+                    # double-append because _dispatch_response also updates the
+                    # accumulator.  Instead, mark the delta as pre-stripped so
+                    # _dispatch_response bypasses ThinkingStripper.process() for it
+                    # (re-processing could suppress a tail that looks like a partial
+                    # tag opener, e.g. "Hello <inter" → buffered again → lost).
                     tail_delta = StreamTextDelta(
                         id=state.adapter.text_block_id, delta=tail
                     )
@@ -1770,7 +1785,13 @@ async def _run_stream_attempt(
                     adapter_responses.insert(insert_at, tail_delta)
             for response in adapter_responses:
                 dispatched = _dispatch_response(
-                    response, acc, ctx, state, entries_replaced, ctx.log_prefix
+                    response,
+                    acc,
+                    ctx,
+                    state,
+                    entries_replaced,
+                    ctx.log_prefix,
+                    skip_strip=response is tail_delta,
                 )
                 if dispatched is not None:
                     yield dispatched
