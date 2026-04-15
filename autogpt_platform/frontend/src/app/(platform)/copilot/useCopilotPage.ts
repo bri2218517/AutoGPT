@@ -1,5 +1,7 @@
 import {
   getGetV2ListSessionsQueryKey,
+  getV2GetPendingMessages,
+  postV2QueuePendingMessage,
   useDeleteV2DeleteSession,
   useGetV2ListSessions,
   type getV2ListSessionsResponse,
@@ -33,6 +35,7 @@ export function useCopilotPage() {
   const { isUserLoading, isLoggedIn } = useSupabase();
   const [isUploadingFiles, setIsUploadingFiles] = useState(false);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
+  const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
   const queryClient = useQueryClient();
 
   const isModeToggleEnabled = useGetFlag(Flag.CHAT_MODE_OPTION);
@@ -88,6 +91,16 @@ export function useCopilotPage() {
       initialHasMore: hasMoreMessages,
       initialPageRawMessages: rawSessionMessages,
     });
+
+  // Ref that mirrors whether a stream turn is currently in-flight.
+  // Updated synchronously on every render so it always reflects the latest
+  // status — unlike reading `status` inside onSend (which captures the
+  // closure's render-cycle value and can be stale for a frame).
+  // Setting it to true *before* calling sendMessage prevents rapid
+  // double-presses from both routing to /stream before React can re-render
+  // with status="submitted".
+  const isInflightRef = useRef(false);
+  isInflightRef.current = status === "streaming" || status === "submitted";
 
   // Combine older (paginated) messages with current page messages,
   // merging consecutive assistant UIMessages at the page boundary so
@@ -248,12 +261,48 @@ export function useCopilotPage() {
     isUserStoppingRef.current = false;
 
     if (sessionId) {
+      const isInFlight = isInflightRef.current;
+
+      if (isInFlight) {
+        // File attachments cannot be included in a queued pending message —
+        // the queue API does not support file_ids.  Inform the user and bail.
+        if (files && files.length > 0) {
+          toast({
+            title: "Please wait to attach files",
+            description:
+              "File attachments can't be queued until the current response finishes.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        // Queue the message into the pending buffer so it is picked up between
+        // tool-call rounds by the currently running executor turn.
+        try {
+          await postV2QueuePendingMessage(sessionId, { message: trimmed });
+          setQueuedMessages((prev) => [...prev, trimmed]);
+        } catch (err) {
+          toast({
+            title: "Could not queue message",
+            description: "Please wait for the current response to finish.",
+            variant: "destructive",
+          });
+          throw err;
+        }
+        return;
+      }
+
+      // Mark in-flight synchronously before sendMessage so any rapid
+      // second press sees isInflightRef.current=true and routes to /pending
+      // instead of triggering a duplicate /stream POST.
+      isInflightRef.current = true;
       if (files && files.length > 0) {
         setIsUploadingFiles(true);
         try {
           const uploaded = await uploadFiles(files, sessionId);
           if (uploaded.length === 0) {
             // All uploads failed — abort send so chips revert to editable
+            isInflightRef.current = false;
             throw new Error("All file uploads failed");
           }
           const fileParts = buildFileParts(uploaded);
@@ -286,6 +335,55 @@ export function useCopilotPage() {
 
   const sessions =
     sessionsResponse?.status === 200 ? sessionsResponse.data.sessions : [];
+
+  // When a session loads (or changes), restore any queued messages from the
+  // backend buffer so the indicator survives a page refresh.
+  useEffect(() => {
+    if (!sessionId) {
+      setQueuedMessages([]);
+      return;
+    }
+    void getV2GetPendingMessages(sessionId).then((res) => {
+      if (res.status === 200 && res.data.count > 0) {
+        setQueuedMessages(res.data.messages);
+      }
+    });
+  }, [sessionId]);
+
+  // When a turn ends, peek the buffer to sync the indicator.
+  useEffect(() => {
+    if (status !== "ready" && status !== "error") return;
+    if (!sessionId) {
+      setQueuedMessages([]);
+      return;
+    }
+    void getV2GetPendingMessages(sessionId).then((res) => {
+      setQueuedMessages(
+        res.status === 200 && res.data.count > 0 ? res.data.messages : [],
+      );
+    });
+  }, [status, sessionId]);
+
+  // When a new message appears during streaming the auto-continue turn has
+  // started — the buffer was already drained server-side, so peek and clear.
+  const prevMessageCountRef = useRef(messages.length);
+  useEffect(() => {
+    const isActive = status === "streaming" || status === "submitted";
+    if (
+      !isActive ||
+      !sessionId ||
+      messages.length <= prevMessageCountRef.current
+    ) {
+      prevMessageCountRef.current = messages.length;
+      return;
+    }
+    prevMessageCountRef.current = messages.length;
+    void getV2GetPendingMessages(sessionId).then((res) => {
+      if (res.status === 200 && res.data.count === 0) {
+        setQueuedMessages([]);
+      }
+    });
+  }, [messages.length, status, sessionId]);
 
   // Start title polling when stream ends cleanly — sidebar title animates in
   const titlePollRef = useRef<ReturnType<typeof setInterval>>();
@@ -374,6 +472,10 @@ export function useCopilotPage() {
     }
   }
 
+  async function onEnqueue(message: string) {
+    await onSend(message);
+  }
+
   return {
     sessionId,
     messages,
@@ -390,6 +492,8 @@ export function useCopilotPage() {
     isLoggedIn,
     createSession,
     onSend,
+    onEnqueue,
+    queuedMessages,
     // Pagination
     hasMoreMessages: hasMore,
     isLoadingMore,

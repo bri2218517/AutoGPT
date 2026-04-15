@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import re
 from collections.abc import AsyncGenerator
 from typing import Annotated
 from uuid import uuid4
@@ -10,7 +9,6 @@ from uuid import uuid4
 from autogpt_libs import auth
 from fastapi import APIRouter, HTTPException, Query, Response, Security
 from fastapi.responses import StreamingResponse
-from prisma.models import UserWorkspaceFile
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.copilot import service as chat_service
@@ -28,6 +26,18 @@ from backend.copilot.model import (
     get_chat_session,
     get_user_sessions,
     update_session_title,
+)
+from backend.copilot.pending_message_helpers import (
+    PENDING_CALL_LIMIT,
+    PENDING_CALL_WINDOW_SECONDS,
+    check_pending_call_rate,
+)
+from backend.copilot.pending_messages import (
+    MAX_PENDING_MESSAGES,
+    PendingMessage,
+    PendingMessageContext,
+    peek_pending_messages,
+    push_pending_message,
 )
 from backend.copilot.rate_limit import (
     CoPilotUsageStatus,
@@ -71,7 +81,7 @@ from backend.copilot.tracking import track_user_message
 from backend.data.credit import UsageTransactionMetadata, get_user_credit_model
 from backend.data.redis_client import get_redis_async
 from backend.data.understanding import get_business_understanding
-from backend.data.workspace import get_or_create_workspace
+from backend.data.workspace import build_files_block, resolve_workspace_files
 from backend.util.exceptions import InsufficientBalanceError, NotFoundError
 from backend.util.settings import Settings
 
@@ -80,10 +90,6 @@ settings = Settings()
 logger = logging.getLogger(__name__)
 
 config = ChatConfig()
-
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
-)
 
 
 async def _validate_and_get_session(
@@ -139,6 +145,54 @@ class StreamChatRequest(BaseModel):
         description="Autopilot mode: 'fast' for baseline LLM, 'extended_thinking' for Claude Agent SDK. "
         "If None, uses the server default (extended_thinking).",
     )
+
+
+class QueuePendingMessageRequest(BaseModel):
+    """Request model for queueing a message into an in-flight turn.
+
+    Unlike ``StreamChatRequest`` this endpoint does **not** start a new
+    turn — the message is appended to a per-session pending buffer that
+    the executor currently processing the turn will drain between tool
+    rounds.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=32_000)
+    context: PendingMessageContext | None = Field(
+        default=None,
+        description="Optional page context with 'url' and 'content' fields.",
+    )
+    file_ids: list[str] | None = Field(default=None, max_length=20)
+
+
+class QueuePendingMessageResponse(BaseModel):
+    """Response for the pending-message endpoint.
+
+    - ``buffer_length``: how many messages are now in the session's
+      pending buffer (after this push)
+    - ``max_buffer_length``: the per-session cap (server-side constant)
+    - ``turn_in_flight``: ``True`` if a copilot turn was running when
+      we checked — purely informational for UX feedback.  Even when
+      ``False`` the message is still queued: the next turn drains it.
+    """
+
+    buffer_length: int
+    max_buffer_length: int
+    turn_in_flight: bool
+
+
+class PeekPendingMessagesResponse(BaseModel):
+    """Response for the pending-message peek (GET) endpoint.
+
+    Returns a read-only view of the pending buffer — messages are NOT
+    consumed.  The frontend uses this to restore the queued-message
+    indicator after a page refresh and to decide when to clear it once
+    a turn has ended.
+    """
+
+    messages: list[str]
+    count: int
 
 
 class CreateSessionRequest(BaseModel):
@@ -810,33 +864,10 @@ async def stream_chat_post(
     # Also sanitise file_ids so only validated, workspace-scoped IDs are
     # forwarded downstream (e.g. to the executor via enqueue_copilot_turn).
     sanitized_file_ids: list[str] | None = None
-    if request.file_ids and user_id:
-        # Filter to valid UUIDs only to prevent DB abuse
-        valid_ids = [fid for fid in request.file_ids if _UUID_RE.match(fid)]
-
-        if valid_ids:
-            workspace = await get_or_create_workspace(user_id)
-            # Batch query instead of N+1
-            files = await UserWorkspaceFile.prisma().find_many(
-                where={
-                    "id": {"in": valid_ids},
-                    "workspaceId": workspace.id,
-                    "isDeleted": False,
-                }
-            )
-            # Only keep IDs that actually exist in the user's workspace
-            sanitized_file_ids = [wf.id for wf in files] or None
-            file_lines: list[str] = [
-                f"- {wf.name} ({wf.mimeType}, {round(wf.sizeBytes / 1024, 1)} KB), file_id={wf.id}"
-                for wf in files
-            ]
-            if file_lines:
-                files_block = (
-                    "\n\n[Attached files]\n"
-                    + "\n".join(file_lines)
-                    + "\nUse read_workspace_file with the file_id to access file contents."
-                )
-                request.message += files_block
+    if request.file_ids:
+        files = await resolve_workspace_files(user_id, request.file_ids)
+        sanitized_file_ids = [wf.id for wf in files] or None
+        request.message += build_files_block(files)
 
     # Atomically append user message to session BEFORE creating task to avoid
     # race condition where GET_SESSION sees task as "running" but message isn't
@@ -1033,6 +1064,138 @@ async def stream_chat_post(
             "X-Accel-Buffering": "no",  # Disable nginx buffering
             "x-vercel-ai-ui-message-stream": "v1",  # AI SDK protocol header
         },
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/messages/pending",
+    response_model=PeekPendingMessagesResponse,
+    responses={
+        404: {"description": "Session not found or access denied"},
+    },
+)
+async def get_pending_messages(
+    session_id: str,
+    user_id: str = Security(auth.get_user_id),
+):
+    """Peek at the pending-message buffer without consuming it.
+
+    Returns the current contents of the session's pending message buffer
+    so the frontend can restore the queued-message indicator after a page
+    refresh and clear it correctly once a turn drains the buffer.
+    """
+    await _validate_and_get_session(session_id, user_id)
+    pending = await peek_pending_messages(session_id)
+    return PeekPendingMessagesResponse(
+        messages=[m.content for m in pending],
+        count=len(pending),
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/messages/pending",
+    response_model=QueuePendingMessageResponse,
+    status_code=202,
+    responses={
+        404: {"description": "Session not found or access denied"},
+        429: {"description": "Token rate-limit or call-frequency cap exceeded"},
+    },
+)
+async def queue_pending_message(
+    session_id: str,
+    request: QueuePendingMessageRequest,
+    user_id: str = Security(auth.get_user_id),
+):
+    """Queue a new user message into an in-flight copilot turn.
+
+    When a user sends a follow-up message while a turn is still
+    streaming, we don't want to block them or start a separate turn —
+    this endpoint appends the message to a per-session pending buffer.
+    The executor currently running the turn (baseline path) drains the
+    buffer between tool-call rounds and appends the message to the
+    conversation before the next LLM call.  On the SDK path the buffer
+    is drained at the *start* of the next turn (the long-lived
+    ``ClaudeSDKClient.receive_response`` iterator returns after a
+    ``ResultMessage`` so there is no safe point to inject mid-stream
+    into an existing connection).
+
+    Returns 202.  Enforces the same per-user daily/weekly token rate
+    limit as the regular ``/stream`` endpoint so a client can't bypass
+    it by batching messages through here.
+    """
+    await _validate_and_get_session(session_id, user_id)
+
+    # Pre-turn rate-limit check — mirrors stream_chat_post.  Without
+    # this, a client could bypass per-turn token limits by batching
+    # their extra context through this endpoint while a cheap stream
+    # is in flight.
+    # user_id is guaranteed non-empty by Security(auth.get_user_id) — no guard needed.
+    try:
+        daily_limit, weekly_limit, _tier = await get_global_rate_limits(
+            user_id, config.daily_token_limit, config.weekly_token_limit
+        )
+        await check_rate_limit(
+            user_id=user_id,
+            daily_token_limit=daily_limit,
+            weekly_token_limit=weekly_limit,
+        )
+    except RateLimitExceeded as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+
+    # Call-frequency cap: prevent rapid-fire pushes that would bypass the
+    # token-budget check (which only fires per-turn, not per-push).
+    call_count = await check_pending_call_rate(user_id)
+    if call_count > PENDING_CALL_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many pending messages: limit is {PENDING_CALL_LIMIT} per {PENDING_CALL_WINDOW_SECONDS}s",
+        )
+
+    # Sanitise file IDs to the user's own workspace so injection doesn't
+    # surface other users' files.
+    sanitized_file_ids: list[str] = []
+    if request.file_ids:
+        files = await resolve_workspace_files(user_id, request.file_ids)
+        sanitized_file_ids = [wf.id for wf in files]
+        dropped = len(request.file_ids) - len(sanitized_file_ids)
+        if dropped:
+            logger.warning(
+                "queue_pending_message: dropped %d file id(s) not in "
+                "caller's workspace (session=%s)",
+                dropped,
+                session_id,
+            )
+
+    # Redis is the single source of truth for pending messages.  We do
+    # NOT persist to ``session.messages`` here — the drain-at-start
+    # path in the baseline/SDK executor is the sole writer for pending
+    # content.  Persisting both here AND in the drain would cause
+    # double injection (executor sees the message in ``session.messages``
+    # *and* drains it from Redis) unless we also dedupe.  The dedup in
+    # ``maybe_append_user_message`` only checks trailing same-role
+    # repeats, so relying on it is fragile.  Keeping the endpoint
+    # Redis-only avoids the whole consistency-bug class.
+    pending = PendingMessage(
+        content=request.message,
+        file_ids=sanitized_file_ids,
+        context=request.context,
+    )
+    buffer_length = await push_pending_message(session_id, pending)
+
+    track_user_message(
+        user_id=user_id,
+        session_id=session_id,
+        message_length=len(request.message),
+    )
+
+    # Check whether a turn is currently running for UX feedback.
+    active_session = await stream_registry.get_session(session_id)
+    turn_in_flight = bool(active_session and active_session.status == "running")
+
+    return QueuePendingMessageResponse(
+        buffer_length=buffer_length,
+        max_buffer_length=MAX_PENDING_MESSAGES,
+        turn_in_flight=turn_in_flight,
     )
 
 
