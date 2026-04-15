@@ -20,6 +20,7 @@ from .service import (
     _is_tool_only_message,
     _iter_sdk_messages,
     _reduce_context,
+    _resolve_user_model_override,
 )
 
 # ---------------------------------------------------------------------------
@@ -331,3 +332,88 @@ class TestIsParallelContinuation:
         msg = MagicMock(spec=AssistantMessage)
         msg.content = [self._make_tool_block()]
         assert _is_tool_only_message(msg) is True
+
+
+# ---------------------------------------------------------------------------
+# _resolve_user_model_override
+# ---------------------------------------------------------------------------
+
+
+class TestResolveUserModelOverride:
+    @pytest.mark.asyncio
+    async def test_no_env_no_ld_returns_none(self, monkeypatch: pytest.MonkeyPatch):
+        """When no env override and LD returns None, result is None."""
+        monkeypatch.delenv("FORCE_FLAG_COPILOT_MODEL", raising=False)
+        monkeypatch.delenv("NEXT_PUBLIC_FORCE_FLAG_COPILOT_MODEL", raising=False)
+        with patch(
+            "backend.copilot.sdk.service.get_feature_flag_value",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await _resolve_user_model_override("user-123")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_env_override_bypasses_ld(self, monkeypatch: pytest.MonkeyPatch):
+        """FORCE_FLAG_COPILOT_MODEL short-circuits the LD call."""
+        monkeypatch.setenv("FORCE_FLAG_COPILOT_MODEL", "anthropic/claude-opus-4-6")
+        ld_mock = AsyncMock(return_value=None)
+        with patch("backend.copilot.sdk.service.get_feature_flag_value", new=ld_mock):
+            result = await _resolve_user_model_override("user-123")
+        # LD should not be called
+        ld_mock.assert_not_called()
+        # Model name is normalized (OpenRouter prefix stripped)
+        assert result == "claude-opus-4-6"
+
+    @pytest.mark.asyncio
+    async def test_ld_returns_model_string(self, monkeypatch: pytest.MonkeyPatch):
+        """When LD returns a model string, it is normalized and returned."""
+        monkeypatch.delenv("FORCE_FLAG_COPILOT_MODEL", raising=False)
+        monkeypatch.delenv("NEXT_PUBLIC_FORCE_FLAG_COPILOT_MODEL", raising=False)
+        with patch(
+            "backend.copilot.sdk.service.get_feature_flag_value",
+            new=AsyncMock(return_value="anthropic/claude-opus-4-6"),
+        ):
+            result = await _resolve_user_model_override("user-123")
+        assert result == "claude-opus-4-6"
+
+    @pytest.mark.asyncio
+    async def test_ld_returns_non_string_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """When LD returns a non-string (e.g. True), result is None."""
+        monkeypatch.delenv("FORCE_FLAG_COPILOT_MODEL", raising=False)
+        monkeypatch.delenv("NEXT_PUBLIC_FORCE_FLAG_COPILOT_MODEL", raising=False)
+        with patch(
+            "backend.copilot.sdk.service.get_feature_flag_value",
+            new=AsyncMock(return_value=True),
+        ):
+            result = await _resolve_user_model_override("user-123")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_ld_returns_empty_string_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """When LD returns an empty string, result is None."""
+        monkeypatch.delenv("FORCE_FLAG_COPILOT_MODEL", raising=False)
+        monkeypatch.delenv("NEXT_PUBLIC_FORCE_FLAG_COPILOT_MODEL", raising=False)
+        with patch(
+            "backend.copilot.sdk.service.get_feature_flag_value",
+            new=AsyncMock(return_value=""),
+        ):
+            result = await _resolve_user_model_override("user-123")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_already_normalized_model_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A model name without the OpenRouter prefix is returned as-is."""
+        monkeypatch.delenv("FORCE_FLAG_COPILOT_MODEL", raising=False)
+        monkeypatch.delenv("NEXT_PUBLIC_FORCE_FLAG_COPILOT_MODEL", raising=False)
+        with patch(
+            "backend.copilot.sdk.service.get_feature_flag_value",
+            new=AsyncMock(return_value="claude-opus-4-6"),
+        ):
+            result = await _resolve_user_model_override("user-123")
+        assert result == "claude-opus-4-6"

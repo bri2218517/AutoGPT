@@ -46,6 +46,7 @@ class Flag(str, Enum):
     STRIPE_PRICE_PRO = "stripe-price-id-pro"
     STRIPE_PRICE_BUSINESS = "stripe-price-id-business"
     GRAPHITI_MEMORY = "graphiti-memory"
+    COPILOT_MODEL = "copilot-model"
 
 
 def is_configured() -> bool:
@@ -191,6 +192,29 @@ def _env_flag_override(flag_key: Flag) -> bool | None:
         raw = os.environ.get(prefix + suffix)
         if raw is not None:
             return raw.strip().lower() in ("1", "true", "yes", "on")
+    return None
+
+
+def _env_flag_override_string(flag_key: Flag) -> str | None:
+    """Return a local string override for ``flag_key`` from the environment.
+
+    Set ``FORCE_FLAG_<NAME>=<value>`` (``NAME`` = flag value with
+    ``-`` → ``_``, upper-cased) to bypass LaunchDarkly for a string flag
+    in local dev or tests.  Returns ``None`` when no override is configured
+    or the value is blank.
+
+    Accepts the ``NEXT_PUBLIC_FORCE_FLAG_`` prefix so a single shared env
+    var works across backend and frontend services.
+
+    Example: ``FORCE_FLAG_COPILOT_MODEL=anthropic/claude-opus-4-6`` routes
+    all users to Opus in a local dev environment.
+    """
+    suffix = flag_key.value.upper().replace("-", "_")
+    for prefix in ("FORCE_FLAG_", "NEXT_PUBLIC_FORCE_FLAG_"):
+        raw = os.environ.get(prefix + suffix)
+        if raw is not None:
+            stripped = raw.strip()
+            return stripped if stripped else None
     return None
 
 

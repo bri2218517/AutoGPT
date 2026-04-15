@@ -53,6 +53,11 @@ from backend.copilot.transcript_builder import TranscriptBuilder
 from backend.data.redis_client import get_redis_async
 from backend.executor.cluster_lock import AsyncClusterLock
 from backend.util.exceptions import NotFoundError
+from backend.util.feature_flag import (
+    Flag,
+    _env_flag_override_string,
+    get_feature_flag_value,
+)
 from backend.util.settings import Settings
 
 from ..config import ChatConfig, CopilotMode
@@ -623,6 +628,28 @@ def _resolve_fallback_model() -> str | None:
     """
     raw = config.claude_agent_fallback_model
     if not raw:
+        return None
+    return _normalize_model_name(raw)
+
+
+async def _resolve_user_model_override(user_id: str) -> str | None:
+    """Resolve a per-user model override from LaunchDarkly or env vars.
+
+    Checks ``Flag.COPILOT_MODEL`` via LaunchDarkly for the given user.
+    Returns the normalized model string (e.g. ``"claude-opus-4-6"``) when
+    an override is configured, or ``None`` to fall through to the global
+    ``config.model`` / ``sdk_model`` default.
+
+    Local dev: set ``FORCE_FLAG_COPILOT_MODEL=anthropic/claude-opus-4-6``
+    (or with ``NEXT_PUBLIC_FORCE_FLAG_`` prefix) to test without LD.
+    """
+    # Env override takes precedence — avoids an LD round-trip in local dev.
+    env_override = _env_flag_override_string(Flag.COPILOT_MODEL)
+    if env_override:
+        return _normalize_model_name(env_override)
+
+    raw = await get_feature_flag_value(Flag.COPILOT_MODEL.value, user_id, default=None)
+    if not raw or not isinstance(raw, str):
         return None
     return _normalize_model_name(raw)
 
@@ -2256,6 +2283,19 @@ async def stream_chat_completion_sdk(
         mcp_server = create_copilot_mcp_server(use_e2b=use_e2b)
 
         sdk_model = _resolve_sdk_model()
+
+        # Per-user model override via LaunchDarkly — allows targeting specific
+        # users with a different model (e.g. Opus) without changing global config.
+        if user_id:
+            user_model_override = await _resolve_user_model_override(user_id)
+            if user_model_override:
+                logger.info(
+                    "[SDK] [%s] Per-user model override: %s (was: %s)",
+                    session_id[:12] if session_id else "?",
+                    user_model_override,
+                    sdk_model or "subscription-default",
+                )
+                sdk_model = user_model_override
 
         # Track SDK-internal compaction (PreCompact hook → start, next msg → end)
         compaction = CompactionTracker()
