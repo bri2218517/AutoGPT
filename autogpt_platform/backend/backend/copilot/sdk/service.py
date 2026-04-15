@@ -1070,6 +1070,23 @@ async def _build_query_message(
 
     if use_resume and transcript_msg_count > 0:
         if transcript_msg_count < msg_count - 1:
+            # Sanity-check the watermark: the last covered position should be
+            # an assistant turn.  A user-role message here means the count is
+            # misaligned (e.g. a message was deleted and DB positions shifted).
+            # Skip the gap rather than injecting wrong context — the CLI session
+            # loaded via --resume still has good history.
+            if prior[transcript_msg_count - 1].role != "assistant":
+                logger.warning(
+                    "[SDK] [%s] Watermark misaligned: prior[%d].role=%r"
+                    " (expected 'assistant') — skipping gap to avoid"
+                    " injecting wrong context (transcript=%d, db=%d)",
+                    session_id[:8],
+                    transcript_msg_count - 1,
+                    prior[transcript_msg_count - 1].role,
+                    transcript_msg_count,
+                    msg_count,
+                )
+                return current_message, False
             gap = prior[transcript_msg_count:]
             compressed, was_compressed = await _compress_messages(gap, target_tokens)
             gap_context = _format_conversation_context(compressed)

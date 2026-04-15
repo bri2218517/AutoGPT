@@ -131,6 +131,34 @@ async def test_build_query_resume_up_to_date():
 
 
 @pytest.mark.asyncio
+async def test_build_query_resume_misaligned_watermark():
+    """With --resume and watermark pointing at a user message, skip gap."""
+    # Simulates a deleted message shifting DB positions so the watermark
+    # lands on a user turn instead of the expected assistant turn.
+    session = _make_session(
+        [
+            ChatMessage(role="user", content="turn 1"),
+            ChatMessage(role="assistant", content="reply 1"),
+            ChatMessage(
+                role="user", content="turn 2"
+            ),  # ← watermark points here (role=user)
+            ChatMessage(role="assistant", content="reply 2"),
+            ChatMessage(role="user", content="turn 3"),
+        ]
+    )
+    result, was_compacted = await _build_query_message(
+        "turn 3",
+        session,
+        use_resume=True,
+        transcript_msg_count=3,  # prior[2].role == "user" — misaligned
+        session_id="test-session",
+    )
+    # Misaligned watermark → skip gap, return bare message
+    assert result == "turn 3"
+    assert was_compacted is False
+
+
+@pytest.mark.asyncio
 async def test_build_query_resume_stale_transcript():
     """With --resume and stale transcript, gap context is prepended."""
     session = _make_session(
