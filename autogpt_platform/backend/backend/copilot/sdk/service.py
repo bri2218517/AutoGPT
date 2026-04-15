@@ -55,7 +55,7 @@ from backend.executor.cluster_lock import AsyncClusterLock
 from backend.util.exceptions import NotFoundError
 from backend.util.feature_flag import (
     Flag,
-    _env_flag_override_string,
+    env_flag_string_override,
     get_feature_flag_value,
 )
 from backend.util.settings import Settings
@@ -644,7 +644,7 @@ async def _resolve_user_model_override(user_id: str) -> str | None:
     (or with ``NEXT_PUBLIC_FORCE_FLAG_`` prefix) to test without LD.
     """
     # Env override takes precedence — avoids an LD round-trip in local dev.
-    env_override = _env_flag_override_string(Flag.COPILOT_MODEL)
+    env_override = env_flag_string_override(Flag.COPILOT_MODEL)
     if env_override:
         return _normalize_model_name(env_override)
 
@@ -2290,8 +2290,9 @@ async def stream_chat_completion_sdk(
             user_model_override = await _resolve_user_model_override(user_id)
             if user_model_override:
                 logger.info(
-                    "[SDK] [%s] Per-user model override: %s (was: %s)",
+                    "[SDK] [%s] Per-user model override for user %s: %s (was: %s)",
                     session_id[:12] if session_id else "?",
+                    user_id[:8],
                     user_model_override,
                     sdk_model or "subscription-default",
                 )

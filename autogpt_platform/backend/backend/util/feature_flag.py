@@ -195,7 +195,7 @@ def _env_flag_override(flag_key: Flag) -> bool | None:
     return None
 
 
-def _env_flag_override_string(flag_key: Flag) -> str | None:
+def env_flag_string_override(flag_key: Flag) -> str | None:
     """Return a local string override for ``flag_key`` from the environment.
 
     Set ``FORCE_FLAG_<NAME>=<value>`` (``NAME`` = flag value with

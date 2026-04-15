@@ -417,3 +417,13 @@ class TestResolveUserModelOverride:
         ):
             result = await _resolve_user_model_override("user-123")
         assert result == "claude-opus-4-6"
+
+    @pytest.mark.asyncio
+    async def test_ld_call_uses_correct_flag_key(self, monkeypatch: pytest.MonkeyPatch):
+        """get_feature_flag_value is called with Flag.COPILOT_MODEL and the user_id."""
+        monkeypatch.delenv("FORCE_FLAG_COPILOT_MODEL", raising=False)
+        monkeypatch.delenv("NEXT_PUBLIC_FORCE_FLAG_COPILOT_MODEL", raising=False)
+        ld_mock = AsyncMock(return_value=None)
+        with patch("backend.copilot.sdk.service.get_feature_flag_value", new=ld_mock):
+            await _resolve_user_model_override("user-abc")
+        ld_mock.assert_called_once_with("copilot-model", "user-abc", default=None)
