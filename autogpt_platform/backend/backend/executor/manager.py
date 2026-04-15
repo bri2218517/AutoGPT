@@ -1328,7 +1328,6 @@ class ExecutionProcessor:
             execution_queue.add(next_execution)
 
 
-
 class ExecutionManager(AppProcess):
     def __init__(self):
         super().__init__()
