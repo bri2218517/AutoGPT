@@ -14,6 +14,7 @@ import {
   buildSeedPrompt,
   extractTextFromParts,
   SEED_PROMPT_PREFIX,
+  MAX_SEED_SUMMARY_CHARS,
 } from "../helpers";
 import type { CustomNode } from "../../FlowEditor/nodes/CustomNode/CustomNode";
 import type { CustomEdge } from "../../FlowEditor/edges/CustomEdge";
@@ -371,13 +372,11 @@ describe("BuilderChatPanel", () => {
     expect(screen.getByText("I see you have an empty graph.")).toBeDefined();
   });
 
-  it("passes onGraphEdited and isGraphLoaded to useBuilderChatPanel", () => {
+  it("passes onGraphEdited to useBuilderChatPanel", () => {
     const onGraphEdited = vi.fn();
-    render(
-      <BuilderChatPanel onGraphEdited={onGraphEdited} isGraphLoaded={true} />,
-    );
+    render(<BuilderChatPanel onGraphEdited={onGraphEdited} />);
     expect(mockUseBuilderChatPanel).toHaveBeenCalledWith(
-      expect.objectContaining({ isGraphLoaded: true, onGraphEdited }),
+      expect.objectContaining({ onGraphEdited }),
     );
   });
 });
@@ -729,36 +728,43 @@ describe("getNodeDisplayName", () => {
 
 describe("buildSeedPrompt", () => {
   it("starts with SEED_PROMPT_PREFIX", () => {
-    const result = buildSeedPrompt("summary");
+    const result = buildSeedPrompt("summary", "hello");
     expect(result.startsWith("I'm building an agent")).toBe(true);
   });
 
   it("wraps summary in <graph_context> tags", () => {
-    const result = buildSeedPrompt("some graph summary");
+    const result = buildSeedPrompt("some graph summary", "hello");
     expect(result).toContain(
       "<graph_context>\nsome graph summary\n</graph_context>",
     );
   });
 
   it("includes format instructions for update_node_input", () => {
-    const result = buildSeedPrompt("");
+    const result = buildSeedPrompt("", "hello");
     expect(result).toContain('"action": "update_node_input"');
   });
 
   it("includes format instructions for connect_nodes", () => {
-    const result = buildSeedPrompt("");
+    const result = buildSeedPrompt("", "hello");
     expect(result).toContain('"action": "connect_nodes"');
   });
 
-  it("ends with a prompt inviting the user to interact", () => {
-    const result = buildSeedPrompt("");
-    expect(
-      result
-        .trim()
-        .endsWith(
-          "Ask me what you'd like to know about or change in this agent.",
-        ),
-    ).toBe(true);
+  it("ends with the user message appended", () => {
+    const result = buildSeedPrompt("", "help me add a search block");
+    expect(result).toContain("User request: help me add a search block");
+  });
+
+  it("truncates summary exceeding MAX_SEED_SUMMARY_CHARS and appends a notice", () => {
+    const oversizedSummary = "x".repeat(MAX_SEED_SUMMARY_CHARS + 100);
+    const result = buildSeedPrompt(oversizedSummary, "hello");
+    expect(result).toContain("Graph context truncated");
+    expect(result).not.toContain("x".repeat(MAX_SEED_SUMMARY_CHARS + 1));
+  });
+
+  it("does not truncate summary within MAX_SEED_SUMMARY_CHARS", () => {
+    const summary = "x".repeat(MAX_SEED_SUMMARY_CHARS);
+    const result = buildSeedPrompt(summary, "hello");
+    expect(result).not.toContain("Graph context truncated");
   });
 });
 

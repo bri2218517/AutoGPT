@@ -253,54 +253,19 @@ describe("useBuilderChatPanel – no auto-send on open", () => {
 });
 
 describe("useBuilderChatPanel – seed message", () => {
-  it("sends seed message via sendMessage when session is available and isGraphLoaded=true", async () => {
+  it("does NOT auto-send any message on panel open (graph context is injected via transport on first user send)", async () => {
     mockPostV2CreateSession.mockResolvedValue({
       status: 200,
       data: { id: "sess-seed" },
     });
     mockNodes.push({ id: "n1", data: { title: "Search", description: "" } });
 
-    const { result } = renderHook(() =>
-      useBuilderChatPanel({ isGraphLoaded: true }),
-    );
-
-    await openAndFlush(() => result.current.handleToggle());
-
-    expect(mockSendMessage).toHaveBeenCalledOnce();
-    const callArg = mockSendMessage.mock.calls[0][0] as { text: string };
-    expect(typeof callArg.text).toBe("string");
-    expect(callArg.text).toContain("I'm building an agent");
-  });
-
-  it("does NOT send seed message when isGraphLoaded is false (default)", async () => {
-    mockPostV2CreateSession.mockResolvedValue({
-      status: 200,
-      data: { id: "sess-no-seed" },
-    });
-
     const { result } = renderHook(() => useBuilderChatPanel());
 
     await openAndFlush(() => result.current.handleToggle());
 
+    // No auto-send on open — the static greeting is shown in the UI instead.
     expect(mockSendMessage).not.toHaveBeenCalled();
-  });
-
-  it("sends seed message only once even when sessionId and isGraphLoaded deps re-run (hasSentSeedMessageRef guard)", async () => {
-    mockPostV2CreateSession.mockResolvedValue({
-      status: 200,
-      data: { id: "sess-once" },
-    });
-
-    const { result, rerender } = renderHook(() =>
-      useBuilderChatPanel({ isGraphLoaded: true }),
-    );
-
-    await openAndFlush(() => result.current.handleToggle());
-    expect(mockSendMessage).toHaveBeenCalledOnce();
-
-    rerender();
-
-    expect(mockSendMessage).toHaveBeenCalledOnce();
   });
 });
 
@@ -890,21 +855,19 @@ describe("useBuilderChatPanel – retrySession", () => {
     expect(result.current.sessionId).toBe("sess-retry");
   });
 
-  it("re-sends seed message to new session after retry (hasSentSeedMessageRef is reset)", async () => {
-    // First session succeeds and seed is sent
+  it("resets hasSentSeedMessageRef on retry so graph context is re-injected on the next user send", async () => {
+    // Graph context is no longer auto-sent on panel open — it is injected via
+    // the transport's prepareSendMessagesRequest on the first user-initiated send.
+    // retrySession must reset the ref so the new session gets fresh graph context.
     mockPostV2CreateSession.mockResolvedValueOnce({
       status: 200,
       data: { id: "sess-first" },
     });
-    const { result } = renderHook(() =>
-      useBuilderChatPanel({ isGraphLoaded: true }),
-    );
+    const { result } = renderHook(() => useBuilderChatPanel());
     await openAndFlush(() => result.current.handleToggle());
     expect(result.current.sessionId).toBe("sess-first");
-    expect(mockSendMessage).toHaveBeenCalledOnce();
+    expect(mockSendMessage).not.toHaveBeenCalled(); // no auto-send
 
-    // Force a retry: evict cache and set error state manually, then retry
-    mockSendMessage.mockClear();
     mockPostV2CreateSession.mockResolvedValueOnce({
       status: 200,
       data: { id: "sess-retry-seed" },
@@ -914,9 +877,9 @@ describe("useBuilderChatPanel – retrySession", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
 
-    // New session obtained; seed message must be sent again to the new session
+    // New session obtained; no auto-send should occur on retry either
     expect(result.current.sessionId).toBe("sess-retry-seed");
-    expect(mockSendMessage).toHaveBeenCalledOnce();
+    expect(mockSendMessage).not.toHaveBeenCalled();
   });
 
   it("clears stale messages when retrySession is called (setMessages reset)", async () => {
@@ -1305,10 +1268,22 @@ describe("useBuilderChatPanel – transport prepareSendMessagesRequest", () => {
     const messages = [
       { role: "user", parts: [{ type: "text", text: "hello" }] },
     ];
+    // First call: hasSentSeedMessageRef is false → graph context is injected.
     const req = await ctorArg.prepareSendMessagesRequest({ messages });
 
     expect(getWebSocketToken).toHaveBeenCalled();
+    // The first user send includes the seed prompt prefix (graph context + user text).
     expect(req).toMatchObject({
+      body: {
+        message: expect.stringContaining("I'm building an agent"),
+        is_user_message: true,
+      },
+      headers: { Authorization: "Bearer tok" },
+    });
+
+    // Second call: hasSentSeedMessageRef is now true → plain message only.
+    const req2 = await ctorArg.prepareSendMessagesRequest({ messages });
+    expect(req2).toMatchObject({
       body: { message: "hello", is_user_message: true },
       headers: { Authorization: "Bearer tok" },
     });
@@ -1628,5 +1603,87 @@ describe("useBuilderChatPanel – prototype pollution blocklist (no-schema nodes
     expect(mockToast).toHaveBeenCalledWith(
       expect.objectContaining({ variant: "destructive" }),
     );
+  });
+});
+
+describe("useBuilderChatPanel – sendRawMessage", () => {
+  it("sends a message directly when canSend is true", async () => {
+    mockPostV2CreateSession.mockResolvedValue({
+      status: 200,
+      data: { id: "sess-raw" },
+    });
+    const { result } = renderHook(() => useBuilderChatPanel());
+
+    await openAndFlush(() => result.current.handleToggle());
+    expect(result.current.canSend).toBe(true);
+
+    act(() => {
+      result.current.sendRawMessage("programmatic message");
+    });
+
+    expect(mockSendMessage).toHaveBeenCalledWith({
+      text: "programmatic message",
+    });
+  });
+
+  it("does not send when text is empty string", async () => {
+    mockPostV2CreateSession.mockResolvedValue({
+      status: 200,
+      data: { id: "sess-raw-empty" },
+    });
+    const { result } = renderHook(() => useBuilderChatPanel());
+
+    await openAndFlush(() => result.current.handleToggle());
+
+    act(() => {
+      result.current.sendRawMessage("");
+    });
+
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not send when canSend is false (no session)", () => {
+    // Panel is closed → sessionId is null → canSend is false
+    const { result } = renderHook(() => useBuilderChatPanel());
+
+    act(() => {
+      result.current.sendRawMessage("should not send");
+    });
+
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not send when canSend is false (sessionError=true)", async () => {
+    mockPostV2CreateSession.mockRejectedValue(new Error("fail"));
+    const { result } = renderHook(() => useBuilderChatPanel());
+
+    await openAndFlush(() => result.current.handleToggle());
+    expect(result.current.sessionError).toBe(true);
+    expect(result.current.canSend).toBe(false);
+
+    act(() => {
+      result.current.sendRawMessage("blocked");
+    });
+
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
+  it("truncates messages that exceed the 64,000-character backend limit", async () => {
+    mockPostV2CreateSession.mockResolvedValue({
+      status: 200,
+      data: { id: "sess-truncate" },
+    });
+    const { result } = renderHook(() => useBuilderChatPanel());
+    await openAndFlush(() => result.current.handleToggle());
+    expect(result.current.canSend).toBe(true);
+
+    const overLimitText = "x".repeat(65_000);
+    act(() => {
+      result.current.sendRawMessage(overLimitText);
+    });
+
+    expect(mockSendMessage).toHaveBeenCalledWith({
+      text: "x".repeat(64_000),
+    });
   });
 });
