@@ -7,7 +7,7 @@ import {
   TooltipTrigger,
 } from "@/components/atoms/Tooltip/BaseTooltip";
 import { beautifyString, cn } from "@/lib/utils";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CustomNodeData } from "../CustomNode";
 import { NodeBadges } from "./NodeBadges";
 import { NodeContextMenu } from "./NodeContextMenu";
@@ -28,6 +28,7 @@ export const NodeHeader = ({ data, nodeId }: Props) => {
       ? `${agentName} v${graphVersion}`
       : agentName || undefined;
 
+  const isAgentOrCustomTitle = !!(data.metadata?.customized_name || agentDisplayName);
   const title =
     (data.metadata?.customized_name as string) ||
     agentDisplayName ||
@@ -35,6 +36,10 @@ export const NodeHeader = ({ data, nodeId }: Props) => {
 
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editedTitle, setEditedTitle] = useState(title);
+
+  useEffect(() => {
+    setEditedTitle(title);
+  }, [title]);
 
   const handleTitleEdit = () => {
     updateNodeData(nodeId, {
@@ -82,12 +87,12 @@ export const NodeHeader = ({ data, nodeId }: Props) => {
                         variant="large-semibold"
                         className="line-clamp-1 hover:cursor-text"
                       >
-                        {beautifyString(title).replace("Block", "").trim()}
+                        {isAgentOrCustomTitle ? title : beautifyString(title).replace(/ Block$/, "").trim()}
                       </Text>
                     </div>
                   </TooltipTrigger>
                   <TooltipContent>
-                    <p>{beautifyString(title).replace("Block", "").trim()}</p>
+                    <p>{isAgentOrCustomTitle ? title : beautifyString(title).replace(/ Block$/, "").trim()}</p>
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
