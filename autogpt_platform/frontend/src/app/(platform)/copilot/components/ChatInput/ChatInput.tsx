@@ -218,18 +218,24 @@ export function ChatInput({
               onFilesSelected={handleFilesSelected}
               disabled={isBusy}
             />
-            {showModeToggle && !isStreaming && (
-              <ModeToggleButton
-                mode={copilotChatMode}
-                onToggle={handleToggleMode}
-              />
-            )}
-            {showModeToggle && !isStreaming && (
-              <ModelToggleButton
-                model={copilotLlmModel}
-                onToggle={handleToggleModel}
-              />
-            )}
+            {showModeToggle &&
+              !isStreaming &&
+              (!hasSession || copilotChatMode === "extended_thinking") && (
+                <ModeToggleButton
+                  mode={copilotChatMode}
+                  onToggle={handleToggleMode}
+                  readOnly={hasSession}
+                />
+              )}
+            {showModeToggle &&
+              !isStreaming &&
+              (!hasSession || copilotLlmModel === "advanced") && (
+                <ModelToggleButton
+                  model={copilotLlmModel}
+                  onToggle={handleToggleModel}
+                  readOnly={hasSession}
+                />
+              )}
             {showDryRunToggle && (!hasSession || isDryRun) && (
               <DryRunToggleButton
                 isDryRun={isDryRun}

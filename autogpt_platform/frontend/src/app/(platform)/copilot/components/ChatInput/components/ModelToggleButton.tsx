@@ -7,28 +7,37 @@ import type { CopilotLlmModel } from "../../../store";
 interface Props {
   model: CopilotLlmModel;
   onToggle: () => void;
+  readOnly?: boolean;
 }
 
-export function ModelToggleButton({ model, onToggle }: Props) {
+export function ModelToggleButton({
+  model,
+  onToggle,
+  readOnly = false,
+}: Props) {
   const isAdvanced = model === "advanced";
   return (
     <button
       type="button"
       aria-pressed={isAdvanced}
-      onClick={onToggle}
+      disabled={readOnly}
+      onClick={readOnly ? undefined : onToggle}
       className={cn(
         "inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
         isAdvanced
           ? "bg-sky-100 text-sky-900 hover:bg-sky-200"
           : "bg-neutral-100 text-neutral-700 hover:bg-neutral-200",
+        readOnly && "cursor-default opacity-70",
       )}
       aria-label={
         isAdvanced ? "Switch to Standard model" : "Switch to Advanced model"
       }
       title={
-        isAdvanced
-          ? "Advanced model — highest capability (click to switch to Standard)"
-          : "Standard model — click to switch to Advanced"
+        readOnly
+          ? `${isAdvanced ? "Advanced" : "Standard"} model active for this session`
+          : isAdvanced
+            ? "Advanced model — highest capability (click to switch to Standard)"
+            : "Standard model — click to switch to Advanced"
       }
     >
       <Cpu size={14} />
