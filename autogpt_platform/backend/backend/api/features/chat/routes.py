@@ -854,7 +854,7 @@ async def stream_chat_post(
     # sorted file ID list so the fingerprint is stable across retries.
     _dedup_key: str | None = None
     _dedup_redis = None
-    if _original_message and request.is_user_message:
+    if request.is_user_message and (_original_message or sanitized_file_ids):
         _sorted_file_ids = ":".join(sorted(sanitized_file_ids or []))
         _content_hash = hashlib.sha256(
             f"{session_id}:{_original_message}:{_sorted_file_ids}".encode()
@@ -964,7 +964,6 @@ async def stream_chat_post(
 
             if subscriber_queue is None:
                 yield StreamFinish().to_sse()
-                yield "data: [DONE]\n\n"
                 if _dedup_key and _dedup_redis:
                     try:
                         await _dedup_redis.delete(_dedup_key)
