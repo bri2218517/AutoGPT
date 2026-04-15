@@ -2642,6 +2642,14 @@ async def stream_chat_completion_sdk(
         # inject_user_context), so the SDK replay carries context continuity
         # without us prepending them again.
         if not has_history:
+            # Inject the actual working directory on the first turn only.
+            # The system prompt keeps a static placeholder for prompt caching;
+            # the real path lives here so the model always knows where to work.
+            if not use_e2b and sdk_cwd:
+                current_message = (
+                    f"<env_context>\nworking_dir: {sdk_cwd}\n</env_context>\n\n"
+                    + current_message
+                )
             # Prepend Graphiti warm context as a trusted <memory_context> block
             # so it reaches the LLM without polluting the (cached) system prompt.
             # inject_user_context will persist the full prefixed message to DB.
