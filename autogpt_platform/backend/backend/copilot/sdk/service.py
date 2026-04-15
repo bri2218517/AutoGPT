@@ -909,7 +909,7 @@ def _read_cli_session_from_disk(
         )
         return None
     try:
-        return Path(real_path).read_bytes()
+        raw_bytes = Path(real_path).read_bytes()
     except FileNotFoundError:
         logger.debug(
             "%s CLI session file not found, skipping upload: %s",
@@ -920,6 +920,30 @@ def _read_cli_session_from_disk(
     except OSError as e:
         logger.warning("%s Failed to read CLI session file: %s", log_prefix, e)
         return None
+
+    # Strip stale thinking blocks and metadata entries before uploading.
+    # Thinking blocks from non-last turns can be massive; keeping them causes
+    # the CLI to auto-compact its session when the context window fills up,
+    # silently losing conversation history.
+    try:
+        raw_text = raw_bytes.decode("utf-8")
+        stripped_text = strip_for_upload(raw_text)
+        stripped_bytes = stripped_text.encode("utf-8")
+        if len(stripped_bytes) < len(raw_bytes):
+            # Write back locally so same-pod turns also benefit.
+            Path(real_path).write_bytes(stripped_bytes)
+            logger.info(
+                "%s Stripped CLI session: %dB → %dB",
+                log_prefix,
+                len(raw_bytes),
+                len(stripped_bytes),
+            )
+        return stripped_bytes
+    except Exception as e:
+        logger.warning(
+            "%s Failed to strip CLI session, uploading raw: %s", log_prefix, e
+        )
+        return raw_bytes
 
 
 def _process_cli_restore(
@@ -3004,9 +3028,10 @@ async def stream_chat_completion_sdk(
                     sdk_options_kwargs_retry.pop("resume", None)
                     sdk_options_kwargs_retry["session_id"] = session_id
                 else:
-                    # T2+ retry without --resume: do not pass --session-id.
-                    # The T1 session file already exists at that path; re-using
-                    # the same ID would fail with "Session ID already in use".
+                    # T2+ retry without --resume: initial invocation used
+                    # --resume, which restored the T1 session file to local
+                    # storage.  Re-using session_id without --resume would
+                    # fail with "Session ID already in use".
                     sdk_options_kwargs_retry.pop("resume", None)
                     sdk_options_kwargs_retry.pop("session_id", None)
                 # Recompute system_prompt for retry — ctx.use_resume may have

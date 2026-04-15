@@ -802,6 +802,8 @@ class TestUploadCliSession:
             )
 
 
+
+
 class TestRestoreCliSession:
     def test_returns_none_when_file_not_found_in_storage(self):
         """Returns None (graceful degradation) when the session is missing."""
