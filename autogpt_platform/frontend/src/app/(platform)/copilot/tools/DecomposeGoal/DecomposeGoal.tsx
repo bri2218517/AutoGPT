@@ -28,7 +28,6 @@ import {
   isErrorOutput,
   FALLBACK_COUNTDOWN_SECONDS,
   ToolIcon,
-  type DecomposeGoalOutput,
 } from "./helpers";
 
 const RADIUS = 15;
