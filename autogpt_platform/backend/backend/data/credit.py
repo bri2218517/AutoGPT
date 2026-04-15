@@ -1437,7 +1437,15 @@ async def modify_stripe_subscription_for_tier(
     if not price_id:
         raise ValueError(f"No Stripe price ID configured for tier {tier}")
 
-    customer_id = await get_stripe_customer_id(user_id)
+    # Guard: only proceed if the user already has a Stripe customer ID.  Calling
+    # get_stripe_customer_id for a user with no Stripe record (e.g. admin-granted tier)
+    # would create an orphaned customer object if the subsequent Subscription.list call
+    # fails.  Return False early so the API layer falls back to Checkout instead.
+    user = await get_user_by_id(user_id)
+    if not user.stripe_customer_id:
+        return False
+
+    customer_id = user.stripe_customer_id
     for status in ("active", "trialing"):
         subscriptions = await run_in_threadpool(
             stripe.Subscription.list, customer=customer_id, status=status, limit=1

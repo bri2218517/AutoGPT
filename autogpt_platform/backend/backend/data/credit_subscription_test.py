@@ -1106,6 +1106,9 @@ async def test_modify_stripe_subscription_for_tier_modifies_existing_sub():
     mock_list = MagicMock()
     mock_list.data = [mock_sub]
 
+    mock_user = MagicMock(spec=User)
+    mock_user.stripe_customer_id = "cus_abc"
+
     with (
         patch(
             "backend.data.credit.get_subscription_price_id",
@@ -1113,9 +1116,9 @@ async def test_modify_stripe_subscription_for_tier_modifies_existing_sub():
             return_value="price_pro_monthly",
         ),
         patch(
-            "backend.data.credit.get_stripe_customer_id",
+            "backend.data.credit.get_user_by_id",
             new_callable=AsyncMock,
-            return_value="cus_abc",
+            return_value=mock_user,
         ),
         patch(
             "backend.data.credit.stripe.Subscription.list",
@@ -1138,10 +1141,15 @@ async def test_modify_stripe_subscription_for_tier_modifies_existing_sub():
 
 
 @pytest.mark.asyncio
-async def test_modify_stripe_subscription_for_tier_returns_false_when_no_sub():
-    """modify_stripe_subscription_for_tier returns False when no active subscription exists."""
-    mock_list = MagicMock()
-    mock_list.data = []
+async def test_modify_stripe_subscription_for_tier_returns_false_when_no_customer_id():
+    """modify_stripe_subscription_for_tier returns False when user has no Stripe customer ID.
+
+    Admin-granted paid tiers have no Stripe customer record.  Calling
+    get_stripe_customer_id would create an orphaned customer if a subsequent API call
+    fails, so the function returns False early and the API layer falls back to Checkout.
+    """
+    mock_user = MagicMock(spec=User)
+    mock_user.stripe_customer_id = None
 
     with (
         patch(
@@ -1150,9 +1158,37 @@ async def test_modify_stripe_subscription_for_tier_returns_false_when_no_sub():
             return_value="price_pro_monthly",
         ),
         patch(
-            "backend.data.credit.get_stripe_customer_id",
+            "backend.data.credit.get_user_by_id",
             new_callable=AsyncMock,
-            return_value="cus_abc",
+            return_value=mock_user,
+        ),
+    ):
+        result = await modify_stripe_subscription_for_tier(
+            "user-1", SubscriptionTier.PRO
+        )
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_modify_stripe_subscription_for_tier_returns_false_when_no_sub():
+    """modify_stripe_subscription_for_tier returns False when no active subscription exists."""
+    mock_list = MagicMock()
+    mock_list.data = []
+
+    mock_user = MagicMock(spec=User)
+    mock_user.stripe_customer_id = "cus_abc"
+
+    with (
+        patch(
+            "backend.data.credit.get_subscription_price_id",
+            new_callable=AsyncMock,
+            return_value="price_pro_monthly",
+        ),
+        patch(
+            "backend.data.credit.get_user_by_id",
+            new_callable=AsyncMock,
+            return_value=mock_user,
         ),
         patch(
             "backend.data.credit.stripe.Subscription.list",
