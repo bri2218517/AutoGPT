@@ -811,6 +811,9 @@ async def stream_chat_post(
     # Also sanitise file_ids so only validated, workspace-scoped IDs are
     # forwarded downstream (e.g. to the executor via enqueue_copilot_turn).
     sanitized_file_ids: list[str] | None = None
+    # Capture the original message text BEFORE any mutation (attachment enrichment)
+    # so the idempotency hash is stable across retries.
+    _original_message = request.message
     if request.file_ids and user_id:
         # Filter to valid UUIDs only to prevent DB abuse
         valid_ids = [fid for fid in request.file_ids if _UUID_RE.match(fid)]
@@ -842,15 +845,19 @@ async def stream_chat_post(
     # ── Idempotency guard ────────────────────────────────────────────────────
     # Prevent duplicate executor tasks from concurrent/retry POSTs (e.g. k8s
     # rolling-deploy retries, nginx upstream retries, rapid double-clicks).
-    # We set a Redis NX key keyed on session_id + message hash. The key is
-    # deleted in event_generator's finally block so it only lives while the
-    # request is actively being processed — intentional re-sends of the same
-    # text after the turn completes are never blocked.
+    # We set a Redis NX key keyed on session_id + stable message hash. The key
+    # is released only on StreamFinish (turn complete) or on generator error
+    # (allow retry). On client disconnect (GeneratorExit) the key is intentionally
+    # retained because the backend turn is still running — releasing it there
+    # would re-open the duplicate-submit window. The 30 s TTL is the fallback.
+    # We hash the *original* message (before attachment enrichment) plus a
+    # sorted file ID list so the fingerprint is stable across retries.
     _dedup_key: str | None = None
     _dedup_redis = None
-    if request.message and request.is_user_message:
+    if _original_message and request.is_user_message:
+        _sorted_file_ids = ":".join(sorted(sanitized_file_ids or []))
         _content_hash = hashlib.sha256(
-            f"{session_id}:{request.message}".encode()
+            f"{session_id}:{_original_message}:{_sorted_file_ids}".encode()
         ).hexdigest()[:16]
         _dedup_key = f"chat:msg_dedup:{session_id}:{_content_hash}"
         _dedup_redis = await get_redis_async()
@@ -958,6 +965,11 @@ async def stream_chat_post(
             if subscriber_queue is None:
                 yield StreamFinish().to_sse()
                 yield "data: [DONE]\n\n"
+                if _dedup_key and _dedup_redis:
+                    try:
+                        await _dedup_redis.delete(_dedup_key)
+                    except Exception:
+                        pass
                 return
 
             # Read from the subscriber queue and yield to SSE
@@ -1001,6 +1013,13 @@ async def stream_chat_post(
                                 }
                             },
                         )
+                        # Release dedup key only on true turn completion.
+                        # The 30 s TTL is the fallback if this delete fails.
+                        if _dedup_key and _dedup_redis:
+                            try:
+                                await _dedup_redis.delete(_dedup_key)
+                            except Exception:
+                                pass
                         break
                 except asyncio.TimeoutError:
                     yield StreamHeartbeat().to_sse()
@@ -1016,6 +1035,9 @@ async def stream_chat_post(
                     }
                 },
             )
+            # Do NOT release the dedup key on client disconnect — the backend
+            # turn is still running, and releasing here would reopen the window
+            # for infra-level retries to create duplicate turns.
             pass  # Client disconnected - background task continues
         except Exception as e:
             elapsed = (time_module.perf_counter() - event_gen_start) * 1000
@@ -1031,16 +1053,13 @@ async def stream_chat_post(
                 code="stream_error",
             ).to_sse()
             yield StreamFinish().to_sse()
-        finally:
-            # Release the idempotency key so the user can re-send the same
-            # message after this turn completes. The key was only meant to
-            # block infra-level retries during active processing, not to
-            # prevent intentional re-asks indefinitely.
+            # Release dedup key — turn failed, allow retry.
             if _dedup_key and _dedup_redis:
                 try:
                     await _dedup_redis.delete(_dedup_key)
                 except Exception:
-                    pass  # Best-effort; the 30 s TTL is the fallback
+                    pass
+        finally:
             # Unsubscribe when client disconnects or stream ends
             if subscriber_queue is not None:
                 try:

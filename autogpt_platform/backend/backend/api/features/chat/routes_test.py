@@ -737,9 +737,7 @@ def test_stream_chat_first_post_proceeds_normally(
     # Redis set must have been called once with the NX flag.
     mock_redis.set.assert_called_once()
     call_kwargs = mock_redis.set.call_args
-    assert call_kwargs.kwargs.get("nx") is True or (
-        len(call_kwargs.args) > 3 and call_kwargs.args[3] is True
-    )
+    assert call_kwargs.kwargs.get("nx") is True
 
 
 def test_stream_chat_dedup_skipped_for_non_user_messages(
@@ -758,3 +756,85 @@ def test_stream_chat_dedup_skipped_for_non_user_messages(
     # the endpoint must proceed because is_user_message=False.
     assert response.status_code == 200
     mock_redis.set.assert_not_called()
+
+
+def test_stream_chat_dedup_hash_uses_original_message_not_mutated(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """The dedup hash must be computed from the original request message,
+    not the mutated version that has the [Attached files] block appended.
+    This ensures retries with the same text + same files produce the same key."""
+    import hashlib
+
+    mock_redis = _mock_stream_internals(mocker, redis_set_returns=True)
+
+    response = client.post(
+        "/sessions/sess-hash/stream",
+        json={"message": "plain message", "is_user_message": True},
+    )
+
+    assert response.status_code == 200
+    mock_redis.set.assert_called_once()
+    call_args = mock_redis.set.call_args
+    dedup_key = call_args.args[0]
+
+    # Recompute the expected hash using only the original message and no file IDs
+    expected_hash = hashlib.sha256("sess-hash:plain message:".encode()).hexdigest()[:16]
+    expected_key = f"chat:msg_dedup:sess-hash:{expected_hash}"
+    assert dedup_key == expected_key, (
+        f"Dedup key {dedup_key!r} does not match expected {expected_key!r} — "
+        "hash may be using mutated message or wrong inputs"
+    )
+
+
+def test_stream_chat_dedup_key_released_after_stream_finish(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """The dedup Redis key must be deleted after the turn completes (when
+    subscriber_queue is None the route yields StreamFinish immediately and
+    should release the key so the user can re-send the same message)."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    # Set up all internals manually so we can control subscribe_to_session.
+    mocker.patch(
+        "backend.api.features.chat.routes._validate_and_get_session",
+        return_value=None,
+    )
+    mocker.patch(
+        "backend.api.features.chat.routes.append_and_save_message",
+        return_value=None,
+    )
+    mocker.patch(
+        "backend.api.features.chat.routes.enqueue_copilot_turn",
+        return_value=None,
+    )
+    mocker.patch(
+        "backend.api.features.chat.routes.track_user_message",
+        return_value=None,
+    )
+    mock_registry = mocker.MagicMock()
+    mock_registry.create_session = _AsyncMock(return_value=None)
+    # None → early-finish path: StreamFinish yielded immediately, dedup key released.
+    mock_registry.subscribe_to_session = _AsyncMock(return_value=None)
+    mocker.patch(
+        "backend.api.features.chat.routes.stream_registry",
+        mock_registry,
+    )
+    mock_redis = mocker.AsyncMock()
+    mock_redis.set = _AsyncMock(return_value=True)
+    mocker.patch(
+        "backend.api.features.chat.routes.get_redis_async",
+        new_callable=_AsyncMock,
+        return_value=mock_redis,
+    )
+
+    response = client.post(
+        "/sessions/sess-finish/stream",
+        json={"message": "hello", "is_user_message": True},
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert '"finish"' in body
+    # The dedup key must be released so intentional re-sends are allowed.
+    mock_redis.delete.assert_called_once()
