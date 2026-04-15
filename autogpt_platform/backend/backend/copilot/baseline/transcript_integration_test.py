@@ -2,7 +2,7 @@
 
 Exercises the real helpers in ``baseline/service.py`` that restore,
 validate, load, append to, backfill, and upload the CLI session.
-Storage is mocked via ``restore_cli_session`` / ``upload_cli_session``
+Storage is mocked via ``download_transcript`` / ``upload_transcript``
 patches; no network access is required.
 """
 

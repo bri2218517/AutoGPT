@@ -883,7 +883,12 @@ def _write_cli_session_to_disk(
         )
         return True
     except OSError as e:
-        logger.warning("%s Failed to write CLI session file: %s", log_prefix, e)
+        logger.warning(
+            "%s Failed to write CLI session file %s: %s",
+            log_prefix,
+            os.path.basename(session_file),
+            e.strerror or str(e),
+        )
         return False
 
 
