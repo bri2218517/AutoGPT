@@ -1177,8 +1177,14 @@ class TestRestoreCliSession:
 
         assert result is False
 
-    def test_returns_true_when_local_file_already_exists(self, tmp_path):
-        """Same-pod reuse: if local file exists, skip storage download and return True."""
+    def test_gcs_overwrites_stale_local_file(self, tmp_path):
+        """Cross-pod staleness fix: GCS content always overwrites any local file.
+
+        Previously a same-pod optimisation returned early when a local file existed,
+        which caused Pod A to silently reuse a stale file from an earlier turn while
+        the canonical (newer) session lived in GCS — hiding the most-recent turn from
+        the model.  The fix removes that early-return so GCS is always consulted.
+        """
         import asyncio
         import os
         import re
@@ -1190,15 +1196,18 @@ class TestRestoreCliSession:
         session_id = "12345678-0000-0000-0000-000000000099"
         sdk_cwd = str(tmp_path)
 
-        # Pre-create the local session file (simulates previous turn on same pod)
+        # Pre-create a STALE local session file (simulates a previous turn on this pod)
         projects_base = os.path.realpath(str(tmp_path))
         encoded_cwd = re.sub(r"[^a-zA-Z0-9]", "-", projects_base)
         session_dir = Path(projects_base) / encoded_cwd
         session_dir.mkdir(parents=True, exist_ok=True)
-        existing_content = b'{"type":"user"}\n{"type":"assistant"}\n'
-        (session_dir / f"{session_id}.jsonl").write_bytes(existing_content)
+        stale_content = b'{"type":"user"}\n{"type":"assistant","stale":true}\n'
+        (session_dir / f"{session_id}.jsonl").write_bytes(stale_content)
 
+        # GCS has the FRESH content from the turn that ran on a different pod
+        fresh_gcs_content = b'{"type":"user"}\n{"type":"assistant","fresh":true}\n'
         mock_storage = AsyncMock()
+        mock_storage.retrieve.return_value = fresh_gcs_content
 
         with (
             patch(
@@ -1220,10 +1229,12 @@ class TestRestoreCliSession:
             )
 
         assert result is True
-        # Storage should NOT have been accessed (local file was used as-is)
-        mock_storage.retrieve.assert_not_called()
-        # Local file should be unchanged
-        assert (session_dir / f"{session_id}.jsonl").read_bytes() == existing_content
+        # GCS MUST have been consulted — the local file must not be trusted blindly
+        mock_storage.retrieve.assert_called_once()
+        # Local file must now contain the fresh GCS content, not the stale version
+        written = (session_dir / f"{session_id}.jsonl").read_bytes()
+        assert written == fresh_gcs_content
+        assert written != stale_content
 
     def test_returns_true_on_success(self, tmp_path):
         """Happy path: storage has the session → file written → returns True."""

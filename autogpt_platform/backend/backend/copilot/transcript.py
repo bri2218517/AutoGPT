@@ -802,17 +802,10 @@ async def restore_cli_session(
         )
         return False
 
-    # If the session file already exists locally (same-pod reuse), use it directly.
-    # Downloading from storage could overwrite a newer local version when a previous
-    # turn's upload failed: stored content is stale while the local file already
-    # contains extended history from that turn.
-    if Path(real_path).exists():
-        logger.debug(
-            "%s CLI session file already exists locally — using it for --resume",
-            log_prefix,
-        )
-        return True
-
+    # Always download from GCS, even if a local file exists.
+    # In a multi-pod load-balanced environment the local file may belong to a
+    # different (older) turn that ran on this same pod — using it would silently
+    # restore a stale context and hide the most-recent turn from the model.
     storage = await get_workspace_storage()
     path = _build_path_from_parts(
         _cli_session_storage_path_parts(user_id, session_id), storage
