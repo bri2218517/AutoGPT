@@ -452,6 +452,15 @@ describe("notebookRenderer.render", () => {
     expect(screen.getByText("raw content here")).toBeDefined();
   });
 
+  it("skips empty raw cells", () => {
+    const { container } = render(
+      notebookRenderer.render(multiCellNotebook) as React.ReactElement,
+    );
+    const pres = container.querySelectorAll("pre");
+    const rawTexts = Array.from(pres).map((p) => p.textContent?.trim());
+    expect(rawTexts).not.toContain("");
+  });
+
   it("renders stream stdout output", () => {
     const { container } = render(
       notebookRenderer.render(minimalNotebook) as React.ReactElement,
@@ -495,6 +504,7 @@ describe("notebookRenderer.render", () => {
     const img = container.querySelector("img");
     expect(img).not.toBeNull();
     expect(img?.src).toContain("data:image/png;base64,");
+    expect(img?.alt).toBe("Cell output");
   });
 
   it("renders display_data with image/jpeg as img element", () => {
@@ -506,7 +516,7 @@ describe("notebookRenderer.render", () => {
     expect(img?.src).toContain("data:image/jpeg;base64,");
   });
 
-  it("renders display_data with image/svg+xml", () => {
+  it("renders display_data with image/svg+xml via dangerouslySetInnerHTML", () => {
     const { container } = render(
       notebookRenderer.render(svgOutputNotebook) as React.ReactElement,
     );
@@ -514,7 +524,7 @@ describe("notebookRenderer.render", () => {
     expect(svg).not.toBeNull();
   });
 
-  it("renders display_data with text/html", () => {
+  it("renders display_data with text/html via dangerouslySetInnerHTML", () => {
     const { container } = render(
       notebookRenderer.render(htmlOutputNotebook) as React.ReactElement,
     );
