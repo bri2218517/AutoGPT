@@ -189,7 +189,7 @@ def _charge_extra_runtime_cost_sync(
             block=block.name,
             input={
                 **matching_filter,
-                "extra_iterations": capped_count,
+                "extra_runtime_cost_count": capped_count,
             },
             reason=(
                 f"Extra agent-mode iterations for {block.name} "
@@ -218,6 +218,11 @@ async def charge_extra_runtime_cost(
         return 0, 0
     # Cap to protect against a corrupted llm_call_count.
     capped = min(extra_count, _MAX_EXTRA_RUNTIME_COST)
+    if extra_count > _MAX_EXTRA_RUNTIME_COST:
+        logger.warning(
+            f"extra_count {extra_count} exceeds cap {_MAX_EXTRA_RUNTIME_COST};"
+            f" charging {_MAX_EXTRA_RUNTIME_COST} (llm_call_count may be corrupted)"
+        )
     return await asyncio.to_thread(_charge_extra_runtime_cost_sync, node_exec, capped)
 
 
