@@ -451,15 +451,11 @@ def gated_processor(monkeypatch):
         fake_inner,
     )
 
-    async def fake_charge_extra(self, node_exec, extra_count):
+    async def fake_charge_extra(node_exec, extra_count):
         calls["charge_extra_runtime_cost"].append(extra_count)
         return (extra_count * 10, 500)
 
-    monkeypatch.setattr(
-        manager.ExecutionProcessor,
-        "charge_extra_runtime_cost",
-        fake_charge_extra,
-    )
+    monkeypatch.setattr(billing, "charge_extra_runtime_cost", fake_charge_extra)
 
     def fake_low_balance(db_client, user_id, current_balance, transaction_cost):
         calls["handle_low_balance"].append(
@@ -601,7 +597,7 @@ async def test_on_node_execution_insufficient_balance_records_error_and_notifies
     inner["llm_call_count"] = 4
     fake_db.get_node = AsyncMock(return_value=_FakeNode(extra_charges=3))
 
-    async def raise_ibe(self, node_exec, extra_count):
+    async def raise_ibe(node_exec, extra_count):
         raise InsufficientBalanceError(
             user_id=node_exec.user_id,
             message="Insufficient balance",
@@ -609,9 +605,7 @@ async def test_on_node_execution_insufficient_balance_records_error_and_notifies
             amount=extra_count * 10,
         )
 
-    monkeypatch.setattr(
-        manager.ExecutionProcessor, "charge_extra_runtime_cost", raise_ibe
-    )
+    monkeypatch.setattr(billing, "charge_extra_runtime_cost", raise_ibe)
 
     stats_pair = (
         MagicMock(
@@ -949,12 +943,10 @@ async def test_on_node_execution_non_ibe_billing_failure_keeps_completed(
     inner["llm_call_count"] = 4
     fake_db.get_node = AsyncMock(return_value=_FakeNode(extra_charges=3))
 
-    async def raise_conn_error(self, node_exec, extra_count):
+    async def raise_conn_error(node_exec, extra_count):
         raise ConnectionError("DB connection lost")
 
-    monkeypatch.setattr(
-        manager.ExecutionProcessor, "charge_extra_runtime_cost", raise_conn_error
-    )
+    monkeypatch.setattr(billing, "charge_extra_runtime_cost", raise_conn_error)
 
     stats_pair = (
         MagicMock(
