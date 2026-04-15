@@ -21,8 +21,8 @@ export function ModeToggleButton({ mode, onToggle, readOnly = false }: Props) {
       className={cn(
         "inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
         isExtended
-          ? "bg-purple-100 text-purple-900 hover:bg-purple-200"
-          : "bg-amber-100 text-amber-900 hover:bg-amber-200",
+          ? "bg-purple-100 text-purple-900 hover:bg-purple-200 disabled:hover:bg-purple-100"
+          : "bg-amber-100 text-amber-900 hover:bg-amber-200 disabled:hover:bg-amber-100",
         readOnly && "cursor-default opacity-70",
       )}
       aria-label={

@@ -33,4 +33,30 @@ describe("ModelToggleButton", () => {
     const btn = screen.getByLabelText("Switch to Standard model");
     expect(btn.getAttribute("aria-pressed")).toBe("true");
   });
+
+  it("is disabled when readOnly", () => {
+    render(<ModelToggleButton model="advanced" onToggle={vi.fn()} readOnly />);
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
+  });
+
+  it("does not call onToggle when readOnly", () => {
+    const onToggle = vi.fn();
+    render(<ModelToggleButton model="standard" onToggle={onToggle} readOnly />);
+    fireEvent.click(screen.getByRole("button"));
+    expect(onToggle).not.toHaveBeenCalled();
+  });
+
+  it("shows session-locked title when readOnly and advanced", () => {
+    render(<ModelToggleButton model="advanced" onToggle={vi.fn()} readOnly />);
+    expect(
+      screen.getByTitle("Advanced model active for this session"),
+    ).toBeDefined();
+  });
+
+  it("shows session-locked title when readOnly and standard", () => {
+    render(<ModelToggleButton model="standard" onToggle={vi.fn()} readOnly />);
+    expect(
+      screen.getByTitle("Standard model active for this session"),
+    ).toBeDefined();
+  });
 });

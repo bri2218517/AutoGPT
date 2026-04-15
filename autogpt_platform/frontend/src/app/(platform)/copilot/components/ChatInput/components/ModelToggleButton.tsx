@@ -25,8 +25,8 @@ export function ModelToggleButton({
       className={cn(
         "inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
         isAdvanced
-          ? "bg-sky-100 text-sky-900 hover:bg-sky-200"
-          : "bg-neutral-100 text-neutral-700 hover:bg-neutral-200",
+          ? "bg-sky-100 text-sky-900 hover:bg-sky-200 disabled:hover:bg-sky-100"
+          : "bg-neutral-100 text-neutral-700 hover:bg-neutral-200 disabled:hover:bg-neutral-100",
         readOnly && "cursor-default opacity-70",
       )}
       aria-label={

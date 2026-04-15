@@ -257,6 +257,7 @@ def _build_raw_where(
     model: str | None = None,
     block_name: str | None = None,
     tracking_type: str | None = None,
+    graph_exec_id: str | None = None,
 ) -> tuple[str, list]:
     """Build a parameterised WHERE clause for raw SQL queries.
 
@@ -304,6 +305,11 @@ def _build_raw_where(
     if block_name is not None:
         clauses.append(f'LOWER("blockName") = LOWER(${idx})')
         params.append(block_name)
+        idx += 1
+
+    if graph_exec_id is not None:
+        clauses.append(f'"graphExecId" = ${idx}')
+        params.append(graph_exec_id)
         idx += 1
 
     return (" AND ".join(clauses), params)
@@ -370,7 +376,14 @@ async def get_platform_cost_dashboard(
     # "cost_usd" — percentile and histogram queries only make sense on
     # cost-denominated rows, regardless of what the caller is filtering.
     raw_where, raw_params = _build_raw_where(
-        start, end, provider, user_id, model, block_name, tracking_type=None
+        start,
+        end,
+        provider,
+        user_id,
+        model,
+        block_name,
+        tracking_type=None,
+        graph_exec_id=graph_exec_id,
     )
 
     # Queries that always run regardless of tracking_type filter.
