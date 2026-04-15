@@ -275,7 +275,9 @@ class TestChargeNodeUsage:
             captured["node_exec"] = node_exec
             return (5, 100)
 
-        def fake_handle_low_balance(db_client, user_id, current_balance, transaction_cost):
+        def fake_handle_low_balance(
+            db_client, user_id, current_balance, transaction_cost
+        ):
             pass
 
         monkeypatch.setattr(billing, "charge_usage", fake_charge_usage)
@@ -299,7 +301,9 @@ class TestChargeNodeUsage:
         def fake_charge_usage(node_exec, execution_count):
             return (10, 50)
 
-        def fake_handle_low_balance(db_client, user_id, current_balance, transaction_cost):
+        def fake_handle_low_balance(
+            db_client, user_id, current_balance, transaction_cost
+        ):
             low_balance_calls.append(
                 {
                     "user_id": user_id,
@@ -332,7 +336,9 @@ class TestChargeNodeUsage:
         def fake_charge_usage(node_exec, execution_count):
             return (0, 200)
 
-        def fake_handle_low_balance(db_client, user_id, current_balance, transaction_cost):
+        def fake_handle_low_balance(
+            db_client, user_id, current_balance, transaction_cost
+        ):
             low_balance_calls.append(True)
 
         monkeypatch.setattr(billing, "charge_usage", fake_charge_usage)
@@ -996,16 +1002,15 @@ class TestChargeUsageZeroExecutionCount:
         fake_block = MagicMock()
         fake_block.name = "FakeBlock"
 
-        monkeypatch.setattr(manager, "get_db_client", lambda: FakeDb())
-        monkeypatch.setattr(manager, "get_block", lambda block_id: fake_block)
+        monkeypatch.setattr(billing, "get_db_client", lambda: FakeDb())
+        monkeypatch.setattr(billing, "get_block", lambda block_id: fake_block)
         monkeypatch.setattr(
-            manager,
+            billing,
             "block_usage_cost",
             lambda block, input_data, **_kw: (10, {}),
         )
-        monkeypatch.setattr(manager, "execution_usage_cost", fake_execution_usage_cost)
+        monkeypatch.setattr(billing, "execution_usage_cost", fake_execution_usage_cost)
 
-        proc = manager.ExecutionProcessor.__new__(manager.ExecutionProcessor)
         ne = MagicMock()
         ne.user_id = "u"
         ne.graph_exec_id = "ge"
@@ -1015,7 +1020,7 @@ class TestChargeUsageZeroExecutionCount:
         ne.block_id = "b"
         ne.inputs = {}
 
-        total_cost, remaining = proc._charge_usage(ne, 0)
+        total_cost, remaining = billing.charge_usage(ne, 0)
         assert total_cost == 10  # block cost only
         assert remaining == 500
         assert spent == [10]

@@ -7,7 +7,11 @@ from backend.blocks._base import Block
 from backend.blocks.io import AgentOutputBlock
 from backend.data import redis_client as redis
 from backend.data.credit import UsageTransactionMetadata
-from backend.data.execution import ExecutionStatus, GraphExecutionEntry, NodeExecutionEntry
+from backend.data.execution import (
+    ExecutionStatus,
+    GraphExecutionEntry,
+    NodeExecutionEntry,
+)
 from backend.data.graph import Node
 from backend.data.model import GraphExecutionStats, NodeExecutionStats
 from backend.data.notifications import (
@@ -96,9 +100,7 @@ def resolve_block_cost(
     if not block:
         logger.error(f"Block {node_exec.block_id} not found.")
         return None, 0, {}
-    cost, matching_filter = block_usage_cost(
-        block=block, input_data=node_exec.inputs
-    )
+    cost, matching_filter = block_usage_cost(block=block, input_data=node_exec.inputs)
     return block, cost, matching_filter
 
 
@@ -245,7 +247,9 @@ async def charge_node_usage(node_exec: NodeExecutionEntry) -> tuple[int, int]:
     def _run():
         total_cost, remaining = charge_usage(node_exec, 0)
         if total_cost > 0:
-            handle_low_balance(get_db_client(), node_exec.user_id, remaining, total_cost)
+            handle_low_balance(
+                get_db_client(), node_exec.user_id, remaining, total_cost
+            )
         return total_cost, remaining
 
     return await asyncio.to_thread(_run)
@@ -336,8 +340,7 @@ async def handle_post_execution_billing(
         )
     except Exception as e:
         log_metadata.error(
-            f"billing_leak: failed to charge extra iterations "
-            f"for {node.block.name}",
+            f"billing_leak: failed to charge extra iterations for {node.block.name}",
             extra={
                 "billing_leak": True,
                 "user_id": node_exec.user_id,
@@ -423,9 +426,7 @@ def handle_insufficient_funds_notif(
 
     shortfall = abs(e.amount) - e.balance
     metadata = db_client.get_graph_metadata(graph_id)
-    base_url = (
-        settings.config.frontend_base_url or settings.config.platform_base_url
-    )
+    base_url = settings.config.frontend_base_url or settings.config.platform_base_url
 
     # Queue user email notification
     queue_notification(
@@ -459,9 +460,7 @@ def handle_insufficient_funds_notif(
             alert_message, DiscordChannel.PRODUCT
         )
     except Exception as alert_error:
-        logger.error(
-            f"Failed to send insufficient funds Discord alert: {alert_error}"
-        )
+        logger.error(f"Failed to send insufficient funds Discord alert: {alert_error}")
 
 
 def handle_low_balance(
