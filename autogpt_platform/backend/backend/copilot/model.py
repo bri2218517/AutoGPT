@@ -696,7 +696,11 @@ async def append_message_if(
     lock = await _get_session_lock(session_id)
 
     async with lock:
-        session = await get_chat_session(session_id)
+        # Read from DB directly — the Redis cache can be stale because the
+        # executor's upsert_chat_session overwrites it with in-memory copies
+        # during streaming, which may not include messages appended by the
+        # API server in a different process (e.g. the client's "Approved").
+        session = await _get_session_from_db(session_id)
         if session is None or not predicate(session):
             return None
 

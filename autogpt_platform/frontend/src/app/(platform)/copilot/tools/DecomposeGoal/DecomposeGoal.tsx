@@ -120,6 +120,17 @@ export function DecomposeGoalTool({
   const [isEditing, setIsEditing] = useState(false);
   const [editableSteps, setEditableSteps] = useState<EditableStep[]>([]);
 
+  // True when secondsLeft started at 0 because the server-stamped deadline
+  // had already elapsed before this mount. Prevents the auto-approve effect
+  // from firing on remount with stale cache — the server handles that case.
+  // Without this, re-entering after the deadline sends a duplicate "Approved".
+  const wasInitiallyPastDeadlineRef = useRef(
+    secondsLeft === 0 &&
+      !!output &&
+      isDecompositionOutput(output) &&
+      !!output.created_at,
+  );
+
   const approvedRef = useRef(false);
   const onSendRef = useRef(onSend);
   const isEditingRef = useRef(isEditing);
@@ -216,7 +227,12 @@ export function DecomposeGoalTool({
   // sees the user's message and skips — no duplicate.
   // approve() is stable via approvedRef — safe to omit from deps.
   useEffect(() => {
-    if (secondsLeft === 0 && timerActive && actionsEnabled) {
+    if (
+      secondsLeft === 0 &&
+      timerActive &&
+      actionsEnabled &&
+      !wasInitiallyPastDeadlineRef.current
+    ) {
       approve();
     }
   }, [secondsLeft, timerActive, actionsEnabled]);
