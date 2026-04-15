@@ -1180,7 +1180,10 @@ class TestRestoreCliSession:
         from .transcript import restore_cli_session
 
         mock_storage = AsyncMock()
-        mock_storage.retrieve.side_effect = RuntimeError("network error")
+        mock_storage.retrieve.side_effect = [
+            RuntimeError("network error"),
+            FileNotFoundError("no meta"),
+        ]
 
         with patch(
             "backend.copilot.transcript.get_workspace_storage",
