@@ -80,16 +80,12 @@ export function formatBytes(bytes: number): string {
   const GB = MB * 1024;
   if (bytes < KB) return `${bytes} B`;
   if (bytes < MB) {
-    const kb = bytes / KB;
-    return kb >= 1000
-      ? `${(bytes / MB).toFixed(1)} MB`
-      : `${Math.round(kb)} KB`;
+    const kb = Math.round(bytes / KB);
+    return kb >= 1024 ? `${(bytes / MB).toFixed(1)} MB` : `${kb} KB`;
   }
   if (bytes < GB) {
-    const mb = bytes / MB;
-    return mb >= 1000
-      ? `${(bytes / GB).toFixed(1)} GB`
-      : `${Math.round(mb)} MB`;
+    const mb = Math.round(bytes / MB);
+    return mb >= 1024 ? `${(bytes / GB).toFixed(1)} GB` : `${mb} MB`;
   }
   return `${(bytes / GB).toFixed(1)} GB`;
 }

@@ -5,7 +5,7 @@ import {
   fireEvent,
 } from "@/tests/integrations/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { UsagePanelContent } from "../UsagePanelContent";
+import { UsagePanelContent, formatBytes } from "../UsagePanelContent";
 import type { CoPilotUsageStatus } from "@/app/api/__generated__/models/coPilotUsageStatus";
 
 const mockResetUsage = vi.fn();
@@ -44,6 +44,25 @@ function makeUsage(
     reset_cost: resetCost,
   } as CoPilotUsageStatus;
 }
+
+describe("formatBytes", () => {
+  it.each([
+    [0, "0 B"],
+    [512, "512 B"],
+    [1024, "1 KB"],
+    [250 * 1024, "250 KB"],
+    [1023 * 1024, "1023 KB"],
+    [1000 * 1024, "1000 KB"],
+    [1024 * 1024, "1 MB"],
+    [250 * 1024 * 1024, "250 MB"],
+    [1000 * 1024 * 1024, "1000 MB"],
+    [1024 * 1024 * 1024, "1.0 GB"],
+    [5 * 1024 * 1024 * 1024, "5.0 GB"],
+    [15 * 1024 * 1024 * 1024, "15.0 GB"],
+  ])("formats %d bytes as %s", (input, expected) => {
+    expect(formatBytes(input)).toBe(expected);
+  });
+});
 
 describe("UsagePanelContent", () => {
   it("renders 'No usage limits configured' when both limits are zero", () => {

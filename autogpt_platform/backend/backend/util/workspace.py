@@ -5,6 +5,7 @@ This module provides a high-level interface for workspace file operations,
 combining the storage backend and database layer.
 """
 
+import asyncio
 import logging
 import mimetypes
 import uuid
@@ -198,8 +199,10 @@ class WorkspaceManager:
         # Enforce per-user workspace storage quota (tier-based).
         # For overwrites, subtract the existing file's size so replacing a file
         # with a same-size or smaller file is not rejected near the cap.
-        storage_limit = await get_workspace_storage_limit_bytes(self.user_id)
-        current_usage = await get_workspace_total_size(self.workspace_id)
+        storage_limit, current_usage = await asyncio.gather(
+            get_workspace_storage_limit_bytes(self.user_id),
+            get_workspace_total_size(self.workspace_id),
+        )
         if overwrite:
             db = workspace_db()
             existing = await db.get_workspace_file_by_path(self.workspace_id, path)
