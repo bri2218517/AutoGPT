@@ -1086,11 +1086,20 @@ async def _build_query_message(
                     f"{gap_context}\n\nNow, the user says:\n{current_message}",
                     was_compressed,
                 )
-        logger.info(
-            "[SDK] [%s] --resume covers full context (%d messages)",
-            session_id[:8],
-            transcript_msg_count,
-        )
+            logger.warning(
+                "[SDK] [%s] Transcript stale: gap produced empty context"
+                " (%d msgs, transcript=%d/%d) — sending message without gap prefix",
+                session_id[:8],
+                len(gap),
+                transcript_msg_count,
+                msg_count,
+            )
+        else:
+            logger.info(
+                "[SDK] [%s] --resume covers full context (%d messages)",
+                session_id[:8],
+                transcript_msg_count,
+            )
         return current_message, False
 
     elif not use_resume and msg_count > 1:
@@ -2621,7 +2630,7 @@ async def stream_chat_completion_sdk(
                     transcript_content = _seeded
                     transcript_builder.load_previous(_seeded, log_prefix=log_prefix)
                     transcript_covers_prefix = True
-                    transcript_msg_count = len(_comp)
+                    transcript_msg_count = len(_prior)
                     logger.info(
                         "%s Seeded transcript from %d compressed DB messages"
                         " for next-turn upload (seed_target_tokens=%d)",
