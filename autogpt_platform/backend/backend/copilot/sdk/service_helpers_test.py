@@ -685,6 +685,9 @@ class TestRestoreCliSessionModeCheck:
         assert "BASELINE_SENTINEL" not in result.transcript_content
         # DB reconstruction from session.messages must have run instead
         assert "hello-unique-marker" in result.transcript_content
+        # use_resume must be False — reconstructed TranscriptBuilder JSONL uses
+        # synthetic IDs (msg_sdk_...) that the Claude CLI rejects for --resume
+        assert result.use_resume is False
 
     @pytest.mark.asyncio
     async def test_sdk_mode_transcript_allows_resume(self, tmp_path):

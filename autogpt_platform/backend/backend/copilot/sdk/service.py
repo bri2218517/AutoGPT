@@ -2489,43 +2489,21 @@ async def _restore_cli_session_for_turn(
         return result
 
     # No CLI session in GCS — reconstruct from DB messages as last-resort fallback.
+    # The reconstruction uses TranscriptBuilder synthetic IDs (msg_sdk_...) which
+    # are NOT compatible with the Claude CLI's --resume mechanism.  We load the
+    # reconstructed content into the transcript_builder so the current turn has
+    # accurate state for the post-turn upload, but we do NOT attempt --resume.
+    # Context for this turn is injected by _build_query_message (use_resume=False path).
     prior = session.messages[:-1]
     reconstructed = _session_messages_to_transcript(prior)
-    if reconstructed and sdk_cwd:
-        result.transcript_content = reconstructed
-        transcript_builder.load_previous(reconstructed, log_prefix=log_prefix)
-        result.transcript_msg_count = len(prior)
-        result.transcript_covers_prefix = True
-        # Write the reconstructed transcript to disk so the CLI can
-        # --resume on this turn (avoids context-free response and
-        # seeds the native session for cross-pod restore next turn).
-        _reconstructed_bytes = reconstructed.encode("utf-8")
-        if _write_cli_session_to_disk(
-            _reconstructed_bytes, sdk_cwd, session_id, log_prefix
-        ):
-            result.use_resume = True
-            result.resume_file = session_id
-            logger.info(
-                "%s Reconstructed transcript from %d session messages "
-                "and wrote to disk for --resume",
-                log_prefix,
-                len(prior),
-            )
-        else:
-            logger.info(
-                "%s Reconstructed transcript from %d session messages "
-                "(disk write failed — running without --resume this turn)",
-                log_prefix,
-                len(prior),
-            )
-    elif reconstructed:
+    if reconstructed:
         result.transcript_content = reconstructed
         transcript_builder.load_previous(reconstructed, log_prefix=log_prefix)
         result.transcript_msg_count = len(prior)
         result.transcript_covers_prefix = True
         logger.info(
             "%s Reconstructed transcript from %d session messages "
-            "(no sdk_cwd — running without --resume this turn)",
+            "(injecting context via message prefix — not using --resume)",
             log_prefix,
             len(prior),
         )
