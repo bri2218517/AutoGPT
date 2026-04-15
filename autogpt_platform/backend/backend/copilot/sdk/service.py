@@ -2890,14 +2890,14 @@ async def stream_chat_completion_sdk(
         else:
             # Set session_id whenever NOT resuming so the CLI writes the
             # native session file to a predictable path for
-            # upload_cli_session() after the turn.  This covers:
+            # upload_transcript() after the turn.  This covers:
             #   • T1 fresh: no prior history, first SDK turn.
             #   • Mode-switch T1: has_history=True (prior baseline turns in
             #     DB) but no CLI session file was ever uploaded — the CLI has
             #     never been invoked with this session_id before.
             #   • T2+ without --resume (restore failed): no session file was
-            #     restored to local storage (restore_cli_session returned
-            #     False), so no conflict with an existing file.
+            #     restored to local storage (download_transcript returned
+            #     None), so no conflict with an existing file.
             # When --resume is active the session_id is already implied by
             # the resume file; passing it again would be rejected by the CLI.
             sdk_options_kwargs["session_id"] = session_id
@@ -3119,7 +3119,7 @@ async def stream_chat_completion_sdk(
                 elif "session_id" in sdk_options_kwargs:
                     # Initial invocation used session_id (T1 or mode-switch
                     # T1): keep it so the CLI writes the session file to the
-                    # predictable path for upload_cli_session().  Storage is
+                    # predictable path for upload_transcript().  Storage is
                     # ephemeral per invocation, so no "Session ID already in
                     # use" conflict occurs — no prior file was restored.
                     sdk_options_kwargs_retry.pop("resume", None)
@@ -3579,9 +3579,9 @@ async def stream_chat_completion_sdk(
 
         # --- Upload CLI native session file for cross-pod --resume ---
         # The CLI writes its native session JSONL after each turn completes.
-        # The companion .meta.json carries the message_count watermark so the
-        # next turn can restore both --resume context and gap-fill state in a
-        # single GCS round-trip (no separate chat-transcripts fetch needed).
+        # The companion .meta.json carries the message_count watermark and mode
+        # so the next turn can restore both --resume context and gap-fill state
+        # in a single GCS round-trip via download_transcript().
         # asyncio.shield: if the outer finally-block coroutine is cancelled
         # while awaiting shield, the CancelledError propagates (BaseException,
         # not caught by `except Exception`) letting the caller handle
@@ -3592,8 +3592,8 @@ async def stream_chat_completion_sdk(
         # this turn ran without --resume (restore failed or first T2+ on a new
         # pod), the T1 session file at the expected path may still be present
         # and should be re-uploaded so the next turn can resume from it.
-        # upload_cli_session silently skips when the file is absent, so this is
-        # always safe.
+        # _read_cli_session_from_disk returns None when the file is absent, so
+        # this is always safe.
         #
         # Intentionally NOT gated on skip_transcript_upload: that flag is set
         # when our custom JSONL transcript is dropped (transcript_lost=True on
