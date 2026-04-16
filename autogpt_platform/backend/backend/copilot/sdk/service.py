@@ -1003,11 +1003,14 @@ def _process_cli_restore(
     is_valid = validate_transcript(stripped)
     # Use len(raw_str) rather than len(cli_restore.content) so the unit is always
     # characters (raw_str is always str at this point regardless of input type).
+    # lines_stripped = original lines minus remaining lines after stripping.
+    _original_lines = len(raw_str.strip().split("\n")) if raw_str.strip() else 0
+    _remaining_lines = len(stripped.strip().split("\n")) if stripped.strip() else 0
     logger.info(
         "%s Restored CLI session: %dB raw, %d lines stripped, msg_count=%d, valid=%s",
         log_prefix,
         len(raw_str),
-        len(stripped.strip().split("\n")) if stripped.strip() else 0,
+        _original_lines - _remaining_lines,
         cli_restore.message_count,
         is_valid,
     )
@@ -1154,10 +1157,11 @@ async def _compress_messages(
 
     if result.was_compacted:
         logger.info(
-            f"[SDK] Context compacted: {result.original_token_count} -> "
-            f"{result.token_count} tokens "
-            f"({result.messages_summarized} summarized, "
-            f"{result.messages_dropped} dropped)"
+            "[SDK] Context compacted: %d -> %d tokens (%d summarized, %d dropped)",
+            result.original_token_count,
+            result.token_count,
+            result.messages_summarized,
+            result.messages_dropped,
         )
         # Convert compressed dicts back to ChatMessages
         return [
@@ -2555,7 +2559,10 @@ async def _restore_cli_session_for_turn(
             if validate_transcript(stripped):
                 transcript_builder.load_previous(stripped, log_prefix=log_prefix)
                 result.transcript_content = stripped
-        except Exception as _load_err:
+        except (UnicodeDecodeError, ValueError, OSError) as _load_err:
+            # UnicodeDecodeError: non-UTF-8 content; ValueError: malformed JSONL in
+            # strip_for_upload; OSError: encode/decode I/O failure.  Unexpected
+            # exceptions propagate so programming errors are not silently masked.
             logger.debug(
                 "%s Could not load baseline transcript into builder: %s",
                 log_prefix,
