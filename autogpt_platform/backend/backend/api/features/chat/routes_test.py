@@ -165,7 +165,9 @@ def _mock_stream_internals(mocker: pytest_mock.MockerFixture):
         "backend.api.features.chat.routes.track_user_message",
         return_value=None,
     )
-    return types.SimpleNamespace(save=mock_save, enqueue=mock_enqueue)
+    return types.SimpleNamespace(
+        save=mock_save, enqueue=mock_enqueue, registry=mock_registry
+    )
 
 
 def test_stream_chat_accepts_20_file_ids(mocker: pytest_mock.MockerFixture):
@@ -201,7 +203,9 @@ def test_stream_chat_skips_enqueue_for_duplicate_message(
     mocker: pytest_mock.MockerFixture,
 ):
     """When append_and_save_message returns None (duplicate detected),
-    enqueue_copilot_turn must NOT be called to avoid double-processing."""
+    enqueue_copilot_turn and stream_registry.create_session must NOT be called
+    to avoid double-processing and to prevent overwriting the active stream's
+    turn_id in Redis (which would cause reconnecting clients to miss the response)."""
     mocks = _mock_stream_internals(mocker)
     # Override save to return None — signalling a duplicate
     mocks.save.return_value = None
@@ -212,6 +216,7 @@ def test_stream_chat_skips_enqueue_for_duplicate_message(
     )
     assert response.status_code == 200
     mocks.enqueue.assert_not_called()
+    mocks.registry.create_session.assert_not_called()
 
 
 # ─── UUID format filtering ─────────────────────────────────────────────
