@@ -15,15 +15,24 @@ export async function GET() {
 export async function PUT(request: Request) {
   try {
     const supabase = await getServerSupabase();
-    const { email } = await request.json();
+    const body = await request.json();
+    const { email, full_name } = body as {
+      email?: string;
+      full_name?: string;
+    };
 
-    if (!email) {
-      return NextResponse.json({ error: "Email is required" }, { status: 400 });
+    if (!email && !full_name) {
+      return NextResponse.json(
+        { error: "Email or full_name is required" },
+        { status: 400 },
+      );
     }
 
-    const { data, error } = await supabase.auth.updateUser({
-      email,
-    });
+    const updatePayload: Parameters<typeof supabase.auth.updateUser>[0] = {};
+    if (email) updatePayload.email = email;
+    if (full_name) updatePayload.data = { full_name };
+
+    const { data, error } = await supabase.auth.updateUser(updatePayload);
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 400 });
@@ -32,7 +41,7 @@ export async function PUT(request: Request) {
     return NextResponse.json(data);
   } catch {
     return NextResponse.json(
-      { error: "Failed to update user email" },
+      { error: "Failed to update user" },
       { status: 500 },
     );
   }
