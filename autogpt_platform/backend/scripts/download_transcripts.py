@@ -229,7 +229,7 @@ async def cmd_load(session_ids: list[str]) -> None:
             await upload_transcript(
                 user_id=user_id,
                 session_id=sid,
-                content=content,
+                content=content.encode("utf-8"),
                 message_count=msg_count,
             )
             print(f"[{sid[:12]}] Stored transcript in local workspace storage")
