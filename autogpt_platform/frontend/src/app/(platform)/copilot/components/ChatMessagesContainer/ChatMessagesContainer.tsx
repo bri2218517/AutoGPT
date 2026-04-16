@@ -43,6 +43,10 @@ interface Props {
   hasMoreMessages?: boolean;
   isLoadingMore?: boolean;
   onLoadMore?: () => void;
+  /** When true the load-more sentinel is placed at the bottom (forward
+   *  pagination for completed sessions). When false it is at the top
+   *  (backward pagination for active sessions). */
+  forwardPaginated?: boolean;
   onRetry?: () => void;
   historicalDurations?: Map<string, number>;
 }
@@ -140,11 +144,25 @@ export function LoadMoreSentinel({
   isLoading,
   messageCount,
   onLoadMore,
+  rootMargin = "200px 0px 0px 0px",
+  adjustScroll = true,
+  forwardPaginated = false,
 }: {
   hasMore: boolean;
   isLoading: boolean;
   messageCount: number;
   onLoadMore: () => void;
+  /** IntersectionObserver rootMargin. Top sentinel uses "200px 0px 0px 0px"
+   *  (pre-trigger when approaching from above); bottom sentinel should use
+   *  "0px 0px 200px 0px" (pre-trigger when approaching from below). */
+  rootMargin?: string;
+  /** Whether to adjust scrollTop after load to preserve visual position.
+   *  True for backward pagination (prepend above); false for forward
+   *  pagination (append below) where no adjustment is needed. */
+  adjustScroll?: boolean;
+  /** When true the button reads "Load newer messages" (forward pagination).
+   *  When false (default) it reads "Load older messages". */
+  forwardPaginated?: boolean;
 }) {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -189,11 +207,11 @@ export function LoadMoreSentinel({
         if (autoFillRoundsRef.current >= MAX_AUTO_FILL_ROUNDS) return;
         captureAndLoad(true);
       },
-      { rootMargin: "200px 0px 0px 0px" },
+      { rootMargin },
     );
     observer.observe(sentinelRef.current);
     return () => observer.disconnect();
-  }, [hasMore, isLoading, scrollRef]);
+  }, [hasMore, isLoading, rootMargin, scrollRef]);
 
   // After React commits new DOM nodes (prepended messages), adjust
   // scrollTop so the user stays at the same visual position.
@@ -206,7 +224,9 @@ export function LoadMoreSentinel({
       scrollSnapshotRef.current;
     if (!el || prevHeight === 0) return;
     const delta = el.scrollHeight - prevHeight;
-    if (delta > 0) {
+    // Only restore scroll position for backward pagination (content prepended
+    // above). Forward pagination appends below — no adjustment needed.
+    if (adjustScroll && delta > 0) {
       el.scrollTop = prevTop + delta;
     }
     // Reset the auto-fill backoff whenever the container becomes
@@ -220,7 +240,7 @@ export function LoadMoreSentinel({
     }
     scrollSnapshotRef.current = { scrollHeight: 0, scrollTop: 0 };
     autoTriggeredRef.current = false;
-  }, [messageCount, scrollRef]);
+  }, [adjustScroll, messageCount, scrollRef]);
 
   return (
     <div
@@ -239,7 +259,7 @@ export function LoadMoreSentinel({
             size="small"
             onClick={() => captureAndLoad(false)}
           >
-            Load older messages
+            {forwardPaginated ? "Load newer messages" : "Load older messages"}
           </Button>
         )
       )}
@@ -256,6 +276,7 @@ export function ChatMessagesContainer({
   hasMoreMessages,
   isLoadingMore,
   onLoadMore,
+  forwardPaginated,
   onRetry,
   historicalDurations,
 }: Props) {
@@ -334,7 +355,7 @@ export function ChatMessagesContainer({
       }
     >
       <ConversationContent className="flex min-h-full flex-1 flex-col gap-6 px-3 py-6">
-        {hasMoreMessages && onLoadMore && (
+        {hasMoreMessages && onLoadMore && !forwardPaginated && (
           <LoadMoreSentinel
             hasMore={hasMoreMessages}
             isLoading={!!isLoadingMore}
@@ -496,6 +517,17 @@ export function ChatMessagesContainer({
               {error instanceof Error ? error.message : String(error)}
             </pre>
           </details>
+        )}
+        {hasMoreMessages && onLoadMore && forwardPaginated && (
+          <LoadMoreSentinel
+            hasMore={hasMoreMessages}
+            isLoading={!!isLoadingMore}
+            messageCount={messages.length}
+            onLoadMore={onLoadMore}
+            rootMargin="0px 0px 200px 0px"
+            adjustScroll={false}
+            forwardPaginated
+          />
         )}
       </ConversationContent>
       <ConversationScrollButton />
