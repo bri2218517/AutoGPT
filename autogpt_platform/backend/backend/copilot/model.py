@@ -521,7 +521,7 @@ async def upsert_chat_session(
             callers are aware of the persistence failure.
         RedisError: If the cache write fails (after successful DB write).
     """
-    async with _get_session_lock(session.session_id):
+    async with _get_session_lock(session.session_id) as _:
         # Always query DB for existing message count to ensure consistency
         existing_message_count = await chat_db().get_next_sequence(session.session_id)
 
@@ -659,12 +659,21 @@ async def append_and_save_message(
     Uses _get_session_lock (Redis NX) to serialise concurrent writers across replicas.
     The idempotency check below provides a last-resort guard when the lock degrades.
     """
-    async with _get_session_lock(session_id):
-        session = await get_chat_session(session_id)
+    async with _get_session_lock(session_id) as lock_acquired:
+        # When the lock degraded (Redis down or 2s timeout), bypass cache for
+        # the idempotency check. Stale cache could let two concurrent writers
+        # both see the old state, pass the check, and write the same message.
+        if lock_acquired:
+            session = await get_chat_session(session_id)
+        else:
+            session = await _get_session_from_db(session_id)
         if session is None:
             raise ValueError(f"Session {session_id} not found")
 
-        # Idempotency: skip if the trailing message already matches this one.
+        # Idempotency: skip if the trailing block of same-role messages already
+        # contains this content. Uses is_message_duplicate which checks all
+        # consecutive trailing messages of the same role, not just [-1].
+        #
         # This collapses infra/nginx retries whether they land on the same pod
         # (serialised by the Redis lock) or a different pod.
         #
@@ -677,10 +686,8 @@ async def append_and_save_message(
         # the user's next send of the same text is blocked here permanently.
         # The fix is to ensure failed turns always write an error/timeout
         # assistant message so the session always ends on an assistant turn.
-        if (
-            session.messages
-            and session.messages[-1].role == message.role
-            and session.messages[-1].content == message.content
+        if message.content is not None and is_message_duplicate(
+            session.messages, message.role, message.content
         ):
             return None  # duplicate — caller should skip enqueue
 
@@ -852,14 +859,16 @@ async def update_session_title(
 
 
 @asynccontextmanager
-async def _get_session_lock(session_id: str) -> AsyncIterator[None]:
+async def _get_session_lock(session_id: str) -> AsyncIterator[bool]:
     """Distributed Redis lock for a session, usable as an async context manager.
+
+    Yields True if the lock was acquired, False if it timed out or Redis was
+    unavailable. Callers should treat False as a degraded mode and prefer fresh
+    DB reads over cache to avoid acting on stale state.
 
     Uses redis-py's built-in Lock (Lua-script acquire/release) so lock acquisition
     is atomic and release is owner-verified. Blocks up to 2s for a concurrent
     writer to finish; the 10s TTL ensures a dead pod never holds the lock forever.
-    On Redis failure the lock is skipped with a warning — callers should still
-    apply an idempotency check as a fallback.
     """
     _lock_key = f"copilot:session_lock:{session_id}"
     lock = None
@@ -876,7 +885,7 @@ async def _get_session_lock(session_id: str) -> AsyncIterator[None]:
         logger.warning("Redis unavailable for session lock on %s: %s", session_id, e)
 
     try:
-        yield
+        yield acquired
     finally:
         if acquired and lock is not None:
             try:
