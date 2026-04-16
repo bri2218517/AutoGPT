@@ -56,7 +56,7 @@ describe("EditNameDialog", () => {
   beforeEach(() => {
     mockToast.mockReset();
     mockRefreshSession.mockReset();
-    mockRefreshSession.mockResolvedValue(undefined);
+    mockRefreshSession.mockResolvedValue({ user: { id: "u1" } });
   });
 
   test("opens dialog with current name prefilled", async () => {
@@ -101,9 +101,9 @@ describe("EditNameDialog", () => {
     expect(mockRefreshSession).not.toHaveBeenCalled();
   });
 
-  test("closes dialog and toasts failure when refreshSession throws", async () => {
+  test("shows warning toast when refreshSession returns an error", async () => {
     mockUpdateNameSuccess();
-    mockRefreshSession.mockRejectedValue(new Error("refresh failed"));
+    mockRefreshSession.mockResolvedValue({ error: "refresh failed" });
 
     render(<EditNameDialog currentName="Alice" />);
 
@@ -115,6 +115,7 @@ describe("EditNameDialog", () => {
       expect(mockToast).toHaveBeenCalledWith(
         expect.objectContaining({
           title: "Name saved, but session refresh failed",
+          description: "refresh failed",
           variant: "destructive",
         }),
       );
