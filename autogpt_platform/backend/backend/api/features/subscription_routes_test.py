@@ -53,11 +53,18 @@ def _configure_frontend_origin(mocker: pytest_mock.MockFixture) -> None:
         # Valid URLs matching the configured frontend origin
         (f"{TEST_FRONTEND_ORIGIN}/success", True),
         (f"{TEST_FRONTEND_ORIGIN}/cancel?ref=abc", True),
+        # Valid: @ in query string is harmless (only netloc @ is rejected)
+        (f"{TEST_FRONTEND_ORIGIN}/path?email=user@example.com", True),
         # Wrong origin
         ("https://evil.example.org/phish", False),
         ("https://evil.example.org", False),
+        # Path-prefix attack: domain looks like it starts with the allowed host
+        (f"https://{TEST_FRONTEND_ORIGIN}.evil.com/ok", False),
         # @ in URL (user:pass@host attack)
         (f"https://attacker.example.com@{TEST_FRONTEND_ORIGIN}/ok", False),
+        # URL-encoded @ in netloc — urlparse does not decode percent-encoding in netloc,
+        # so "attacker.com%40app.example.com" != "app.example.com"
+        (f"https://attacker.example.com%40{TEST_FRONTEND_ORIGIN}/ok", False),
         # Backslash normalisation attack
         (f"https:{TEST_FRONTEND_ORIGIN}\\@attacker.example.com/ok", False),
         # javascript: scheme

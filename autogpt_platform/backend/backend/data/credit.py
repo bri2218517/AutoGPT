@@ -1811,7 +1811,8 @@ async def handle_subscription_payment_failure(invoice: dict) -> None:
             fail_insufficient_credits=True,
             # Use invoice_id as the idempotency key so that Stripe webhook retries
             # (e.g. on a transient stripe.Invoice.pay failure) do not double-charge.
-            transaction_key=invoice_id or None,
+            # invoice_id is guaranteed non-empty here (early-return guard above).
+            transaction_key=invoice_id,
             metadata=SafeJson(
                 {
                     "stripe_customer_id": customer_id,
