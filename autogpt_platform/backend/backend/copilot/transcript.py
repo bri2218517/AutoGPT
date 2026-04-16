@@ -846,6 +846,12 @@ def extract_context_messages(
     - Returns *prior* messages only (excluding the current user turn at
       ``session_messages[-1]``).  Callers that need the current turn append
       ``session_messages[-1]`` themselves.
+    - **Tool calls from transcript entries are flattened to text**: assistant
+      messages derived from the JSONL use ``_flatten_assistant_content``, which
+      serialises ``tool_use`` blocks as human-readable text rather than
+      structured ``tool_calls``.  Gap messages (from DB) preserve their
+      original ``tool_calls`` field.  This is the same trade-off as the old
+      ``_compress_session_messages(session.messages)`` approach — no regression.
 
     Args:
         download: The ``TranscriptDownload`` from GCS, or ``None`` when no
