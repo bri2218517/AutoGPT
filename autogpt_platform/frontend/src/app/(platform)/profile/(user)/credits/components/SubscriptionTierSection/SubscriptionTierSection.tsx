@@ -17,19 +17,22 @@ const TIERS: TierInfo[] = [
     key: "FREE",
     label: "Free",
     multiplier: "1x",
-    description: "Base AutoPilot capacity with standard rate limits · 250 MB file storage",
+    description:
+      "Base AutoPilot capacity with standard rate limits · 250 MB file storage",
   },
   {
     key: "PRO",
     label: "Pro",
     multiplier: "5x",
-    description: "5x AutoPilot capacity — run 5× more tasks per day/week · 1 GB file storage",
+    description:
+      "5x AutoPilot capacity — run 5× more tasks per day/week · 1 GB file storage",
   },
   {
     key: "BUSINESS",
     label: "Business",
     multiplier: "20x",
-    description: "20x AutoPilot capacity — ideal for teams and heavy workloads · 5 GB file storage",
+    description:
+      "20x AutoPilot capacity — ideal for teams and heavy workloads · 5 GB file storage",
   },
 ];
 

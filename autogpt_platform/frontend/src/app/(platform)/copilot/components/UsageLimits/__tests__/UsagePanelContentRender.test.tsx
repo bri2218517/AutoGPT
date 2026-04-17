@@ -4,7 +4,7 @@ import {
   cleanup,
   fireEvent,
 } from "@/tests/integrations/test-utils";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UsagePanelContent, formatBytes } from "../UsagePanelContent";
 import type { CoPilotUsageStatus } from "@/app/api/__generated__/models/coPilotUsageStatus";
 
@@ -13,9 +13,20 @@ vi.mock("../../../hooks/useResetRateLimit", () => ({
   useResetRateLimit: () => ({ resetUsage: mockResetUsage, isPending: false }),
 }));
 
+const mockStorageData = vi.fn();
+vi.mock("../useWorkspaceStorage", () => ({
+  useWorkspaceStorage: () => mockStorageData(),
+}));
+
 afterEach(() => {
   cleanup();
   mockResetUsage.mockReset();
+  mockStorageData.mockReset();
+});
+
+// Default: no storage data (most existing tests don't need it)
+beforeEach(() => {
+  mockStorageData.mockReturnValue({ data: undefined });
 });
 
 function makeUsage(
@@ -129,5 +140,29 @@ describe("UsagePanelContent", () => {
       />,
     );
     expect(screen.getByText("Add credits to reset")).toBeDefined();
+  });
+
+  it("renders file storage bar when workspace data is available", () => {
+    mockStorageData.mockReturnValue({
+      data: {
+        used_bytes: 100 * 1024 * 1024, // 100 MB
+        limit_bytes: 250 * 1024 * 1024, // 250 MB
+        used_percent: 40,
+        file_count: 5,
+      },
+    });
+
+    render(<UsagePanelContent usage={makeUsage()} />);
+    expect(screen.getByText("File storage")).toBeDefined();
+    expect(screen.getByText(/100 MB of 250 MB/)).toBeDefined();
+    expect(screen.getByText(/5 files/)).toBeDefined();
+    expect(screen.getByText("40% used")).toBeDefined();
+  });
+
+  it("hides file storage bar when no workspace data", () => {
+    mockStorageData.mockReturnValue({ data: undefined });
+
+    render(<UsagePanelContent usage={makeUsage()} />);
+    expect(screen.queryByText("File storage")).toBeNull();
   });
 });
