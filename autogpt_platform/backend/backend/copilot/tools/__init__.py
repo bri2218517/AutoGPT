@@ -13,6 +13,7 @@ from .agent_output import AgentOutputTool
 from .ask_question import AskQuestionTool
 from .base import BaseTool
 from .bash_exec import BashExecTool
+from .check_background_tool import CheckBackgroundToolTool
 from .connect_integration import ConnectIntegrationTool
 from .continue_run_block import ContinueRunBlockTool
 from .create_agent import CreateAgentTool
@@ -81,6 +82,7 @@ TOOL_REGISTRY: dict[str, BaseTool] = {
     "run_agent": RunAgentTool(),
     "run_block": RunBlockTool(),
     "continue_run_block": ContinueRunBlockTool(),
+    "check_background_tool": CheckBackgroundToolTool(),
     "run_mcp_tool": RunMCPToolTool(),
     "get_mcp_guide": GetMCPGuideTool(),
     "view_agent_output": AgentOutputTool(),

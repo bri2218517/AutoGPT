@@ -28,6 +28,13 @@ class RunBlockTool(BaseTool):
         return "run_block"
 
     @property
+    def timeout_seconds(self) -> int | None:
+        # May delegate to AutoPilotBlock (sub-autopilot), which runs its own
+        # multi-turn stream of 15-45+ min. Per-call timeout is disabled here
+        # and left to the block's own execution lifecycle.
+        return None
+
+    @property
     def description(self) -> str:
         return (
             "Execute a block. IMPORTANT: Always get block_id from find_block first "

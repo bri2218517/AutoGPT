@@ -162,9 +162,12 @@ _CIRCUIT_BREAKER_ERROR_MSG = (
 )
 
 # Idle timeout: abort the stream if no meaningful SDK message (only heartbeats)
-# arrives for this many seconds. This catches hung tool calls (e.g. WebSearch
-# hanging on a search provider that never responds).
-_IDLE_TIMEOUT_SECONDS = 10 * 60  # 10 minutes
+# arrives for this many seconds. Acts as a last-resort safety net — individual
+# tools enforce their own timeouts at the MCP handler level (see BaseTool.
+# timeout_seconds) and return a synthetic tool result to the agent on timeout.
+# This stream-level timeout only fires if a tool's per-call timeout was
+# disabled (timeout_seconds=None) or the SDK itself is stuck between messages.
+_IDLE_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
 
 # Event types that are ephemeral / cosmetic and must NOT be counted toward
 # ``events_yielded`` in the transient-retry loop.  Counting them would prevent
@@ -1932,20 +1935,33 @@ async def _run_stream_attempt(
                     yield ev
                 yield StreamHeartbeat()
 
-                # Idle timeout: if no real SDK message for too long, a tool
-                # call is likely hung (e.g. WebSearch provider not responding).
+                # Idle timeout: last-resort safety net. Per-tool timeouts in
+                # the MCP handler normally catch hung tools first and return
+                # a synthetic tool result so the agent can recover. This only
+                # fires if a tool opted out of per-call timeouts or the SDK
+                # itself is stuck between messages.
                 idle_seconds = time.monotonic() - _last_real_msg_time
                 if idle_seconds >= _IDLE_TIMEOUT_SECONDS:
+                    unresolved_ids = (
+                        state.adapter.current_tool_calls.keys()
+                        - state.adapter.resolved_tool_calls
+                    )
+                    unresolved_tools = {
+                        tid: state.adapter.current_tool_calls[tid]
+                        for tid in unresolved_ids
+                    }
                     logger.error(
-                        "%s Idle timeout after %.0fs with no SDK message — "
-                        "aborting stream (likely hung tool call)",
+                        "%s Idle timeout after %.0fs — unresolved tool calls: %s",
                         ctx.log_prefix,
                         idle_seconds,
+                        ", ".join(
+                            f"{tc['name']}(id={tid[:12]})"
+                            for tid, tc in unresolved_tools.items()
+                        )
+                        or "(none tracked)",
                     )
                     stream_error_msg = (
-                        "A tool call appears to be stuck "
-                        "(no response for 10 minutes). "
-                        "Please try again."
+                        "The session has been idle for too long. Please try again."
                     )
                     stream_error_code = "idle_timeout"
                     _append_error_marker(ctx.session, stream_error_msg, retryable=True)

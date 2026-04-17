@@ -29,6 +29,12 @@ class ContinueRunBlockTool(BaseTool):
         return "continue_run_block"
 
     @property
+    def timeout_seconds(self) -> int | None:
+        # Resumes an execution that may be a long-running (sub-AutoPilot)
+        # block — same lifecycle as run_block.
+        return None
+
+    @property
     def description(self) -> str:
         return "Resume block execution after a run_block call returned review_required. Pass the review_id."
 

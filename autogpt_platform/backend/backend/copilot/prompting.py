@@ -163,6 +163,21 @@ perform multi-step work autonomously.
 Use this when a task is complex enough to benefit from a separate
 autopilot context, e.g. "research X and write a report" while the
 parent autopilot handles orchestration.
+
+### Long-running tool calls (backgrounded)
+If any tool call exceeds its per-call time budget, the MCP handler
+parks it in the background (the work keeps running) and returns a
+result with ``"type": "background"``, a ``background_id`` (e.g.
+``bg-abc123``), the original tool name, and a message.
+
+Use **check_background_tool** to control the task:
+- ``wait_seconds`` (0-540): wait up to N seconds for completion.
+- ``cancel: true``: abort the background task and discard its result.
+
+For legitimate long-running work (sub-autopilot, agent execution,
+large code builds) **keep calling check_background_tool with a
+longer wait_seconds** — do not cancel unless the task is clearly
+stuck or no longer useful.
 """
 
 # E2B-only notes — E2B has full internet access so gh CLI works there.

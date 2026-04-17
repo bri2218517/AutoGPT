@@ -37,6 +37,11 @@ from backend.copilot.tools import TOOL_REGISTRY
 from backend.copilot.tools.base import BaseTool
 from backend.util.truncate import truncate
 
+# Background-task registry for tools that exceed their per-call timeout —
+# lives in its own module to avoid a TOOL_REGISTRY import cycle with
+# ``tools/check_background_tool.py``.
+from .background_registry import init_registry as _init_background_registry
+from .background_registry import register_background_task as _register_background_task
 from .e2b_file_tools import (
     E2B_FILE_TOOL_NAMES,
     E2B_FILE_TOOLS,
@@ -134,6 +139,7 @@ def set_execution_context(
     _pending_tool_outputs.set({})
     _stash_event.set(asyncio.Event())
     _consecutive_tool_failures.set({})
+    _init_background_registry()
 
 
 def reset_stash_event() -> None:
@@ -248,14 +254,46 @@ async def _execute_tool_sync(
     session: ChatSession,
     args: dict[str, Any],
 ) -> dict[str, Any]:
-    """Execute a tool synchronously and return MCP-formatted response."""
+    """Execute a tool and return an MCP-formatted response.
+
+    Applies the tool's ``timeout_seconds`` budget (``None`` disables it).
+    On timeout the pending task is **not** cancelled — it is parked in the
+    background registry and a synthetic tool result is returned to the
+    agent along with a ``background_id``. The agent can then call
+    ``check_background_tool`` to keep waiting, inspect status, or cancel.
+    This lets the autopilot decide on slow sub-agents / graph executions
+    instead of the handler making an irreversible choice.
+    """
     effective_id = f"sdk-{uuid.uuid4().hex[:12]}"
-    result = await base_tool.execute(
-        user_id=user_id,
-        session=session,
-        tool_call_id=effective_id,
-        **args,
+    task: asyncio.Task = asyncio.create_task(
+        base_tool.execute(
+            user_id=user_id,
+            session=session,
+            tool_call_id=effective_id,
+            **args,
+        ),
+        name=f"tool:{base_tool.name}:{effective_id}",
     )
+
+    timeout = base_tool.timeout_seconds
+    if timeout is None:
+        result = await task
+    else:
+        # asyncio.wait (unlike wait_for) does NOT cancel on timeout — the
+        # task keeps running in the background.
+        await asyncio.wait({task}, timeout=timeout)
+        if not task.done():
+            bg_id = _register_background_task(task, base_tool.name)
+            logger.warning(
+                "Tool %s exceeded %ss budget — parked as background_id=%s " "(args=%s)",
+                base_tool.name,
+                timeout,
+                bg_id,
+                _redact_args_for_log(args),
+            )
+            return _tool_background_result(base_tool.name, timeout, bg_id)
+        # Completed within budget — .result() re-raises any exception.
+        result = task.result()
 
     text = (
         result.output if isinstance(result.output, str) else json.dumps(result.output)
@@ -265,6 +303,67 @@ async def _execute_tool_sync(
         "content": [{"type": "text", "text": text}],
         "isError": not result.success,
     }
+
+
+def _tool_background_result(
+    tool_name: str, timeout: int, background_id: str
+) -> dict[str, Any]:
+    """Build a synthetic tool result when a call is parked as a background task.
+
+    The task is still running; the agent receives this so the stream can
+    continue and the autopilot can decide whether to keep waiting or cancel
+    via ``check_background_tool``.
+    """
+    payload = {
+        "type": "background",
+        "tool": tool_name,
+        "timeout_seconds": timeout,
+        "background_id": background_id,
+        "message": (
+            f"'{tool_name}' is still running after {timeout}s and was moved "
+            "to the background (not cancelled). Use check_background_tool "
+            f"with background_id='{background_id}' to wait longer, poll "
+            "status, or cancel."
+        ),
+    }
+    return {
+        "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
+        "isError": False,
+    }
+
+
+# Keys that may carry credentials / PII. Values for these keys are replaced
+# with '<redacted>' in monitoring logs.
+_SENSITIVE_ARG_KEYS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "authorization",
+        "auth",
+        "credentials",
+        "password",
+        "secret",
+        "token",
+    }
+)
+
+
+def _redact_args_for_log(args: dict[str, Any]) -> str:
+    """Render args for log monitoring, redacting sensitive keys and truncating
+    long string values."""
+    try:
+        rendered: dict[str, Any] = {}
+        for k, v in args.items():
+            if k.lower() in _SENSITIVE_ARG_KEYS:
+                rendered[k] = "<redacted>"
+                continue
+            if isinstance(v, str) and len(v) > 200:
+                rendered[k] = v[:200] + "…"
+            else:
+                rendered[k] = v
+        return json.dumps(rendered, default=str)[:500]
+    except (TypeError, ValueError):
+        return str(args)[:500]
 
 
 def _mcp_error(message: str) -> dict[str, Any]:

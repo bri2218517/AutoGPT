@@ -251,11 +251,16 @@ class TestTruncationAndStashIntegration:
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_tool(name: str, output: str = "result") -> MagicMock:
+def _make_mock_tool(
+    name: str,
+    output: str = "result",
+    timeout_seconds: int | None = 600,
+) -> MagicMock:
     """Return a BaseTool mock that returns a successful StreamToolOutputAvailable."""
     tool = MagicMock()
     tool.name = name
     tool.parameters = {"properties": {}, "required": []}
+    tool.timeout_seconds = timeout_seconds
     tool.execute = AsyncMock(
         return_value=StreamToolOutputAvailable(
             toolCallId="test-id",
@@ -334,6 +339,184 @@ class TestCreateToolHandler:
         await handler({"block_id": "b2"})
 
         assert mock_tool.execute.await_count == 2
+
+
+class TestToolTimeout:
+    """Tests for per-tool timeout behavior in _execute_tool_sync."""
+
+    @pytest.fixture(autouse=True)
+    def _init(self):
+        _init_ctx(session=_make_mock_session())
+
+    @pytest.mark.asyncio
+    async def test_timeout_parks_task_and_returns_background_id(self):
+        """A tool that exceeds its timeout is moved to the background
+        registry (not cancelled); the handler returns a synthetic
+        type='background' result with a background_id."""
+        from backend.copilot.sdk.background_registry import (
+            get_background_task,
+            unregister_background_task,
+        )
+
+        mock_tool = _make_mock_tool("slow_tool", timeout_seconds=1)
+
+        async def hang_forever(*_args, **_kwargs):
+            await asyncio.sleep(60)
+            return StreamToolOutputAvailable(
+                toolCallId="t1",
+                output="late",
+                toolName="slow_tool",
+                success=True,
+            )
+
+        mock_tool.execute = AsyncMock(side_effect=hang_forever)
+
+        handler = create_tool_handler(mock_tool)
+        result = await handler({"arg": "v"})
+
+        # isError=False because the task is still running — the agent isn't
+        # being told about a failure, just about a delay.
+        assert result["isError"] is False
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["type"] == "background"
+        assert payload["tool"] == "slow_tool"
+        assert payload["timeout_seconds"] == 1
+        assert payload["background_id"].startswith("bg-")
+
+        entry = get_background_task(payload["background_id"])
+        assert entry is not None
+        assert entry["tool_name"] == "slow_tool"
+        assert not entry["task"].done()
+
+        # Cleanup: cancel the parked task so the test doesn't leak it.
+        entry["task"].cancel()
+        try:
+            await entry["task"]
+        except (asyncio.CancelledError, BaseException):
+            pass
+        unregister_background_task(payload["background_id"])
+
+    @pytest.mark.asyncio
+    async def test_timeout_does_not_cancel_tool_coroutine(self):
+        """The task keeps running in the background after the timeout
+        budget is exceeded — cancellation is the agent's choice."""
+        from backend.copilot.sdk.background_registry import (
+            get_background_task,
+            unregister_background_task,
+        )
+
+        mock_tool = _make_mock_tool("slow_tool", timeout_seconds=1)
+        observed_cancel = asyncio.Event()
+
+        async def stays_alive(*_args, **_kwargs):
+            try:
+                await asyncio.sleep(3)
+            except asyncio.CancelledError:
+                observed_cancel.set()
+                raise
+            return StreamToolOutputAvailable(
+                toolCallId="t1",
+                output="eventual",
+                toolName="slow_tool",
+                success=True,
+            )
+
+        mock_tool.execute = AsyncMock(side_effect=stays_alive)
+
+        handler = create_tool_handler(mock_tool)
+        result = await handler({})
+        payload = json.loads(result["content"][0]["text"])
+
+        entry = get_background_task(payload["background_id"])
+        assert entry is not None
+        # Give the background task a brief moment; it should still be
+        # running and NOT cancelled.
+        await asyncio.sleep(0.1)
+        assert not observed_cancel.is_set()
+        assert not entry["task"].done()
+
+        # Let it complete so the test stays clean.
+        await entry["task"]
+        unregister_background_task(payload["background_id"])
+
+    @pytest.mark.asyncio
+    async def test_none_timeout_disables_wait_for(self):
+        """When timeout_seconds is None, the tool runs to completion without
+        an outer timeout wrapper."""
+        mock_tool = _make_mock_tool(
+            "long_running_tool",
+            output="completed",
+            timeout_seconds=None,
+        )
+
+        async def slow_but_completes(*_args, **_kwargs):
+            await asyncio.sleep(0.05)
+            return StreamToolOutputAvailable(
+                toolCallId="t1",
+                output="completed",
+                toolName="long_running_tool",
+                success=True,
+            )
+
+        mock_tool.execute = AsyncMock(side_effect=slow_but_completes)
+
+        handler = create_tool_handler(mock_tool)
+        result = await handler({})
+
+        assert result["isError"] is False
+        assert "completed" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_fast_tool_within_timeout_succeeds(self):
+        """Tools that complete well under the timeout are unaffected."""
+        mock_tool = _make_mock_tool(
+            "fast_tool",
+            output="fast-ok",
+            timeout_seconds=30,
+        )
+
+        handler = create_tool_handler(mock_tool)
+        result = await handler({})
+
+        assert result["isError"] is False
+        assert "fast-ok" in result["content"][0]["text"]
+
+
+class TestBaseToolDefaultTimeout:
+    """The BaseTool default timeout and per-tool overrides."""
+
+    def test_default_timeout_is_ten_minutes(self):
+        from backend.copilot.tools.base import BaseTool
+
+        class _Plain(BaseTool):
+            @property
+            def name(self):
+                return "plain"
+
+            @property
+            def description(self):
+                return ""
+
+            @property
+            def parameters(self):
+                return {"type": "object", "properties": {}}
+
+        assert _Plain().timeout_seconds == 600
+
+    def test_run_agent_opts_out(self):
+        from backend.copilot.tools.run_agent import RunAgentTool
+
+        assert RunAgentTool().timeout_seconds is None
+
+    def test_run_block_opts_out(self):
+        from backend.copilot.tools.run_block import RunBlockTool
+
+        assert RunBlockTool().timeout_seconds is None
+
+    def test_continue_run_block_opts_out(self):
+        from backend.copilot.tools.continue_run_block import ContinueRunBlockTool
+
+        assert ContinueRunBlockTool().timeout_seconds is None
 
 
 # ---------------------------------------------------------------------------

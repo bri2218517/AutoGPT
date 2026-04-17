@@ -105,6 +105,13 @@ class RunAgentTool(BaseTool):
         return "run_agent"
 
     @property
+    def timeout_seconds(self) -> int | None:
+        # Agent executions can legitimately run 15-45+ min; the tool polls
+        # its own wait_for_result window and returns an execution_id for
+        # later progress checks, so the stream-level timeout isn't needed.
+        return None
+
+    @property
     def description(self) -> str:
         return (
             "Run or schedule an agent. Automatically checks inputs and credentials "

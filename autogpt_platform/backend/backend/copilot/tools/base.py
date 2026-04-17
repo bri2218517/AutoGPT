@@ -140,6 +140,21 @@ class BaseTool:
         """
         return True
 
+    @property
+    def timeout_seconds(self) -> int | None:
+        """Maximum seconds a single invocation may run before soft-timing out.
+
+        On timeout the MCP handler cancels the call and returns a synthetic
+        tool result to the agent (rather than hard-killing the stream), so
+        the agent can decide to retry, check progress via another tool, or
+        move on.
+
+        Return ``None`` to disable the per-call timeout — appropriate for
+        tools that manage their own lifecycle (e.g. ``run_agent`` polls an
+        execution, ``run_block`` can delegate to a sub-AutoPilot).
+        """
+        return 10 * 60  # 10 minutes
+
     def as_openai_tool(self) -> ChatCompletionToolParam:
         """Convert to OpenAI tool format."""
         return ChatCompletionToolParam(
