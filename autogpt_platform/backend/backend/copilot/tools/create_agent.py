@@ -8,6 +8,7 @@ from backend.copilot.model import ChatSession
 
 from .agent_generator.pipeline import fetch_library_agents, fix_validate_and_save
 from .base import BaseTool
+from .decompose_goal import has_pending_decomposition
 from .models import ErrorResponse, ToolResponseBase
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,25 @@ class CreateAgentTool(BaseTool):
         **kwargs,
     ) -> ToolResponseBase:
         session_id = session.session_id if session else None
+
+        # Enforce the decompose_goal approval gate. The LLM is instructed via
+        # ``agent_generation_guide.md`` to STOP after decompose_goal until the
+        # user approves, but natural-language instructions alone are not
+        # reliable — without this gate, the LLM has been observed calling
+        # ``decompose_goal`` and ``create_agent`` in the same turn, building
+        # the agent while the user is still mid-countdown.
+        if session and has_pending_decomposition(session):
+            return ErrorResponse(
+                message=(
+                    "A build plan is awaiting user approval. Do not call "
+                    "create_agent until the user responds with Approved "
+                    "(or Approved with modifications). End your turn now — "
+                    "the platform will resume the conversation once the user "
+                    "responds."
+                ),
+                error="decomposition_pending_approval",
+                session_id=session_id,
+            )
 
         if not agent_json:
             return ErrorResponse(

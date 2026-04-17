@@ -45,6 +45,36 @@ _CANCEL_KEY_TTL_SECONDS = AUTO_APPROVE_SERVER_SECONDS + 30
 _pending_auto_approvals: dict[str, asyncio.Task] = {}
 
 
+def has_pending_decomposition(session: ChatSession) -> bool:
+    """Return True if the most recent ``decompose_goal`` tool call in the
+    session has not yet been followed by a user message.
+
+    Used by build tools (create_agent, edit_agent, fix_agent_graph, …) to
+    enforce the "STOP — do not proceed until the user approves" gate from
+    ``agent_generation_guide.md`` at the *code* level. The natural-language
+    instruction alone is not enough — the LLM has been observed calling
+    ``decompose_goal`` and ``create_agent`` in the same turn, building the
+    agent while the user is still mid-countdown. This predicate lets build
+    tools refuse when approval is still pending.
+
+    Scans messages in reverse, returning:
+    - True  → a ``decompose_goal`` tool call exists with no user message after it
+    - False → no ``decompose_goal`` call, or the most recent one has already
+              been answered by a user message (Approve / Modify / other)
+    """
+    for i in range(len(session.messages) - 1, -1, -1):
+        msg = session.messages[i]
+        if msg.role == "user":
+            # A user message without a prior decompose_goal = nothing pending.
+            return False
+        if msg.role == "assistant" and msg.tool_calls:
+            for tc in msg.tool_calls:
+                name = (tc.get("function") or {}).get("name") or tc.get("name")
+                if name == "decompose_goal":
+                    return True
+    return False
+
+
 def _no_user_action_since(baseline_index: int):
     """Predicate: returns True iff no ``role == "user"`` message exists at
     or after ``baseline_index`` in the session message list.

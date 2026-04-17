@@ -16,6 +16,7 @@ from .decompose_goal import (
     DecomposeGoalTool,
     _no_user_action_since,
     cancel_auto_approve,
+    has_pending_decomposition,
 )
 from .models import ErrorResponse, TaskDecompositionResponse
 
@@ -343,6 +344,82 @@ def test_predicate_handles_messages_with_none_sequence():
     session.messages.append(user_msg)
     assert user_msg.sequence is None
     assert _no_user_action_since(2)(session) is False
+
+
+# ---------------------------------------------------------------------------
+# has_pending_decomposition — build-tool approval gate
+# ---------------------------------------------------------------------------
+
+
+def _decompose_tool_call() -> dict:
+    return {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "decompose_goal", "arguments": "{}"},
+    }
+
+
+def test_pending_decomposition_true_when_no_user_after_call():
+    """LLM called decompose_goal but user hasn't responded yet."""
+    session = make_session(_USER_ID)
+    session.messages.append(ChatMessage(role="user", content="Build me an agent"))
+    session.messages.append(
+        ChatMessage(role="assistant", content="", tool_calls=[_decompose_tool_call()])
+    )
+    session.messages.append(ChatMessage(role="tool", content="{...plan...}"))
+    assert has_pending_decomposition(session) is True
+
+
+def test_pending_decomposition_false_after_user_approves():
+    """User approved — downstream tools should be unblocked."""
+    session = make_session(_USER_ID)
+    session.messages.append(ChatMessage(role="user", content="Build me an agent"))
+    session.messages.append(
+        ChatMessage(role="assistant", content="", tool_calls=[_decompose_tool_call()])
+    )
+    session.messages.append(ChatMessage(role="tool", content="{...plan...}"))
+    session.messages.append(
+        ChatMessage(role="user", content="Approved. Please build the agent.")
+    )
+    assert has_pending_decomposition(session) is False
+
+
+def test_pending_decomposition_false_when_no_decompose_call():
+    """Sessions without decompose_goal are never blocked."""
+    session = make_session(_USER_ID)
+    session.messages.append(ChatMessage(role="user", content="Change the prompt"))
+    session.messages.append(ChatMessage(role="assistant", content="Sure, will do."))
+    assert has_pending_decomposition(session) is False
+
+
+def test_pending_decomposition_ignores_assistant_text_without_tool_calls():
+    """Assistant's text after decompose_goal doesn't count as user action."""
+    session = make_session(_USER_ID)
+    session.messages.append(ChatMessage(role="user", content="Build me an agent"))
+    session.messages.append(
+        ChatMessage(role="assistant", content="", tool_calls=[_decompose_tool_call()])
+    )
+    session.messages.append(ChatMessage(role="tool", content="{...plan...}"))
+    session.messages.append(ChatMessage(role="assistant", content="Plan is ready."))
+    assert has_pending_decomposition(session) is True
+
+
+def test_pending_decomposition_scans_most_recent_call():
+    """Only the most recent decompose_goal matters; older ones are irrelevant."""
+    session = make_session(_USER_ID)
+    # Old cycle: decomposed, approved, built.
+    session.messages.append(ChatMessage(role="user", content="Build v1"))
+    session.messages.append(
+        ChatMessage(role="assistant", content="", tool_calls=[_decompose_tool_call()])
+    )
+    session.messages.append(ChatMessage(role="tool", content="{plan v1}"))
+    session.messages.append(ChatMessage(role="user", content="Approved"))
+    # New cycle: decomposed, still awaiting approval.
+    session.messages.append(
+        ChatMessage(role="assistant", content="", tool_calls=[_decompose_tool_call()])
+    )
+    session.messages.append(ChatMessage(role="tool", content="{plan v2}"))
+    assert has_pending_decomposition(session) is True
 
 
 # ---------------------------------------------------------------------------
