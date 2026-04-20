@@ -4,10 +4,7 @@ import {
   getServerAuthToken,
 } from "@/lib/autogpt-server-api/helpers";
 
-import {
-  IMPERSONATION_HEADER_NAME,
-  IMPERSONATION_STORAGE_KEY,
-} from "@/lib/constants";
+import { getSystemHeaders } from "@/lib/impersonation";
 import { environment } from "@/services/environment";
 import { transformDates } from "./date-transformer";
 
@@ -56,33 +53,7 @@ export const customMutator = async <
   };
 
   if (environment.isClientSide()) {
-    try {
-      const impersonatedUserId = sessionStorage.getItem(
-        IMPERSONATION_STORAGE_KEY,
-      );
-      if (impersonatedUserId) {
-        headers[IMPERSONATION_HEADER_NAME] = impersonatedUserId;
-      }
-    } catch (error) {
-      console.error(
-        "Admin impersonation: Failed to access sessionStorage:",
-        error,
-      );
-    }
-
-    // Inject org/team context headers
-    try {
-      const activeOrgID = localStorage.getItem("active-org-id");
-      const activeTeamID = localStorage.getItem("active-team-id");
-      if (activeOrgID) {
-        headers["X-Org-Id"] = activeOrgID;
-      }
-      if (activeTeamID) {
-        headers["X-Team-Id"] = activeTeamID;
-      }
-    } catch (error) {
-      console.error("Org context: Failed to access localStorage:", error);
-    }
+    Object.assign(headers, getSystemHeaders());
   }
 
   const isFormData = data instanceof FormData;

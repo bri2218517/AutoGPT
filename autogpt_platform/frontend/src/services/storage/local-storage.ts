@@ -19,7 +19,9 @@ export enum Key {
   ACTIVE_TEAM = "active-team-id",
   COPILOT_ARTIFACT_PANEL_WIDTH = "copilot-artifact-panel-width",
   COPILOT_MODE = "copilot-mode",
+  COPILOT_MODEL = "copilot-model",
   COPILOT_COMPLETED_SESSIONS = "copilot-completed-sessions",
+  COPILOT_DRY_RUN = "copilot-dry-run",
 }
 
 function get(key: Key) {
