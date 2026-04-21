@@ -760,6 +760,19 @@ async def _baseline_tool_executor(
         )
     )
 
+    # Announce the tool call to the session so in-turn guards like
+    # ``require_guide_read`` can see it *right now*, before the tool
+    # actually runs.  Without this, the tool_call row lives only in
+    # ``state.session_messages`` until the ``finally`` block flushes it
+    # into ``session.messages`` at turn end — so a second tool in the
+    # same turn (e.g. ``create_agent`` after ``get_agent_building_guide``)
+    # scans a stale ``session.messages`` and the guard re-fires despite
+    # the guide having been called.  The announce-set is cleared at turn
+    # end; we deliberately don't touch ``session.messages`` here to avoid
+    # duplicating the assistant row that ``_baseline_conversation_updater``
+    # will append at round end.
+    session.announce_inflight_tool_call(tool_name)
+
     try:
         result: StreamToolOutputAvailable = await execute_tool(
             tool_name=tool_name,
@@ -1868,6 +1881,10 @@ async def stream_chat_completion_baseline(
                 final_text = final_text[len(recorded) :]
         if final_text.strip():
             session.messages.append(ChatMessage(role="assistant", content=final_text))
+        # In-flight tool-call announcements are only meaningful for the
+        # current turn; clear before persist so the next turn starts with
+        # a clean scratch buffer.
+        session.clear_inflight_tool_calls()
         try:
             await upsert_chat_session(session)
         except Exception as persist_err:
