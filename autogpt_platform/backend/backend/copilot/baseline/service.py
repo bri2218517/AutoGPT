@@ -1822,6 +1822,16 @@ async def stream_chat_completion_baseline(
         yield StreamError(errorText=error_msg, code="baseline_error")
         # Still persist whatever we got
     finally:
+        # In-flight tool-call announcements are only meaningful for the
+        # current turn; clear at the top of the outer finally so the next
+        # turn starts with a clean scratch buffer even if one of the
+        # awaited cleanup steps below (usage persistence, session upsert,
+        # transcript upload) raises.  The buffer is a process-local scratch
+        # set — if we leak it into the next turn the guide-read guard would
+        # observe a phantom in-flight call and skip its gate, so this must
+        # run unconditionally.
+        session.clear_inflight_tool_calls()
+
         # Pending messages are drained atomically at turn start and
         # between tool rounds, so there's nothing to clear in finally.
         # Any message pushed after the final drain window stays in the
@@ -1916,10 +1926,6 @@ async def stream_chat_completion_baseline(
                 final_text = final_text[len(recorded) :]
         if final_text.strip():
             session.messages.append(ChatMessage(role="assistant", content=final_text))
-        # In-flight tool-call announcements are only meaningful for the
-        # current turn; clear before persist so the next turn starts with
-        # a clean scratch buffer.
-        session.clear_inflight_tool_calls()
         try:
             await upsert_chat_session(session)
         except Exception as persist_err:
