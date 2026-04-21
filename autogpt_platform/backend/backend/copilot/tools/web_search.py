@@ -183,13 +183,20 @@ def _extract_results(resp: Any, *, limit: int) -> tuple[list[WebSearchResult], i
                     continue
                 if len(results) >= limit:
                     break
+                # Anthropic's ``web_search_result`` exposes only
+                # ``title``/``url``/``page_age`` plus an opaque
+                # ``encrypted_content`` blob that is meant for citation
+                # round-tripping, not for display — it is base64-ish
+                # binary and would show as gibberish if surfaced to the
+                # model or the frontend.  There is no plain-text snippet
+                # field in the current beta; callers get the readable
+                # text via the model's ``text`` blocks with citations,
+                # not via this list.  Leave ``snippet`` empty.
                 results.append(
                     WebSearchResult(
                         title=getattr(item, "title", "") or "",
                         url=getattr(item, "url", "") or "",
-                        snippet=getattr(item, "encrypted_content", None)
-                        or getattr(item, "page_content", "")
-                        or "",
+                        snippet="",
                         page_age=getattr(item, "page_age", None),
                     )
                 )

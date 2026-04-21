@@ -64,13 +64,17 @@ class TestExtractResults:
     """The extractor is the only Anthropic-response-shape contact point;
     pin its behaviour so an API shape change surfaces here first."""
 
-    def test_extracts_title_url_snippet_and_page_age(self):
+    def test_extracts_title_url_page_age_and_drops_encrypted_snippet(self):
+        # Anthropic's ``web_search_result`` ships an opaque
+        # ``encrypted_content`` blob that is not safe to surface —
+        # the extractor must drop it (snippet=="") regardless of
+        # whether the blob is non-empty.
         resp = _fake_anthropic_response(
             results=[
                 {
                     "title": "Kimi K2.6 launch",
                     "url": "https://example.com/kimi",
-                    "snippet": "Moonshot released K2.6 on 2026-04-20.",
+                    "snippet": "EiJjbGF1ZGUtZW5jcnlwdGVkLWJsb2I=",
                     "page_age": "1 day",
                 },
                 {
@@ -85,7 +89,7 @@ class TestExtractResults:
         assert len(out) == 2
         assert out[0].title == "Kimi K2.6 launch"
         assert out[0].url == "https://example.com/kimi"
-        assert out[0].snippet.startswith("Moonshot released")
+        assert out[0].snippet == ""
         assert out[0].page_age == "1 day"
         assert out[1].snippet == ""
 
