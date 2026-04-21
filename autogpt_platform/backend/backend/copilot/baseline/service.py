@@ -499,10 +499,14 @@ def _extract_reasoning_delta(delta: Any) -> str:
     * ``delta.reasoning`` — legacy string, enabled by ``include_reasoning``.
     * ``delta.reasoning_content`` — DeepSeek / some OpenRouter routes.
     * ``delta.reasoning_details`` — structured list shipped with the new
-      unified ``reasoning`` request param.  Each entry is a dict with
+      unified ``reasoning`` request param.  Each entry carries a
       ``type: "reasoning.text" | "reasoning.summary" | ...`` and a text
       field (``text`` / ``summary``).  Encrypted or unknown entries carry
       no user-visible text and are skipped.
+
+    Entries may be plain ``dict`` (OpenRouter today) or typed pydantic
+    models (if the OpenAI SDK ever promotes these to first-class fields).
+    We support both shapes to stay resilient to upstream drift.
 
     Returns the concatenated text for this chunk, or an empty string when
     no reasoning payload is present.  Safe to call on every chunk.
@@ -517,12 +521,31 @@ def _extract_reasoning_delta(delta: Any) -> str:
         return ""
     parts: list[str] = []
     for entry in details:
-        if not isinstance(entry, dict):
-            continue
-        text = entry.get("text") or entry.get("summary")
+        if isinstance(entry, dict):
+            text = entry.get("text") or entry.get("summary")
+        else:
+            text = getattr(entry, "text", None) or getattr(entry, "summary", None)
         if isinstance(text, str) and text:
             parts.append(text)
     return "".join(parts)
+
+
+def _close_reasoning_block_if_open(state: "_BaselineStreamState") -> None:
+    """Emit a ``StreamReasoningEnd`` for any open reasoning block and rotate.
+
+    A reasoning block must close before any text or tool_use starts, and
+    also at stream end — AI SDK v5 rejects interleaved reasoning / text
+    parts and needs a matching end to finalise the frontend collapse.
+    Rotating the block id guarantees the next reasoning block starts fresh
+    rather than reusing an already-closed id.
+
+    Idempotent — no events are emitted when no reasoning block is open.
+    """
+    if not state.reasoning_started:
+        return
+    state.pending_events.append(StreamReasoningEnd(id=state.reasoning_block_id))
+    state.reasoning_started = False
+    state.reasoning_block_id = str(uuid.uuid4())
 
 
 async def _baseline_llm_caller(
@@ -659,12 +682,7 @@ async def _baseline_llm_caller(
                     # AI SDK maps distinct start/end pairs to distinct UI
                     # parts.  Close any open reasoning block before emitting
                     # the first text delta of this run.
-                    if state.reasoning_started:
-                        state.pending_events.append(
-                            StreamReasoningEnd(id=state.reasoning_block_id)
-                        )
-                        state.reasoning_started = False
-                        state.reasoning_block_id = str(uuid.uuid4())
+                    _close_reasoning_block_if_open(state)
                     emit = state.thinking_stripper.process(delta.content)
                     if emit:
                         if not state.text_started:
@@ -681,12 +699,7 @@ async def _baseline_llm_caller(
                     # Same rule as the text branch: close any open reasoning
                     # block before a tool_use starts so the AI SDK treats
                     # reasoning and tool-use as distinct parts.
-                    if state.reasoning_started:
-                        state.pending_events.append(
-                            StreamReasoningEnd(id=state.reasoning_block_id)
-                        )
-                        state.reasoning_started = False
-                        state.reasoning_block_id = str(uuid.uuid4())
+                    _close_reasoning_block_if_open(state)
                     for tc in delta.tool_calls:
                         idx = tc.index
                         if idx not in tool_calls_by_index:
@@ -715,10 +728,7 @@ async def _baseline_llm_caller(
         # text tail / close the text block.  A stream that ends with
         # reasoning-only (no text, no tool_use) still needs a matched
         # ``reasoning-end`` so the frontend collapse finalises.
-        if state.reasoning_started:
-            state.pending_events.append(StreamReasoningEnd(id=state.reasoning_block_id))
-            state.reasoning_started = False
-            state.reasoning_block_id = str(uuid.uuid4())
+        _close_reasoning_block_if_open(state)
         # Flush any buffered text held back by the thinking stripper.
         tail = state.thinking_stripper.flush()
         if tail:

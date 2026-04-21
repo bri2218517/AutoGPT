@@ -4,6 +4,7 @@ These tests cover ``_baseline_conversation_updater`` and ``_BaselineStreamState`
 without requiring API keys, database connections, or network access.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1523,26 +1524,40 @@ def _make_delta_chunk(
     *,
     content: str | None = None,
     reasoning: str | None = None,
-    reasoning_details: list[dict] | None = None,
+    reasoning_details: list | None = None,
     reasoning_content: str | None = None,
+    tool_calls: list | None = None,
 ):
     """Build a streaming chunk with a configurable ``delta`` payload.
 
-    ``tool_calls`` is always None so the cost-extraction branch doesn't run
-    — this helper targets the content / reasoning paths specifically.
+    ``tool_calls`` defaults to None so the cost-extraction branch doesn't
+    run — callers testing reasoning → tool_use transitions can pass a
+    list of ``MagicMock`` tool-call deltas explicitly.
     """
     chunk = MagicMock()
     chunk.usage = None
     choice = MagicMock()
     delta = MagicMock()
     delta.content = content
-    delta.tool_calls = None
+    delta.tool_calls = tool_calls
     delta.reasoning = reasoning
     delta.reasoning_details = reasoning_details
     delta.reasoning_content = reasoning_content
     choice.delta = delta
     chunk.choices = [choice]
     return chunk
+
+
+def _make_tool_call_delta(*, index: int, call_id: str, name: str, arguments: str):
+    """Build a ``delta.tool_calls[i]`` entry for streaming tool-use."""
+    tc = MagicMock()
+    tc.index = index
+    tc.id = call_id
+    function = MagicMock()
+    function.name = name
+    function.arguments = arguments
+    tc.function = function
+    return tc
 
 
 class TestExtractReasoningDelta:
@@ -1601,6 +1616,19 @@ class TestExtractReasoningDelta:
             reasoning_details=None,
         )
         assert _extract_reasoning_delta(delta) == ""
+
+    def test_structured_details_accept_typed_pydantic_entries(self):
+        """If the OpenAI SDK promotes reasoning_details to typed models,
+        entries won't be plain dicts — the extractor must still read text
+        via attribute access rather than silently dropping everything."""
+        typed_entry = SimpleNamespace(text="typed text", summary=None)
+        summary_entry = SimpleNamespace(text=None, summary="typed summary")
+        delta = MagicMock(
+            reasoning=None,
+            reasoning_content=None,
+            reasoning_details=[typed_entry, summary_entry],
+        )
+        assert _extract_reasoning_delta(delta) == "typed texttyped summary"
 
 
 class TestBaselineReasoningStreaming:
@@ -1664,6 +1692,56 @@ class TestBaselineReasoningStreaming:
             e.delta for e in state.pending_events if isinstance(e, StreamReasoningDelta)
         )
         assert combined == "thinking... more"
+
+    @pytest.mark.asyncio
+    async def test_reasoning_then_tool_call_closes_reasoning_first(self):
+        """A tool_call arriving mid-reasoning must close the reasoning block
+        before the tool-use is flushed — AI SDK v5 treats reasoning and
+        tool-use as distinct UI parts and rejects interleaving."""
+        state = _BaselineStreamState(model="anthropic/claude-sonnet-4-6")
+
+        chunks = [
+            _make_delta_chunk(reasoning="deliberating..."),
+            _make_delta_chunk(
+                tool_calls=[
+                    _make_tool_call_delta(
+                        index=0,
+                        call_id="call_1",
+                        name="search",
+                        arguments='{"q":"x"}',
+                    )
+                ],
+            ),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_make_stream_mock(*chunks)
+        )
+
+        with patch(
+            "backend.copilot.baseline.service._get_openai_client",
+            return_value=mock_client,
+        ):
+            response = await _baseline_llm_caller(
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+                state=state,
+            )
+
+        # A reasoning-end must have been emitted — this is the tool_calls
+        # branch's responsibility, not the stream-end cleanup.
+        types = [type(e).__name__ for e in state.pending_events]
+        assert "StreamReasoningStart" in types
+        assert "StreamReasoningEnd" in types
+
+        # The tool_call was collected — confirms the tool-use path executed
+        # after reasoning closed (rather than silently dropping the tool).
+        assert len(response.tool_calls) == 1
+        assert response.tool_calls[0].name == "search"
+
+        # No text events — this stream had no content deltas.
+        assert "StreamTextStart" not in types
 
     @pytest.mark.asyncio
     async def test_reasoning_only_stream_still_closes_block(self):
