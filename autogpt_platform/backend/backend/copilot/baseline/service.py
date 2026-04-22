@@ -38,7 +38,6 @@ from backend.copilot.builder_context import (
 from backend.copilot.config import CopilotLlmModel, CopilotMode
 from backend.copilot.context import get_workspace_manager, set_execution_context
 from backend.copilot.graphiti.config import is_enabled_for_user
-from backend.copilot.moonshot import is_moonshot_model
 from backend.copilot.model import (
     ChatMessage,
     ChatSession,
@@ -46,6 +45,7 @@ from backend.copilot.model import (
     maybe_append_user_message,
     upsert_chat_session,
 )
+from backend.copilot.moonshot import is_moonshot_model
 from backend.copilot.pending_message_helpers import (
     combine_pending_with_current,
     drain_pending_safe,

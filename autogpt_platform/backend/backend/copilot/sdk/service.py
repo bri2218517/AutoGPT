@@ -379,6 +379,12 @@ class _RetryState:
     # authoritative ``/generation`` total_cost.  Lives on ``_RetryState``
     # (not per-attempt ``_StreamAccumulator``) so it survives retries.
     generation_ids: list[str] = dataclass_field(default_factory=list)
+    # The *actually executed* model observed on ``AssistantMessage.model`` —
+    # differs from ``state.options.model`` (the requested primary) when
+    # ``_resolve_fallback_model`` swaps to a fallback mid-attempt.  The
+    # Moonshot cost override gates on this so a Moonshot-→-Anthropic
+    # fallback doesn't get mis-billed at Moonshot rates, and vice versa.
+    observed_model: str | None = None
 
 
 @dataclass
@@ -2134,6 +2140,15 @@ async def _run_stream_attempt(
                     and msg_id not in state.generation_ids
                 ):
                     state.generation_ids.append(msg_id)
+                # Track the model the SDK actually used — when a fallback
+                # activates, this differs from ``state.options.model``.
+                # Consumed by the Moonshot cost-override decision so we
+                # don't mis-bill a fallback-Anthropic response at
+                # Moonshot rates (or a fallback-Moonshot at Anthropic
+                # rates).
+                observed = getattr(sdk_msg, "model", None)
+                if isinstance(observed, str) and observed:
+                    state.observed_model = observed
 
             # Log AssistantMessage API errors (e.g. invalid_request)
             # so we can debug Anthropic API 400s surfaced by the CLI.
@@ -2307,7 +2322,13 @@ async def _run_stream_attempt(
                     # Anthropic models (the CLI's bundled pricing table is
                     # Anthropic-authored), and becomes the sync-path cost
                     # when the reconcile is disabled or fails.
-                    active_model = getattr(state.options, "model", None)
+                    # Prefer the ACTUALLY executed model
+                    # (``state.observed_model`` from ``AssistantMessage.model``)
+                    # over the requested primary (``state.options.model``)
+                    # so a fallback activation doesn't mis-route pricing.
+                    active_model = state.observed_model or getattr(
+                        state.options, "model", None
+                    )
                     if _is_moonshot_model(active_model):
                         # Moonshot slug — the CLI doesn't know Moonshot's
                         # rate card and silently bills at Sonnet rates
