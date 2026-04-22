@@ -186,43 +186,19 @@ export function DecomposeGoalTool({
     }
   }, [showActions, isEditing]);
 
-  // Re-derive remaining seconds from ``created_at`` on every tick (and on
-  // tab visibility change) instead of decrementing a local counter.
-  // ``setInterval`` is aggressively throttled in backgrounded tabs, so a
-  // naive ``s - 1`` drifts behind wall-clock time — the user could reopen
-  // the tab well past the deadline and still see e.g. "Starting in 45".
-  // Re-deriving keeps the UI in sync with the server-side timer.
-  const createdAt =
-    output && isDecompositionOutput(output) ? output.created_at : undefined;
+  // The timer only ticks once the turn is fully finished (actionsEnabled
+  // includes !isMessageStreaming). This gives the user the full countdown
+  // duration to review the plan after all streaming completes — not from
+  // when the tool returned (which would eat streaming time into the review
+  // window). For session re-entry, the lazy initializer already seeds
+  // secondsLeft from created_at, so the timer resumes correctly.
   useEffect(() => {
-    if (!showActions || !timerActive) return;
-    const deadlineMs = createdAt
-      ? new Date(createdAt).getTime() + countdownSeconds * 1000
-      : null;
-    const hasDeadline = deadlineMs !== null && !Number.isNaN(deadlineMs);
-    function recompute() {
-      if (hasDeadline) {
-        const remaining = Math.max(
-          0,
-          Math.round((deadlineMs - Date.now()) / 1000),
-        );
-        setSecondsLeft(Math.min(countdownSeconds, remaining));
-      } else {
-        // Legacy session with no ``created_at`` — fall back to naive decrement.
-        setSecondsLeft((s) => Math.max(0, s - 1));
-      }
-    }
-    // Only correct stale state for deadline-driven sessions. The legacy
-    // fallback starts from the seeded ``secondsLeft`` and should not
-    // decrement before the first 1s tick elapses.
-    if (hasDeadline) recompute();
-    const interval = setInterval(recompute, 1000);
-    document.addEventListener("visibilitychange", recompute);
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", recompute);
-    };
-  }, [showActions, timerActive, part.toolCallId, createdAt, countdownSeconds]);
+    if (!actionsEnabled || !timerActive) return;
+    const interval = setInterval(() => {
+      setSecondsLeft((s) => Math.max(0, s - 1));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [actionsEnabled, timerActive, part.toolCallId]);
 
   // Auto-approve when countdown reaches 0. The client fires at 60s; the
   // server fires 5s later as a fallback for the "user closed the tab" case.
