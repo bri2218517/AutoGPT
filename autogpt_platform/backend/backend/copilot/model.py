@@ -2,7 +2,7 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any, AsyncIterator, Callable, Self, cast
+from typing import Any, AsyncIterator, Self, cast
 
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -22,10 +22,11 @@ from prisma.models import ChatMessage as PrismaChatMessage
 from prisma.models import ChatSession as PrismaChatSession
 from pydantic import BaseModel
 
-from backend.data.db_accessors import chat_db
+from backend.data.db_accessors import chat_db, library_db
+from backend.data.graph import GraphSettings
 from backend.data.redis_client import get_redis_async
 from backend.util import json
-from backend.util.exceptions import DatabaseError, RedisError
+from backend.util.exceptions import DatabaseError, NotFoundError, RedisError
 
 from .config import ChatConfig
 
@@ -53,6 +54,12 @@ class ChatSessionMetadata(BaseModel):
     """
 
     dry_run: bool = False
+
+    # Builder-panel binding: when set, the session is locked to the given
+    # graph.  ``edit_agent`` / ``run_agent`` default their ``agent_id`` to
+    # this graph and reject calls targeting a different agent.  Also used
+    # as a lookup key so refreshing the builder resumes the same chat.
+    builder_graph_id: str | None = None
 
 
 class ChatMessage(BaseModel):
@@ -200,7 +207,13 @@ class ChatSession(ChatSessionInfo):
     messages: list[ChatMessage]
 
     @classmethod
-    def new(cls, user_id: str, *, dry_run: bool) -> Self:
+    def new(
+        cls,
+        user_id: str,
+        *,
+        dry_run: bool,
+        builder_graph_id: str | None = None,
+    ) -> Self:
         return cls(
             session_id=str(uuid.uuid4()),
             user_id=user_id,
@@ -210,7 +223,10 @@ class ChatSession(ChatSessionInfo):
             credentials={},
             started_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
-            metadata=ChatSessionMetadata(dry_run=dry_run),
+            metadata=ChatSessionMetadata(
+                dry_run=dry_run,
+                builder_graph_id=builder_graph_id,
+            ),
         )
 
     @classmethod
@@ -712,85 +728,32 @@ async def append_and_save_message(
         return session
 
 
-async def append_message_if(
-    session_id: str,
-    message: ChatMessage,
-    predicate: Callable[["ChatSession"], bool],
-) -> "ChatSession | None":
-    """Atomically append a message iff ``predicate(session)`` returns True.
-
-    Used by fire-and-forget tasks that need to no-op if the session state
-    has moved on while they were waiting (e.g. the decompose_goal server-side
-    auto-approve timer: skip the approval if the user has already sent a
-    message). The predicate runs inside the session lock, so the check and
-    the append are one atomic operation — no race with concurrent appends.
-
-    Returns the updated session on append, or ``None`` if the predicate
-    rejected, the session no longer exists, the lock could not be acquired,
-    or the append failed.
-    """
-    async with _get_session_lock(session_id) as lock_acquired:
-        # Without the lock, concurrent callers could both read the same DB
-        # state, both pass the predicate, and both append — producing
-        # duplicate messages. Since ``append_message_if`` only powers
-        # non-critical fire-and-forget flows (e.g. decompose_goal
-        # auto-approve), skipping on lock failure is safer than risking a
-        # duplicate. The user can still trigger the action manually.
-        if not lock_acquired:
-            logger.warning(
-                "append_message_if: skipping for session %s (lock not acquired)",
-                session_id,
-            )
-            return None
-        # Read from DB directly — the Redis cache can be stale because the
-        # executor's upsert_chat_session overwrites it with in-memory copies
-        # during streaming, which may not include messages appended by the
-        # API server in a different process (e.g. the client's "Approved").
-        session = await _get_session_from_db(session_id)
-        if session is None or not predicate(session):
-            return None
-
-        session.messages.append(message)
-        existing_message_count = await chat_db().get_next_sequence(session_id)
-
-        try:
-            await _save_session_to_db(
-                session,
-                existing_message_count,
-                skip_existence_check=True,
-            )
-        except Exception as e:
-            logger.error(
-                f"append_message_if: failed to persist message to "
-                f"session {session_id}: {e}"
-            )
-            return None
-
-        try:
-            await cache_chat_session(session)
-        except Exception as e:
-            logger.warning(f"Cache write failed for session {session_id}: {e}")
-            # Invalidate the stale entry so future reads fall back to DB,
-            # preventing a predicate check from acting on stale state.
-            await invalidate_session_cache(session_id)
-
-        return session
-
-
-async def create_chat_session(user_id: str, *, dry_run: bool) -> ChatSession:
+async def create_chat_session(
+    user_id: str,
+    *,
+    dry_run: bool,
+    builder_graph_id: str | None = None,
+) -> ChatSession:
     """Create a new chat session and persist it.
 
     Args:
         user_id: The authenticated user ID.
         dry_run: When True, run_block and run_agent tool calls in this
             session are forced to use dry-run simulation mode.
+        builder_graph_id: When set, locks the session to the given graph.
+            The builder panel uses this to bind a chat to the currently-
+            opened agent and to resume the same session on refresh.
 
     Raises:
         DatabaseError: If the database write fails. We fail fast to ensure
             callers never receive a non-persisted session that only exists
             in cache (which would be lost when the cache expires).
     """
-    session = ChatSession.new(user_id, dry_run=dry_run)
+    session = ChatSession.new(
+        user_id,
+        dry_run=dry_run,
+        builder_graph_id=builder_graph_id,
+    )
 
     # Create in database first - fail fast if this fails
     try:
@@ -812,6 +775,58 @@ async def create_chat_session(user_id: str, *, dry_run: bool) -> ChatSession:
         logger.warning(f"Failed to cache new session {session.session_id}: {e}")
 
     return session
+
+
+async def get_or_create_builder_session(
+    user_id: str,
+    graph_id: str,
+) -> ChatSession:
+    """Return the user's builder session for *graph_id*, creating it if absent.
+
+    The session pointer is stored on
+    ``LibraryAgent.settings.builder_chat_session_id``. Ownership is enforced
+    by ``get_library_agent_by_graph_id`` (filters on ``userId``); a miss
+    raises :class:`NotFoundError` (HTTP 404), which also blocks graph-id
+    probing by unauthorized callers.
+    """
+    library_agent = await library_db().get_library_agent_by_graph_id(
+        user_id=user_id, graph_id=graph_id
+    )
+    if library_agent is None:
+        raise NotFoundError(f"Graph {graph_id} not found")
+
+    existing_sid = library_agent.settings.builder_chat_session_id
+    if existing_sid:
+        session = await get_chat_session(existing_sid, user_id)
+        if session is not None:
+            return session
+
+    # Serialise create-and-claim so concurrent callers for the same
+    # (user_id, graph_id) don't each mint a session and orphan one
+    # (double-click / two-tab race — sentry 13632535).
+    async with _get_session_lock(f"builder:{user_id}:{graph_id}"):
+        library_agent = await library_db().get_library_agent_by_graph_id(
+            user_id=user_id, graph_id=graph_id
+        )
+        if library_agent is None:
+            raise NotFoundError(f"Graph {graph_id} not found")
+        existing_sid = library_agent.settings.builder_chat_session_id
+        if existing_sid:
+            session = await get_chat_session(existing_sid, user_id)
+            if session is not None:
+                return session
+
+        session = await create_chat_session(
+            user_id,
+            dry_run=False,
+            builder_graph_id=graph_id,
+        )
+        await library_db().update_library_agent(
+            library_agent_id=library_agent.id,
+            user_id=user_id,
+            settings=GraphSettings(builder_chat_session_id=session.session_id),
+        )
+        return session
 
 
 async def get_user_sessions(
