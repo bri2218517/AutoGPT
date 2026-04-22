@@ -62,7 +62,6 @@ class ImageEditorModel(str, Enum):
         return _map[self.name]
 
 
-# Keep old name as alias for backwards compatibility
 FluxKontextModelName = ImageEditorModel
 
 
@@ -164,7 +163,7 @@ class AIImageEditorBlock(Block):
             ],
             test_mock={
                 "run_model": lambda *args, **kwargs: (
-                    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+                    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAhKmMIQAAAABJRU5ErkJggg=="
                 ),
             },
             test_credentials=TEST_CREDENTIALS,
