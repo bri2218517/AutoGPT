@@ -43,20 +43,16 @@ class ChatConfig(BaseSettings):
     # ``CHAT_FAST_MODEL``) are preserved via ``validation_alias`` so
     # existing deployments continue to override the same effective cell.
     fast_standard_model: str = Field(
-        default="moonshotai/kimi-k2.6",
+        default="anthropic/claude-sonnet-4-6",
         validation_alias=AliasChoices(
             "CHAT_FAST_STANDARD_MODEL",
             "CHAT_FAST_MODEL",
         ),
-        description="Baseline path, 'standard' / ``None`` tier.  Kimi K2.6 "
-        "by default: ~5x cheaper input and ~5.4x cheaper output than Sonnet, "
-        "SWE-Bench Verified parity with Opus, and OpenRouter advertises the "
-        "``reasoning`` + ``include_reasoning`` extension params on the "
-        "Moonshot endpoints — so the baseline reasoning plumbing lights up "
-        "without provider-specific code.  Roll back to the Anthropic route "
-        "via ``CHAT_FAST_STANDARD_MODEL=anthropic/claude-sonnet-4-6`` (then "
-        "``cache_control`` breakpoints reactivate via "
-        "``_is_anthropic_model``).",
+        description="Baseline path, 'standard' / ``None`` tier.  Per-user "
+        "overrides flow through the ``copilot-fast-standard-model`` "
+        "LaunchDarkly flag (see ``copilot/model_router.py``); this value "
+        "is the fallback when LD is unset or unavailable.  Override via "
+        "``CHAT_FAST_STANDARD_MODEL``.",
     )
     fast_advanced_model: str = Field(
         default="anthropic/claude-opus-4.7",
