@@ -551,7 +551,15 @@ async def _generate_session_title(
         logger.warning(f"Failed to generate session title: {e}")
         return None, None
 
-    title = response.choices[0].message.content if response.choices else None
+    # Robust against an empty ``choices`` list OR a choice whose
+    # ``message`` is missing ``content`` (shouldn't happen on the OpenAI
+    # SDK typing, but belt-and-suspenders — the background task would
+    # otherwise die on ``IndexError`` and lose the (paid-for) cost
+    # recording we're about to do below).
+    title: str | None = None
+    if response.choices:
+        msg = response.choices[0].message
+        title = msg.content if msg is not None else None
     if title:
         title = title.strip().strip("\"'")
         if len(title) > 50:
@@ -626,14 +634,18 @@ async def _record_title_generation_cost(
         else "openai"
     )
 
-    # Lazy session load — only pay the DB roundtrip once we know we
-    # have something to record.
-    session = None
-    if session_id and user_id:
-        session = await get_chat_session(session_id, user_id)
-
+    # Intentionally pass ``session=None``.  ``persist_and_record_usage``
+    # would otherwise append a ``Usage`` entry to the live session
+    # object, but this background task holds no reference to the
+    # request-scoped session — we'd have to ``get_chat_session`` +
+    # ``upsert_chat_session`` round-trip the mutation back, and the
+    # turn's main ``persist_and_record_usage`` already owns the session
+    # usage-list mirror for the originating turn.  Title cost is
+    # recorded into ``PlatformCostLog`` (admin dashboard) and the
+    # microdollar rate-limit counter — those are the two places that
+    # actually matter for this call.
     await persist_and_record_usage(
-        session=session,
+        session=None,
         user_id=user_id,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
