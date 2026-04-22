@@ -90,10 +90,15 @@ async def resolve_model(
     if isinstance(value, str) and value.strip():
         return value.strip()
     if value != fallback:
+        reason = (
+            "empty string"
+            if isinstance(value, str)
+            else f"non-string ({type(value).__name__})"
+        )
         logger.warning(
-            "[model_router] LD flag %s returned non-string %r — using config default %s",
+            "[model_router] LD flag %s returned %s — using config default %s",
             flag.value,
-            value,
+            reason,
             fallback,
         )
     return fallback

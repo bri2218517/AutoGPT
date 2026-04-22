@@ -72,26 +72,41 @@ class TestResolveModel:
         assert result == "xai/grok-4"
 
     @pytest.mark.asyncio
-    async def test_non_string_value_falls_back(self):
+    async def test_non_string_value_falls_back_with_type_in_warning(self, caplog):
         """LD misconfigured as a boolean flag — don't try to use ``True`` as a
-        model name; return the config default."""
+        model name; return the config default.  Warning must say
+        'non-string' (not 'empty string') so the LD operator knows the
+        flag type is wrong, not just missing a value."""
+        import logging
+
         cfg = _make_config()
-        with patch(
-            "backend.copilot.model_router.get_feature_flag_value",
-            new=AsyncMock(return_value=True),
-        ):
-            result = await resolve_model("fast", "advanced", "user-1", config=cfg)
+        with caplog.at_level(logging.WARNING, logger="backend.copilot.model_router"):
+            with patch(
+                "backend.copilot.model_router.get_feature_flag_value",
+                new=AsyncMock(return_value=True),
+            ):
+                result = await resolve_model("fast", "advanced", "user-1", config=cfg)
         assert result == cfg.fast_advanced_model
+        assert any("non-string" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_empty_string_falls_back(self):
+    async def test_empty_string_falls_back_with_empty_in_warning(self, caplog):
+        """When LD returns ``""`` the warning must say 'empty string' —
+        not 'non-string' — so the operator doesn't chase a type bug
+        when the flag is simply unset to an empty value."""
+        import logging
+
         cfg = _make_config()
-        with patch(
-            "backend.copilot.model_router.get_feature_flag_value",
-            new=AsyncMock(return_value=""),
-        ):
-            result = await resolve_model("fast", "standard", "user-1", config=cfg)
+        with caplog.at_level(logging.WARNING, logger="backend.copilot.model_router"):
+            with patch(
+                "backend.copilot.model_router.get_feature_flag_value",
+                new=AsyncMock(return_value=""),
+            ):
+                result = await resolve_model("fast", "standard", "user-1", config=cfg)
         assert result == cfg.fast_standard_model
+        messages = [r.message for r in caplog.records]
+        assert any("empty string" in m for m in messages)
+        assert not any("non-string" in m for m in messages)
 
     @pytest.mark.asyncio
     async def test_ld_exception_falls_back(self):
