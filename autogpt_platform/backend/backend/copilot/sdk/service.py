@@ -57,7 +57,10 @@ from ..constants import (
 from ..session_cleanup import prune_orphan_tool_calls
 from ..context import encode_cwd_for_cli, get_workspace_manager
 from ..graphiti.config import is_enabled_for_user
-from ..moonshot import override_cost_usd as _override_cost_for_moonshot
+from ..moonshot import (
+    is_moonshot_model as _is_moonshot_model,
+    override_cost_usd as _override_cost_for_moonshot,
+)
 from ..model import (
     ChatMessage,
     ChatSession,
@@ -2300,29 +2303,31 @@ async def _run_stream_attempt(
                         state.usage.completion_tokens,
                     )
                 if sdk_msg.total_cost_usd is not None:
-                    # The SDK CLI's ``total_cost_usd`` is computed from a
-                    # static Anthropic pricing table baked into the CLI
-                    # binary.  When we route through OpenRouter to a non-
-                    # Anthropic model (e.g. Kimi K2.6) the CLI doesn't
-                    # know the real per-token price and silently falls
-                    # back to Sonnet rates — over-billing the user ~5x.
-                    # ``override_cost_usd`` replaces the CLI number with
-                    # the Moonshot rate-card estimate when the slug
-                    # matches, otherwise returns the SDK-reported value
-                    # unchanged.  Reconcile
-                    # (``record_turn_cost_from_openrouter``) overrides
-                    # both with the authoritative bill when every gen-ID
-                    # lookup succeeds; this estimate only ships as the
-                    # sync-path cost or the reconcile's lookup-fail
-                    # fallback.
-                    state.usage.cost_usd = _override_cost_for_moonshot(
-                        model=getattr(state.options, "model", None),
-                        sdk_reported_usd=sdk_msg.total_cost_usd,
-                        prompt_tokens=state.usage.prompt_tokens,
-                        completion_tokens=state.usage.completion_tokens,
-                        cache_read_tokens=state.usage.cache_read_tokens,
-                        cache_creation_tokens=state.usage.cache_creation_tokens,
-                    )
+                    # Default: trust the CLI-reported value.  Accurate for
+                    # Anthropic models (the CLI's bundled pricing table is
+                    # Anthropic-authored), and becomes the sync-path cost
+                    # when the reconcile is disabled or fails.
+                    active_model = getattr(state.options, "model", None)
+                    if _is_moonshot_model(active_model):
+                        # Moonshot slug — the CLI doesn't know Moonshot's
+                        # rate card and silently bills at Sonnet rates
+                        # (~5x over-charge).  Replace with the rate-card
+                        # estimate so the in-stream ``cost_usd`` and the
+                        # reconcile's lookup-fail fallback reflect
+                        # reality.  Reconcile
+                        # (``record_turn_cost_from_openrouter``) still
+                        # overrides this value when every gen-ID lookup
+                        # succeeds.
+                        state.usage.cost_usd = _override_cost_for_moonshot(
+                            model=active_model,
+                            sdk_reported_usd=sdk_msg.total_cost_usd,
+                            prompt_tokens=state.usage.prompt_tokens,
+                            completion_tokens=state.usage.completion_tokens,
+                            cache_read_tokens=state.usage.cache_read_tokens,
+                            cache_creation_tokens=state.usage.cache_creation_tokens,
+                        )
+                    else:
+                        state.usage.cost_usd = sdk_msg.total_cost_usd
 
             # Emit compaction end if SDK finished compacting.
             # Sync TranscriptBuilder with the CLI's active context.

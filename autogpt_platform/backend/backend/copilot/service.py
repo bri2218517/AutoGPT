@@ -17,6 +17,7 @@ from langfuse import get_client
 from langfuse.openai import (
     AsyncOpenAI as LangfuseAsyncOpenAI,  # pyright: ignore[reportPrivateImportUsage]
 )
+from openai.types.chat import ChatCompletion
 
 from backend.data.db_accessors import chat_db, understanding_db
 from backend.data.understanding import (
@@ -496,15 +497,14 @@ async def _generate_session_title(
     message: str,
     user_id: str | None = None,
     session_id: str | None = None,
-) -> str | None:
+) -> tuple[str | None, ChatCompletion | None]:
     """Generate a concise title for a chat session based on the first message.
 
-    Also persists the title-generation call's cost to ``PlatformCostLog``
-    so the admin dashboard's provider totals match the real OpenRouter
-    bill.  Before this, the title LLM call (a background task, one per
-    session) bypassed the main turn's reconcile entirely and silently
-    wasn't tracked — low per-call cost but 100% of sessions pay it, so
-    it adds up.
+    Returns ``(title, response)``.  The caller is responsible for
+    persisting the title AND recording the title call's cost — keeping
+    them as separate concerns in the caller lets a cost-tracking hiccup
+    not lose the title, and lets a title-persist failure still record
+    the cost (we paid for the LLM call either way).
 
     Args:
         message: The first user message in the session
@@ -512,7 +512,9 @@ async def _generate_session_title(
         session_id: Session ID for OpenRouter tracing (optional)
 
     Returns:
-        A short title (3-6 words) or None if generation fails
+        ``(title, response)`` on success; ``(None, None)`` if the LLM
+        call raised.  ``response`` is returned even when ``title`` is
+        empty so the caller can still record the (paid-for) cost.
     """
     try:
         # Build extra_body for OpenRouter tracing and PostHog analytics.
@@ -545,34 +547,46 @@ async def _generate_session_title(
             max_tokens=20,
             extra_body=extra_body,
         )
-
-        # Best-effort cost capture — the title call is a one-shot LLM
-        # round we'd otherwise miss in admin totals.  Runs inside the
-        # ``try`` block so a persist failure downgrades to the existing
-        # "title generation failed" warning path rather than raising.
-        await _record_title_generation_cost(
-            response=response,
-            user_id=user_id,
-            session_id=session_id,
-        )
-
-        title = response.choices[0].message.content
-        if title:
-            # Clean up the title
-            title = title.strip().strip("\"'")
-            # Limit length
-            if len(title) > 50:
-                title = title[:47] + "..."
-            return title
-        return None
     except Exception as e:
         logger.warning(f"Failed to generate session title: {e}")
-        return None
+        return None, None
+
+    title = response.choices[0].message.content if response.choices else None
+    if title:
+        title = title.strip().strip("\"'")
+        if len(title) > 50:
+            title = title[:47] + "..."
+    return title, response
+
+
+def _title_usage_from_response(
+    response: ChatCompletion,
+) -> tuple[int, int, float | None]:
+    """Extract ``(prompt_tokens, completion_tokens, cost_usd)`` from a
+    title-generation chat-completion response.
+
+    Returns zeros / ``None`` for missing fields — the OpenAI SDK's
+    ``CompletionUsage`` doesn't declare OpenRouter's ``cost`` extension,
+    so we read it off ``model_extra`` (pydantic v2 extras container).
+    Absent for non-OR routes; returned as ``None`` in that case.
+    """
+    usage = response.usage
+    if usage is None:
+        return 0, 0, None
+    prompt_tokens = usage.prompt_tokens or 0
+    completion_tokens = usage.completion_tokens or 0
+    extras = usage.model_extra or {}
+    cost_raw = extras.get("cost") if isinstance(extras, dict) else None
+    if isinstance(cost_raw, (int, float)):
+        cost_usd: float | None = float(cost_raw)
+    else:
+        cost_usd = None
+    return prompt_tokens, completion_tokens, cost_usd
 
 
 async def _record_title_generation_cost(
     *,
-    response: Any,
+    response: ChatCompletion,
     user_id: str | None,
     session_id: str | None,
 ) -> None:
@@ -585,63 +599,49 @@ async def _record_title_generation_cost(
     is clearly distinguishable from the turn's main ``copilot:SDK`` /
     ``copilot:baseline`` attributions.
 
-    Best-effort: any error downgrades to a debug log so title generation
-    itself never breaks on a cost-tracking hiccup.
+    Invariants enforced by the caller:
+      * ``response`` is a completed ``ChatCompletion`` (the create call
+        didn't raise) — so ``response.usage`` shape is SDK-contractual.
+      * Exceptions are NOT suppressed — the caller runs this AFTER
+        title persistence so a persist failure here doesn't lose the
+        title, and a real DB / Prisma outage surfaces in the caller's
+        single background-task warning handler.
     """
-    try:
-        usage = getattr(response, "usage", None)
-        if usage is None:
-            return
-        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-        completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-        # OR piggybacks the real billed cost on ``usage.cost`` when
-        # ``extra_body={"usage":{"include":true}}`` — stashed in
-        # pydantic's ``model_extra``.  Absent for non-OR routes.
-        extras = getattr(usage, "model_extra", None) or {}
-        cost_raw = extras.get("cost") if isinstance(extras, dict) else None
-        cost_usd: float | None
-        try:
-            cost_usd = float(cost_raw) if cost_raw is not None else None
-        except (TypeError, ValueError):
-            cost_usd = None
+    prompt_tokens, completion_tokens, cost_usd = _title_usage_from_response(response)
 
-        # Nothing meaningful to record — skip the DB roundtrip entirely
-        # rather than writing a zero-valued row.  Covers the non-OR
-        # route (no ``usage.cost`` field) and the degenerate
-        # zero-tokens case.
-        if cost_usd is None and prompt_tokens == 0 and completion_tokens == 0:
-            return
+    # Nothing meaningful to record — skip the DB roundtrip entirely
+    # rather than writing a zero-valued row.  Covers the non-OR route
+    # (no ``usage.cost`` field) and the degenerate zero-tokens case.
+    if cost_usd is None and prompt_tokens == 0 and completion_tokens == 0:
+        return
 
-        # Provider label is derived from the configured ``base_url``
-        # (title LLM uses the shared copilot OpenAI client whose base
-        # URL mirrors ``ChatConfig.base_url``).  This lets a deployment
-        # that points title generation at a non-OR endpoint still get
-        # the correct ``provider`` on the cost-log row.
-        provider = (
-            "open_router"
-            if (config.base_url and "openrouter.ai" in config.base_url)
-            else "openai"
-        )
+    # Provider label is derived from the configured ``base_url`` (title
+    # LLM uses the shared copilot OpenAI client whose base URL mirrors
+    # ``ChatConfig.base_url``).  This lets a deployment that points
+    # title generation at a non-OR endpoint still get the correct
+    # ``provider`` on the cost-log row.
+    provider = (
+        "open_router"
+        if (config.base_url and "openrouter.ai" in config.base_url)
+        else "openai"
+    )
 
-        # ``persist_and_record_usage`` appends the usage row to the
-        # session's per-turn usage list — load the session lazily, and
-        # only when we actually have a cost or token count to record.
-        session = None
-        if session_id and user_id:
-            session = await get_chat_session(session_id, user_id)
+    # Lazy session load — only pay the DB roundtrip once we know we
+    # have something to record.
+    session = None
+    if session_id and user_id:
+        session = await get_chat_session(session_id, user_id)
 
-        await persist_and_record_usage(
-            session=session,
-            user_id=user_id,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            log_prefix="[title]",
-            cost_usd=cost_usd,
-            model=config.title_model,
-            provider=provider,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Title cost tracking skipped: %s", exc)
+    await persist_and_record_usage(
+        session=session,
+        user_id=user_id,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        log_prefix="[title]",
+        cost_usd=cost_usd,
+        model=config.title_model,
+        provider=provider,
+    )
 
 
 async def _update_title_async(
@@ -649,15 +649,29 @@ async def _update_title_async(
 ) -> None:
     """Generate and persist a session title in the background.
 
-    Shared by both the SDK and baseline execution paths.
+    Shared by both the SDK and baseline execution paths.  Title
+    persistence and cost recording are run as independent best-effort
+    steps — a failure in one does not cancel the other, so a flaky
+    Prisma call on cost recording never costs us the generated title.
     """
-    try:
-        title = await _generate_session_title(message, user_id, session_id)
-        if title and user_id:
+    title, response = await _generate_session_title(message, user_id, session_id)
+
+    if title and user_id:
+        try:
             await update_session_title(session_id, user_id, title, only_if_empty=True)
             logger.debug("Generated title for session %s", session_id)
-    except Exception as e:
-        logger.warning("Failed to update session title for %s: %s", session_id, e)
+        except Exception as e:
+            logger.warning("Failed to persist session title for %s: %s", session_id, e)
+
+    if response is not None:
+        try:
+            await _record_title_generation_cost(
+                response=response, user_id=user_id, session_id=session_id
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to record title generation cost for %s: %s", session_id, e
+            )
 
 
 async def assign_user_to_session(
