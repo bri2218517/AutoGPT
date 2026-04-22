@@ -24,8 +24,11 @@ cache-control gating don't handle on their own:
   Anthropic-compat endpoint silently accepts and honours the marker —
   empirically boosts cache hit rate on continuation turns — but was
   caught in the non-Anthropic branch of the original gate.
-  :func:`supports_cache_control` lets callers widen the gate to include
-  Moonshot without weakening the ``false`` answer for OpenAI et al.
+  :func:`moonshot_supports_cache_control` lets callers widen the gate
+  to include Moonshot without weakening the ``false`` answer for
+  OpenAI et al.  (The predicate is intentionally narrow — Moonshot-only
+  — so callers combine it with an explicit Anthropic check at the call
+  site; see ``baseline/service.py::_supports_prompt_cache_markers``.)
 
 Detection is prefix-based (``moonshotai/``).  Moonshot routes every Kimi
 SKU through the same Anthropic-compat surface and currently prices them
@@ -66,15 +69,19 @@ def is_moonshot_model(model: str | None) -> bool:
     return isinstance(model, str) and model.startswith(_MOONSHOT_PREFIX)
 
 
-def rate_card_usd(model: str) -> tuple[float, float] | None:
+def rate_card_usd(model: str | None) -> tuple[float, float] | None:
     """Return (input, output) $/Mtok for *model* or None if non-Moonshot.
 
     Looks up a per-slug override first, falling back to the shared
     default for anything under ``moonshotai/``.  Returns None for
-    non-Moonshot slugs so callers can skip the override safely.
+    non-Moonshot slugs (including ``None``) so callers can skip the
+    override without a preflight guard.
     """
     if not is_moonshot_model(model):
         return None
+    # ``is_moonshot_model`` narrowed ``model`` to str; dict.get is
+    # type-safe here despite the wider param annotation above.
+    assert model is not None
     return _RATE_OVERRIDES_USD_PER_MTOK.get(model, _DEFAULT_MOONSHOT_RATE_USD_PER_MTOK)
 
 
@@ -119,13 +126,16 @@ def override_cost_usd(
     return (total_prompt * input_rate + completion_tokens * output_rate) / 1_000_000
 
 
-def supports_cache_control(model: str | None) -> bool:
-    """True when *model* accepts Anthropic-style ``cache_control`` markers.
+def moonshot_supports_cache_control(model: str | None) -> bool:
+    """True when a Moonshot *model* accepts Anthropic-style ``cache_control``.
 
-    The baseline path ships ``cache_control: {type: ephemeral}`` on the
-    system message and the final tool block to trigger Anthropic prompt
-    caching.  Non-Anthropic providers (OpenAI, Grok, Gemini) 400 on the
-    unknown field — the default gate only allows Anthropic.
+    Narrow, Moonshot-specific predicate — callers that need the full
+    "does this route accept cache markers" answer combine this with an
+    Anthropic check (see ``baseline/service.py::_supports_prompt_cache_markers``).
+    Named ``moonshot_*`` deliberately so the call site can't mistake it
+    for a universal predicate that answers correctly for Anthropic
+    (which also supports cache_control — this function would return
+    False for Anthropic slugs).
 
     Moonshot's Anthropic-compat endpoint honours the marker.  Without
     it Moonshot falls back to its own automatic prefix caching, which

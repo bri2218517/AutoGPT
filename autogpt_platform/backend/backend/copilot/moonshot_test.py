@@ -8,7 +8,7 @@ from backend.copilot.moonshot import (
     is_moonshot_model,
     override_cost_usd,
     rate_card_usd,
-    supports_cache_control,
+    moonshot_supports_cache_control,
 )
 
 
@@ -153,10 +153,10 @@ class TestSupportsCacheControl:
     combined with this one into a wider gate."""
 
     def test_moonshot_supports_cache_control(self) -> None:
-        assert supports_cache_control("moonshotai/kimi-k2.6") is True
+        assert moonshot_supports_cache_control("moonshotai/kimi-k2.6") is True
 
     def test_future_moonshot_sku_supports_cache_control(self) -> None:
-        assert supports_cache_control("moonshotai/kimi-k3.0") is True
+        assert moonshot_supports_cache_control("moonshotai/kimi-k3.0") is True
 
     @pytest.mark.parametrize(
         "model",
@@ -170,4 +170,4 @@ class TestSupportsCacheControl:
         ],
     )
     def test_non_moonshot_does_not_support_cache_control(self, model) -> None:
-        assert supports_cache_control(model) is False
+        assert moonshot_supports_cache_control(model) is False

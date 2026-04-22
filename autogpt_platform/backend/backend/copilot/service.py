@@ -605,10 +605,27 @@ async def _record_title_generation_cost(
         except (TypeError, ValueError):
             cost_usd = None
 
-        # ``persist_and_record_usage`` needs the session object to
-        # append the usage row to the session's per-turn usage list —
-        # load it lazily so the hot title path doesn't pay the DB round
-        # trip unless a cost actually needs recording.
+        # Nothing meaningful to record — skip the DB roundtrip entirely
+        # rather than writing a zero-valued row.  Covers the non-OR
+        # route (no ``usage.cost`` field) and the degenerate
+        # zero-tokens case.
+        if cost_usd is None and prompt_tokens == 0 and completion_tokens == 0:
+            return
+
+        # Provider label is derived from the configured ``base_url``
+        # (title LLM uses the shared copilot OpenAI client whose base
+        # URL mirrors ``ChatConfig.base_url``).  This lets a deployment
+        # that points title generation at a non-OR endpoint still get
+        # the correct ``provider`` on the cost-log row.
+        provider = (
+            "open_router"
+            if (config.base_url and "openrouter.ai" in config.base_url)
+            else "openai"
+        )
+
+        # ``persist_and_record_usage`` appends the usage row to the
+        # session's per-turn usage list — load the session lazily, and
+        # only when we actually have a cost or token count to record.
         session = None
         if session_id and user_id:
             session = await get_chat_session(session_id, user_id)
@@ -621,7 +638,7 @@ async def _record_title_generation_cost(
             log_prefix="[title]",
             cost_usd=cost_usd,
             model=config.title_model,
-            provider="open_router",
+            provider=provider,
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("Title cost tracking skipped: %s", exc)
