@@ -308,7 +308,7 @@ class ChatConfig(BaseSettings):
         "https://platform.claude.com/docs/en/build-with-claude/prompt-caching.",
     )
     sdk_include_partial_messages: bool = Field(
-        default=False,
+        default=True,
         description="Enable per-token streaming on the SDK path by setting "
         "``include_partial_messages=True`` on ``ClaudeAgentOptions``.  The "
         "CLI then emits raw Anthropic ``content_block_delta`` events as "
@@ -316,12 +316,13 @@ class ChatConfig(BaseSettings):
         "``AssistantMessage``, so long answers and extended-thinking "
         "reasoning land on the wire token-by-token instead of popping in "
         "as a lump at ``content_block_stop``.  Matches the perceptual "
-        "progress the baseline path has shipped since #12873.  Off by "
-        "default to keep the rollout staged; the adapter falls back to "
-        "summary-only emission when this flag is False.  See "
-        "``docs/sdk-per-token-streaming-followup.md`` for the diff-based "
-        "reconcile logic that prevents partial/summary double-emission "
-        "and truncation when the two views disagree.",
+        "progress the baseline path has shipped since #12873.  On by "
+        "default after internal soak — the adapter's diff-based reconcile "
+        "(see ``docs/sdk-per-token-streaming-followup.md``) has been "
+        "stable; partial/summary events emit consistently without "
+        "double-writing.  Kill-switch "
+        "``CHAT_SDK_INCLUDE_PARTIAL_MESSAGES=false`` falls back to "
+        "summary-only emission if an adapter regression surfaces.",
     )
     sdk_reconcile_openrouter_cost: bool = Field(
         default=True,
