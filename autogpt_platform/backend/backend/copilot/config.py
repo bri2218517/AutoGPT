@@ -249,6 +249,18 @@ class ChatConfig(BaseSettings):
         "``max_thinking_tokens`` kwarg so the CLI falls back to model default "
         "(which, without the flag, leaves extended thinking off).",
     )
+    render_reasoning_in_ui: bool = Field(
+        default=True,
+        description="Render reasoning as live UI parts + persist "
+        "``role='reasoning'`` rows. False suppresses both; tokens are still "
+        "billed upstream.",
+    )
+    stream_replay_count: int = Field(
+        default=200,
+        ge=1,
+        le=10000,
+        description="Max Redis stream entries replayed on SSE reconnect.",
+    )
     claude_agent_thinking_effort: Literal["low", "medium", "high", "max"] | None = (
         Field(
             default=None,
