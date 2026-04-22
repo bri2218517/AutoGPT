@@ -57,6 +57,7 @@ from ..constants import (
 from ..session_cleanup import prune_orphan_tool_calls
 from ..context import encode_cwd_for_cli, get_workspace_manager
 from ..graphiti.config import is_enabled_for_user
+from ..moonshot import override_cost_usd as _override_cost_for_moonshot
 from ..model import (
     ChatMessage,
     ChatSession,
@@ -721,55 +722,6 @@ def _normalize_model_name(raw_model: str) -> str:
                 f"to an anthropic/* slug, or enable OpenRouter."
             )
     return model.replace(".", "-")
-
-
-# Per-million-token rates ($USD) for non-Anthropic OpenRouter slugs that
-# the Claude Agent SDK CLI doesn't recognise.  The CLI's bundled pricing
-# table only knows Anthropic models — for anything else its
-# ``ResultMessage.total_cost_usd`` silently falls back to Sonnet rates,
-# over-billing by ~5x for cheaper models like Kimi K2.6.  Values are taken
-# directly from each provider's published rate card and must be kept in
-# sync when prices change.  Cache discounts are not applied — Kimi via
-# OpenRouter does not currently expose a separate cached-input price.
-_NON_ANTHROPIC_RATES_USD_PER_MTOK: dict[str, tuple[float, float]] = {
-    # vendor/model: (input_per_mtok, output_per_mtok)
-    "moonshotai/kimi-k2.6": (0.60, 2.80),
-    "moonshotai/kimi-k2-thinking": (0.60, 2.80),
-    "moonshotai/kimi-k2.5": (0.60, 2.80),
-    "moonshotai/kimi-k2": (0.60, 2.80),
-}
-
-
-def _override_cost_for_non_anthropic(
-    raw_model: str | None,
-    sdk_reported_usd: float,
-    prompt_tokens: int,
-    completion_tokens: int,
-    cache_read_tokens: int,
-    cache_creation_tokens: int,
-) -> float:
-    """Recompute turn cost from a known rate card for non-Anthropic models.
-
-    The Claude Agent SDK CLI's ``total_cost_usd`` is computed from a
-    static Anthropic pricing table baked into the binary — it doesn't
-    know Kimi/DeepSeek/etc rates and silently bills at Sonnet prices,
-    which would over-charge a Kimi-default deployment by ~5x.  Mirror
-    the baseline path's behaviour by computing the real cost from the
-    token counts whenever we recognise the slug; otherwise trust the
-    SDK number (correct for Anthropic models, best-effort for unknown
-    providers).
-    """
-    if raw_model is None:
-        return sdk_reported_usd
-    rates = _NON_ANTHROPIC_RATES_USD_PER_MTOK.get(raw_model)
-    if rates is None:
-        return sdk_reported_usd
-    input_rate, output_rate = rates
-    # Treat cache reads/creation as plain prompt tokens since OpenRouter
-    # does not currently report a discounted cached-input price for the
-    # tracked Moonshot endpoints.
-    total_prompt = prompt_tokens + cache_read_tokens + cache_creation_tokens
-    return (total_prompt * input_rate + completion_tokens * output_rate) / 1_000_000
 
 
 def _resolve_sdk_model() -> str | None:
@@ -2354,11 +2306,17 @@ async def _run_stream_attempt(
                     # Anthropic model (e.g. Kimi K2.6) the CLI doesn't
                     # know the real per-token price and silently falls
                     # back to Sonnet rates — over-billing the user ~5x.
-                    # Recompute from a known rate card for non-Anthropic
-                    # OpenRouter slugs so the cost row, the rate-limit
-                    # counter, and the UI cost display reflect reality.
-                    state.usage.cost_usd = _override_cost_for_non_anthropic(
-                        raw_model=getattr(state.options, "model", None),
+                    # ``override_cost_usd`` replaces the CLI number with
+                    # the Moonshot rate-card estimate when the slug
+                    # matches, otherwise returns the SDK-reported value
+                    # unchanged.  Reconcile
+                    # (``record_turn_cost_from_openrouter``) overrides
+                    # both with the authoritative bill when every gen-ID
+                    # lookup succeeds; this estimate only ships as the
+                    # sync-path cost or the reconcile's lookup-fail
+                    # fallback.
+                    state.usage.cost_usd = _override_cost_for_moonshot(
+                        model=getattr(state.options, "model", None),
                         sdk_reported_usd=sdk_msg.total_cost_usd,
                         prompt_tokens=state.usage.prompt_tokens,
                         completion_tokens=state.usage.completion_tokens,

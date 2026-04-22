@@ -1864,12 +1864,14 @@ class TestBaselineReasoningStreaming:
         assert "reasoning" not in extra_body
 
     @pytest.mark.asyncio
-    async def test_kimi_route_sends_reasoning_but_no_cache_control(self):
-        """Kimi K2.6 is the default fast_model and sends ``reasoning`` via
-        OpenRouter's unified extension.  It must NOT receive ``cache_control``
-        markers or the ``anthropic-beta`` header — Moonshot uses its own
-        auto-caching and those Anthropic-only fields would either get
-        silently dropped or (worst case) 400 on a future provider change."""
+    async def test_kimi_route_sends_reasoning_and_cache_control(self):
+        """Kimi K2.6 (Moonshot via OpenRouter's Anthropic-compat endpoint)
+        accepts ``cache_control: {type: ephemeral}`` on the system block
+        and the last tool — the endpoint honours the marker and lifts
+        cache hit rate on continuation turns from near-zero (Moonshot's
+        auto-caching drifts) to the Anthropic ~60-95% ballpark.  The
+        ``anthropic-beta`` header stays off because Moonshot doesn't need
+        it; OpenRouter would strip the unknown header anyway."""
         state = _BaselineStreamState(model="moonshotai/kimi-k2.6")
 
         mock_client = MagicMock()
@@ -1901,15 +1903,29 @@ class TestBaselineReasoningStreaming:
         # cheap-but-still-reasoning-capable path.
         assert "reasoning" in extra_body
         assert extra_body["reasoning"]["max_tokens"] > 0
-        # Anthropic-only fields stay off.
-        assert "extra_headers" not in call_kwargs
+        # No ``anthropic-beta`` header — that beta is specifically for
+        # native Anthropic endpoints; Moonshot's shim accepts
+        # ``cache_control`` without it, and sending it would be wasted
+        # bytes (OR strips it before forwarding to Moonshot).
+        assert "extra_headers" not in call_kwargs or not call_kwargs.get(
+            "extra_headers"
+        )
+        # System block MUST carry ``cache_control`` so Moonshot's cache
+        # breakpoint is honoured.  The cached system-message builder
+        # emits list-shape content with the marker on the first (and
+        # only) block — assert on that shape.
         sys_msg = call_kwargs["messages"][0]
         sys_content = sys_msg.get("content")
-        if isinstance(sys_content, list):
-            assert all("cache_control" not in block for block in sys_content)
-        tools = call_kwargs.get("tools", [])
-        for t in tools:
-            assert "cache_control" not in t
+        assert isinstance(
+            sys_content, list
+        ), "Cached system message should be a list-shape content block"
+        assert any(
+            "cache_control" in block for block in sys_content if isinstance(block, dict)
+        ), "Kimi system message should now carry cache_control markers"
+        # Tool-level cache marking is applied by ``stream_chat_completion_baseline``
+        # (see ``_mark_tools_with_cache_control``) before tools reach
+        # ``_baseline_llm_caller``, so this unit test doesn't exercise
+        # that path — covered by the outer integration test.
 
     @pytest.mark.asyncio
     async def test_reasoning_only_stream_still_closes_block(self):

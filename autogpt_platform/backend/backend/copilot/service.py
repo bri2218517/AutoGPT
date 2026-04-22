@@ -34,6 +34,7 @@ from .model import (
     update_session_title,
     upsert_chat_session,
 )
+from .token_tracking import persist_and_record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -498,6 +499,13 @@ async def _generate_session_title(
 ) -> str | None:
     """Generate a concise title for a chat session based on the first message.
 
+    Also persists the title-generation call's cost to ``PlatformCostLog``
+    so the admin dashboard's provider totals match the real OpenRouter
+    bill.  Before this, the title LLM call (a background task, one per
+    session) bypassed the main turn's reconcile entirely and silently
+    wasn't tracked — low per-call cost but 100% of sessions pay it, so
+    it adds up.
+
     Args:
         message: The first user message in the session
         user_id: User ID for OpenRouter tracing (optional)
@@ -507,8 +515,11 @@ async def _generate_session_title(
         A short title (3-6 words) or None if generation fails
     """
     try:
-        # Build extra_body for OpenRouter tracing and PostHog analytics
-        extra_body: dict[str, Any] = {}
+        # Build extra_body for OpenRouter tracing and PostHog analytics.
+        # ``usage: {"include": True}`` asks OR to embed the real billed
+        # cost into the final usage chunk — matches the baseline path's
+        # ``_OPENROUTER_INCLUDE_USAGE_COST`` pattern, same read path.
+        extra_body: dict[str, Any] = {"usage": {"include": True}}
         if user_id:
             extra_body["user"] = user_id[:128]  # OpenRouter limit
             extra_body["posthogDistinctId"] = user_id
@@ -534,6 +545,17 @@ async def _generate_session_title(
             max_tokens=20,
             extra_body=extra_body,
         )
+
+        # Best-effort cost capture — the title call is a one-shot LLM
+        # round we'd otherwise miss in admin totals.  Runs inside the
+        # ``try`` block so a persist failure downgrades to the existing
+        # "title generation failed" warning path rather than raising.
+        await _record_title_generation_cost(
+            response=response,
+            user_id=user_id,
+            session_id=session_id,
+        )
+
         title = response.choices[0].message.content
         if title:
             # Clean up the title
@@ -546,6 +568,63 @@ async def _generate_session_title(
     except Exception as e:
         logger.warning(f"Failed to generate session title: {e}")
         return None
+
+
+async def _record_title_generation_cost(
+    *,
+    response: Any,
+    user_id: str | None,
+    session_id: str | None,
+) -> None:
+    """Persist the title LLM call's cost to ``PlatformCostLog``.
+
+    Title generation runs in a background task per-session — low cost
+    (~$0.0001 per title) but 100% of sessions pay it.  Without this the
+    admin dashboard under-reports total provider spend by the aggregate
+    of those calls.  Separate ``block_name="copilot:title"`` so the row
+    is clearly distinguishable from the turn's main ``copilot:SDK`` /
+    ``copilot:baseline`` attributions.
+
+    Best-effort: any error downgrades to a debug log so title generation
+    itself never breaks on a cost-tracking hiccup.
+    """
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+        completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+        # OR piggybacks the real billed cost on ``usage.cost`` when
+        # ``extra_body={"usage":{"include":true}}`` — stashed in
+        # pydantic's ``model_extra``.  Absent for non-OR routes.
+        extras = getattr(usage, "model_extra", None) or {}
+        cost_raw = extras.get("cost") if isinstance(extras, dict) else None
+        cost_usd: float | None
+        try:
+            cost_usd = float(cost_raw) if cost_raw is not None else None
+        except (TypeError, ValueError):
+            cost_usd = None
+
+        # ``persist_and_record_usage`` needs the session object to
+        # append the usage row to the session's per-turn usage list —
+        # load it lazily so the hot title path doesn't pay the DB round
+        # trip unless a cost actually needs recording.
+        session = None
+        if session_id and user_id:
+            session = await get_chat_session(session_id, user_id)
+
+        await persist_and_record_usage(
+            session=session,
+            user_id=user_id,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            log_prefix="[title]",
+            cost_usd=cost_usd,
+            model=config.title_model,
+            provider="open_router",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Title cost tracking skipped: %s", exc)
 
 
 async def _update_title_async(
