@@ -122,7 +122,15 @@ logger = logging.getLogger(__name__)
 _background_tasks: set[asyncio.Task[Any]] = set()
 
 # Maximum number of tool-call rounds before forcing a text response.
-_MAX_TOOL_ROUNDS = 30
+_MAX_TOOL_ROUNDS = 100
+
+# Hint appended on the last tool round so the model wraps up with a summary
+# instead of issuing another tool call that gets cut off cold.
+_LAST_ITERATION_HINT = (
+    "You have reached the tool-call budget for this turn. Do not call any "
+    "more tools — produce a final text response summarizing what you did, "
+    "what remains, and how the user can continue the work in the next turn."
+)
 
 # Max seconds to wait for transcript upload in the finally block before
 # letting it continue as a background task (tracked in _background_tasks).
@@ -1751,6 +1759,7 @@ async def stream_chat_completion_baseline(
                 execute_tool=_bound_tool_executor,
                 update_conversation=_bound_conversation_updater,
                 max_iterations=_MAX_TOOL_ROUNDS,
+                last_iteration_message=_LAST_ITERATION_HINT,
             ):
                 loop_result_holder[0] = loop_result
                 # Inject any messages the user queued while the turn was
