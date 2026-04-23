@@ -6,6 +6,8 @@ Patches the redis-py constructors + ``ping()`` so no real Redis is needed.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redis import Redis
+from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
 from redis.cluster import RedisCluster
 
@@ -57,3 +59,76 @@ async def test_connect_async_builds_async_redis_cluster() -> None:
     assert kwargs["password"] == redis_client.PASSWORD
     assert kwargs["decode_responses"] is True
     client.ping.assert_awaited_once()
+
+
+def test_connect_pubsub_builds_plain_redis() -> None:
+    with patch.object(redis_client, "Redis", autospec=True) as mock_redis:
+        mock_redis.return_value = MagicMock(spec=Redis)
+        client = redis_client.connect_pubsub()
+
+    mock_redis.assert_called_once()
+    kwargs = mock_redis.call_args.kwargs
+    assert kwargs["host"] == redis_client.HOST
+    assert kwargs["port"] == redis_client.PORT
+    assert kwargs["decode_responses"] is True
+    client.ping.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_connect_pubsub_async_builds_plain_async_redis() -> None:
+    with patch.object(redis_client, "AsyncRedis", autospec=True) as mock_async:
+        fake = MagicMock(spec=AsyncRedis)
+        fake.ping = AsyncMock()
+        mock_async.return_value = fake
+        client = await redis_client.connect_pubsub_async()
+
+    mock_async.assert_called_once()
+    kwargs = mock_async.call_args.kwargs
+    assert kwargs["host"] == redis_client.HOST
+    assert kwargs["port"] == redis_client.PORT
+    assert kwargs["decode_responses"] is True
+    client.ping.assert_awaited_once()
+
+
+def test_get_redis_caches_connect() -> None:
+    with patch.object(redis_client, "connect", autospec=True) as mock_connect:
+        mock_connect.return_value = MagicMock(spec=RedisCluster)
+        client_a = redis_client.get_redis()
+        client_b = redis_client.get_redis()
+
+    assert client_a is client_b
+    mock_connect.assert_called_once()
+
+
+def test_get_redis_pubsub_caches_connect() -> None:
+    with patch.object(redis_client, "connect_pubsub", autospec=True) as mock_conn:
+        mock_conn.return_value = MagicMock(spec=Redis)
+        a = redis_client.get_redis_pubsub()
+        b = redis_client.get_redis_pubsub()
+
+    assert a is b
+    mock_conn.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_redis_async_caches_connect() -> None:
+    with patch.object(redis_client, "connect_async", autospec=True) as mock_conn:
+        fake = MagicMock(spec=AsyncRedisCluster)
+        mock_conn.return_value = fake
+        a = await redis_client.get_redis_async()
+        b = await redis_client.get_redis_async()
+
+    assert a is b
+    mock_conn.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_redis_pubsub_async_caches_connect() -> None:
+    with patch.object(redis_client, "connect_pubsub_async", autospec=True) as m:
+        fake = MagicMock(spec=AsyncRedis)
+        m.return_value = fake
+        a = await redis_client.get_redis_pubsub_async()
+        b = await redis_client.get_redis_pubsub_async()
+
+    assert a is b
+    m.assert_called_once()
