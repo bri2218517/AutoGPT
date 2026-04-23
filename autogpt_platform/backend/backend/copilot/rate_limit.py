@@ -721,12 +721,15 @@ async def reset_user_usage(user_id: str, *, reset_weekly: bool = False) -> None:
     the admin believing the counters were zeroed when they were not.
     """
     now = datetime.now(UTC)
-    keys_to_delete = [_daily_key(user_id, now=now)]
-    if reset_weekly:
-        keys_to_delete.append(_weekly_key(user_id, now=now))
+    d_key = _daily_key(user_id, now=now)
+    w_key = _weekly_key(user_id, now=now) if reset_weekly else None
     try:
         redis = await get_redis_async()
-        await redis.delete(*keys_to_delete)
+        # Daily and weekly keys hash to different cluster slots — multi-key
+        # DELETE would raise CROSSSLOT, so issue separate calls.
+        await redis.delete(d_key)
+        if w_key is not None:
+            await redis.delete(w_key)
     except (RedisError, ConnectionError, OSError):
         logger.warning("Redis unavailable for resetting user usage")
         raise
