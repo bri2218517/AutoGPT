@@ -21,7 +21,9 @@ from backend.copilot.tools import TOOL_REGISTRY
 # response shape carries) and the dry_run description. Keeps the
 # regression gate effective while accepting a deliberate ~120-token
 # spend on LLM-decision-critical copy.
-_CHAR_BUDGET = 34_000
+# Bumped to 34000 to accommodate decompose_goal tool + web_search +
+# TodoWrite tool descriptions.
+_CHAR_BUDGET = 35_000
 
 
 @pytest.fixture(scope="module")
@@ -111,9 +113,10 @@ def test_total_schema_char_budget() -> None:
 
     This locks in the 34% token reduction from #12398 and prevents future
     description bloat from eroding the gains. Uses character count with a
-    ~4 chars/token heuristic (budget of 32000 chars ≈ 8000 tokens).
-    Character count is tokenizer-agnostic — no dependency on GPT or Claude
-    tokenizers — while still providing a stable regression gate.
+    ~4 chars/token heuristic; see ``_CHAR_BUDGET`` above for the current
+    value and its change history.  Character count is tokenizer-agnostic
+    — no dependency on GPT or Claude tokenizers — while still providing a
+    stable regression gate.
     """
     schemas = [tool.as_openai_tool() for tool in TOOL_REGISTRY.values()]
     serialized = json.dumps(schemas)
@@ -123,3 +126,60 @@ def test_total_schema_char_budget() -> None:
         f"exceeding budget of {_CHAR_BUDGET} chars (~{_CHAR_BUDGET // 4} tokens). "
         f"Description bloat detected — trim descriptions or raise the budget intentionally."
     )
+
+
+# ── Capability-group filtering (ToolGroup / disabled_groups) ───────────
+
+
+def test_get_available_tools_hides_graphiti_when_disabled() -> None:
+    """When the ``graphiti`` group is disabled, the memory_* tools must
+    not appear in the OpenAI schema list — they'd just confuse the model
+    and produce opaque runtime errors."""
+    from backend.copilot.tools import get_available_tools
+
+    memory_tool_names = {
+        "memory_store",
+        "memory_search",
+        "memory_forget_search",
+        "memory_forget_confirm",
+    }
+
+    default = {t["function"]["name"] for t in get_available_tools()}
+    assert memory_tool_names.issubset(
+        default
+    ), "sanity: memory_* tools should be present when no groups disabled"
+
+    filtered = {
+        t["function"]["name"] for t in get_available_tools(disabled_groups=["graphiti"])
+    }
+    assert not (
+        memory_tool_names & filtered
+    ), f"graphiti disabled but memory_* still present: {memory_tool_names & filtered}"
+    # Non-graphiti tools stay visible.
+    assert "find_block" in filtered
+    assert "TodoWrite" in filtered
+
+
+def test_get_copilot_tool_names_hides_graphiti_when_disabled() -> None:
+    """Same invariant for the SDK tool-name list."""
+    from backend.copilot.sdk.tool_adapter import MCP_TOOL_PREFIX, get_copilot_tool_names
+
+    memory_mcp_names = {
+        f"{MCP_TOOL_PREFIX}memory_store",
+        f"{MCP_TOOL_PREFIX}memory_search",
+        f"{MCP_TOOL_PREFIX}memory_forget_search",
+        f"{MCP_TOOL_PREFIX}memory_forget_confirm",
+    }
+
+    default = set(get_copilot_tool_names())
+    assert memory_mcp_names.issubset(default)
+
+    filtered = set(get_copilot_tool_names(disabled_groups=["graphiti"]))
+    assert not (
+        memory_mcp_names & filtered
+    ), f"graphiti disabled but memory MCP names still present: {memory_mcp_names & filtered}"
+    # E2B path stays consistent.
+    filtered_e2b = set(
+        get_copilot_tool_names(use_e2b=True, disabled_groups=["graphiti"])
+    )
+    assert not (memory_mcp_names & filtered_e2b)
