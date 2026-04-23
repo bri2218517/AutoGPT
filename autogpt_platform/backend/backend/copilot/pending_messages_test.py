@@ -150,6 +150,11 @@ def fake_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
         return redis
 
     monkeypatch.setattr(pm_module, "get_redis_async", _get_redis_async)
+    # The publish-notify path uses the pub/sub-dedicated client because the
+    # async RedisCluster client has no ``publish()``.  Patch both to the same
+    # fake so the single-Redis call sites and the pub/sub call sites share
+    # state in tests.
+    monkeypatch.setattr(pm_module, "get_redis_pubsub_async", _get_redis_async)
     return redis
 
 

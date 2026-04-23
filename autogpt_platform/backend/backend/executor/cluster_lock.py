@@ -7,8 +7,7 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from redis import Redis
-    from redis.asyncio import Redis as AsyncRedis
+    from backend.data.redis_client import AsyncRedisClient, RedisClient
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +26,9 @@ _RELEASE_LUA = (
 class ClusterLock:
     """Simple Redis-based distributed lock for preventing duplicate execution."""
 
-    def __init__(self, redis: "Redis", key: str, owner_id: str, timeout: int = 300):
+    def __init__(
+        self, redis: "RedisClient", key: str, owner_id: str, timeout: int = 300
+    ):
         self.redis = redis
         self.key = key
         self.owner_id = owner_id
@@ -150,7 +151,7 @@ class AsyncClusterLock:
     """Async Redis-based distributed lock for preventing duplicate execution."""
 
     def __init__(
-        self, redis: "AsyncRedis", key: str, owner_id: str, timeout: int = 300
+        self, redis: "AsyncRedisClient", key: str, owner_id: str, timeout: int = 300
     ):
         self.redis = redis
         self.key = key

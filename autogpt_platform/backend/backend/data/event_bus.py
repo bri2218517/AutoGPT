@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from typing import Any, AsyncGenerator, Generator, Generic, Optional, TypeVar
 
 from pydantic import BaseModel
+from redis import Redis
+from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.client import PubSub as AsyncPubSub
 from redis.client import PubSub
 
@@ -80,12 +82,8 @@ class BaseRedisEventBus(Generic[M], ABC):
         except Exception as e:
             logger.error(f"Failed to parse event result from Redis {msg} {e}")
 
-    def _get_pubsub_channel(
-        self, connection: redis.Redis | redis.AsyncRedis, channel_key: str
-    ) -> tuple[PubSub | AsyncPubSub, str]:
-        full_channel_name = f"{self.event_bus_name}/{channel_key}"
-        pubsub = connection.pubsub()
-        return pubsub, full_channel_name
+    def _build_channel_name(self, channel_key: str) -> str:
+        return f"{self.event_bus_name}/{channel_key}"
 
 
 class _EventPayloadWrapper(BaseModel, Generic[M]):
@@ -99,8 +97,15 @@ class _EventPayloadWrapper(BaseModel, Generic[M]):
 
 class RedisEventBus(BaseRedisEventBus[M], ABC):
     @property
-    def connection(self) -> redis.Redis:
-        return redis.get_redis()
+    def pubsub_connection(self) -> Redis:
+        # Pub/sub uses a dedicated standalone client because
+        # (a) the subscribed connection blocks on ``listen()`` and cannot
+        #     be interleaved with regular command traffic, and
+        # (b) redis-py's ``RedisCluster`` sync ``.pubsub()`` returns a
+        #     ``ClusterPubSub`` that connects to exactly one node, which is
+        #     what we want too — classic pub/sub is broadcast across the
+        #     whole cluster so one node's subscription sees everything.
+        return redis.get_redis_pubsub()
 
     def publish_event(self, event: M, channel_key: str):
         """
@@ -109,7 +114,7 @@ class RedisEventBus(BaseRedisEventBus[M], ABC):
         """
         try:
             message, full_channel_name = self._serialize_message(event, channel_key)
-            self.connection.publish(full_channel_name, message)
+            self.pubsub_connection.publish(full_channel_name, message)
         except Exception:
             logger.exception(
                 f"Failed to publish event to Redis channel {channel_key}. "
@@ -117,10 +122,8 @@ class RedisEventBus(BaseRedisEventBus[M], ABC):
             )
 
     def listen_events(self, channel_key: str) -> Generator[M, None, None]:
-        pubsub, full_channel_name = self._get_pubsub_channel(
-            self.connection, channel_key
-        )
-        assert isinstance(pubsub, PubSub)
+        full_channel_name = self._build_channel_name(channel_key)
+        pubsub: PubSub = self.pubsub_connection.pubsub()
 
         if "*" in channel_key:
             pubsub.psubscribe(full_channel_name)
@@ -137,8 +140,11 @@ class AsyncRedisEventBus(BaseRedisEventBus[M], ABC):
         self._pubsub: AsyncPubSub | None = None
 
     @property
-    async def connection(self) -> redis.AsyncRedis:
-        return await redis.get_redis_async()
+    async def pubsub_connection(self) -> AsyncRedis:
+        # See RedisEventBus.pubsub_connection — async RedisCluster has no
+        # ``pubsub()`` method at all, so the dedicated standalone client is
+        # mandatory in cluster mode and harmless in standalone mode.
+        return await redis.get_redis_pubsub_async()
 
     async def close(self) -> None:
         """Close the PubSub connection if it exists."""
@@ -157,7 +163,7 @@ class AsyncRedisEventBus(BaseRedisEventBus[M], ABC):
         """
         try:
             message, full_channel_name = self._serialize_message(event, channel_key)
-            connection = await self.connection
+            connection = await self.pubsub_connection
             await connection.publish(full_channel_name, message)
         except Exception:
             logger.exception(
@@ -166,10 +172,9 @@ class AsyncRedisEventBus(BaseRedisEventBus[M], ABC):
             )
 
     async def listen_events(self, channel_key: str) -> AsyncGenerator[M, None]:
-        pubsub, full_channel_name = self._get_pubsub_channel(
-            await self.connection, channel_key
-        )
-        assert isinstance(pubsub, AsyncPubSub)
+        connection = await self.pubsub_connection
+        full_channel_name = self._build_channel_name(channel_key)
+        pubsub: AsyncPubSub = connection.pubsub()
         self._pubsub = pubsub
 
         if "*" in channel_key:

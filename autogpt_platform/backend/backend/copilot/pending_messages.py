@@ -28,7 +28,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, Field, ValidationError
 
-from backend.data.redis_client import get_redis_async
+from backend.data.redis_client import get_redis_async, get_redis_pubsub_async
 from backend.data.redis_helpers import capped_rpush
 
 logger = logging.getLogger(__name__)
@@ -148,8 +148,11 @@ async def push_pending_message(
 
     # Fire-and-forget notify.  Subscribers use this as a wake-up hint;
     # the buffer itself is authoritative so a lost notify is harmless.
+    # Use the pub/sub-dedicated client because the async RedisCluster
+    # client does not expose ``publish()``.
     try:
-        await redis.publish(_notify_channel(session_id), _NOTIFY_PAYLOAD)
+        pubsub_client = await get_redis_pubsub_async()
+        await pubsub_client.publish(_notify_channel(session_id), _NOTIFY_PAYLOAD)
     except Exception as e:  # pragma: no cover
         logger.warning("pending_messages: publish failed for %s: %s", session_id, e)
 

@@ -47,7 +47,7 @@ from pydantic import BaseModel, Field
 from redis.exceptions import RedisError
 
 from backend.data.db_accessors import user_db
-from backend.data.redis_client import get_redis_async
+from backend.data.redis_client import CLUSTER_ENABLED, get_redis_async
 from backend.data.user import get_user_by_id
 from backend.util.cache import cached
 
@@ -316,25 +316,32 @@ async def reset_daily_usage(user_id: str, daily_cost_limit: int = 0) -> bool:
     try:
         redis = await get_redis_async()
 
-        # Use a MULTI/EXEC transaction so that DELETE (daily) and DECRBY
-        # (weekly) either both execute or neither does.  This prevents the
-        # scenario where the daily counter is cleared but the weekly
-        # counter is not decremented — which would let the caller refund
-        # credits even though the daily limit was already reset.
         d_key = _daily_key(user_id, now=now)
         w_key = _weekly_key(user_id, now=now) if daily_cost_limit > 0 else None
 
-        pipe = redis.pipeline(transaction=True)
-        pipe.delete(d_key)
-        if w_key is not None:
-            pipe.decrby(w_key, daily_cost_limit)
-        results = await pipe.execute()
-
-        # Clamp negative weekly counter to 0 (best-effort; not critical).
-        if w_key is not None:
-            new_val = results[1]  # DECRBY result
-            if new_val < 0:
-                await redis.set(w_key, 0, keepttl=True)
+        if CLUSTER_ENABLED:
+            # Cross-slot: run the two writes sequentially. We lose the "both
+            # or neither" guarantee, but the failure mode (daily deleted,
+            # weekly not decremented) is a best-effort refund budget — the
+            # read-side rate limit check already tolerates drift here.
+            await redis.delete(d_key)
+            if w_key is not None:
+                new_val = await redis.decrby(w_key, daily_cost_limit)
+                if new_val < 0:
+                    await redis.set(w_key, 0, keepttl=True)
+        else:
+            # MULTI/EXEC so DELETE and DECRBY either both execute or neither
+            # does — prevents the caller refunding credits after the daily
+            # counter was cleared without the weekly offset.
+            pipe = redis.pipeline(transaction=True)
+            pipe.delete(d_key)
+            if w_key is not None:
+                pipe.decrby(w_key, daily_cost_limit)
+            results = await pipe.execute()
+            if w_key is not None:
+                new_val = results[1]
+                if new_val < 0:
+                    await redis.set(w_key, 0, keepttl=True)
 
         logger.info("Reset daily usage for user %s", user_id[:8])
         return True
@@ -424,35 +431,44 @@ async def record_cost_usage(
     logger.info("Recording copilot spend: %d microdollars", cost_microdollars)
 
     now = datetime.now(UTC)
+    d_key = _daily_key(user_id, now=now)
+    w_key = _weekly_key(user_id, now=now)
+    daily_ttl = max(int((_daily_reset_time(now=now) - now).total_seconds()), 1)
+    weekly_ttl = max(int((_weekly_reset_time(now=now) - now).total_seconds()), 1)
     try:
         redis = await get_redis_async()
-        # Use MULTI/EXEC so each INCRBY/EXPIRE pair is atomic — guarantees
-        # the TTL is set even if the connection drops mid-pipeline, so
-        # counters can never survive past their date-based rotation window.
+        # MULTI/EXEC pipelines in Redis Cluster require every key to land on
+        # the same slot.  Daily and weekly keys have different per-day/per-week
+        # suffixes and can hash to different slots, so in cluster mode we run
+        # two single-key transactions instead of one cross-slot one.  The
+        # INCRBY+EXPIRE atomicity per counter is what we actually need — we
+        # just give up cross-counter atomicity, which was never meaningful
+        # (the counters are independent budgets).
+        if CLUSTER_ENABLED:
+            await _incr_counter_atomic(redis, d_key, cost_microdollars, daily_ttl)
+            await _incr_counter_atomic(redis, w_key, cost_microdollars, weekly_ttl)
+            return
+
+        # Standalone path: a single MULTI/EXEC keeps the prior semantics.
         pipe = redis.pipeline(transaction=True)
-
-        # Daily counter (expires at next midnight UTC)
-        d_key = _daily_key(user_id, now=now)
         pipe.incrby(d_key, cost_microdollars)
-        seconds_until_daily_reset = int(
-            (_daily_reset_time(now=now) - now).total_seconds()
-        )
-        pipe.expire(d_key, max(seconds_until_daily_reset, 1))
-
-        # Weekly counter (expires end of week)
-        w_key = _weekly_key(user_id, now=now)
+        pipe.expire(d_key, daily_ttl)
         pipe.incrby(w_key, cost_microdollars)
-        seconds_until_weekly_reset = int(
-            (_weekly_reset_time(now=now) - now).total_seconds()
-        )
-        pipe.expire(w_key, max(seconds_until_weekly_reset, 1))
-
+        pipe.expire(w_key, weekly_ttl)
         await pipe.execute()
     except (RedisError, ConnectionError, OSError):
         logger.warning(
             "Redis unavailable for recording cost usage (microdollars=%d)",
             cost_microdollars,
         )
+
+
+async def _incr_counter_atomic(redis, key: str, delta: int, ttl_seconds: int) -> None:
+    """INCRBY + EXPIRE on a single key inside a MULTI/EXEC transaction."""
+    pipe = redis.pipeline(transaction=True)
+    pipe.incrby(key, delta)
+    pipe.expire(key, ttl_seconds)
+    await pipe.execute()
 
 
 class _UserNotFoundError(Exception):

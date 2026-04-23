@@ -32,9 +32,9 @@ async def test_publish_event_handles_connection_failure_gracefully():
     bus = TestNotificationBus()
     event = TestEvent(message="test message")
 
-    # Mock get_redis_async to raise connection error
+    # Mock get_redis_pubsub_async to raise connection error
     with patch(
-        "backend.data.event_bus.redis.get_redis_async",
+        "backend.data.event_bus.redis.get_redis_pubsub_async",
         side_effect=ConnectionError("Authentication required."),
     ):
         # Should not raise exception
@@ -51,6 +51,8 @@ async def test_publish_event_works_with_redis_available():
     mock_redis = AsyncMock()
     mock_redis.publish = AsyncMock()
 
-    with patch("backend.data.event_bus.redis.get_redis_async", return_value=mock_redis):
+    with patch(
+        "backend.data.event_bus.redis.get_redis_pubsub_async", return_value=mock_redis
+    ):
         await bus.publish_event(event, "test_channel")
         mock_redis.publish.assert_called_once()
