@@ -119,10 +119,10 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      redis:
-        image: redis:latest
-        ports:
-          - 6379:6379
+      # Redis is provisioned in cluster mode below via a setup step — GHA
+      # services can't override the image CMD, so we can't add
+      # `--cluster-enabled yes` from here. A 1-shard cluster speaks the cluster
+      # protocol that the backend's `RedisCluster` client requires.
       rabbitmq:
         image: rabbitmq:4.1.4
         ports:
@@ -165,6 +165,39 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Start Redis in cluster mode (1 shard)
+        run: |
+          # Start redis with cluster protocol enabled. The backend's
+          # `RedisCluster` client calls `CLUSTER SLOTS` on connect and fails
+          # against a standalone Redis, so a 1-shard cluster is the minimum
+          # that matches prod behavior.
+          docker run -d --name redis-test -p 6379:6379 redis:latest \
+            redis-server --cluster-enabled yes \
+                         --cluster-config-file /tmp/nodes.conf \
+                         --cluster-node-timeout 5000 \
+                         --cluster-require-full-coverage no
+          # Wait for redis to accept connections
+          for i in $(seq 1 30); do
+            docker exec redis-test redis-cli ping 2>/dev/null | grep -q PONG && break
+            sleep 1
+          done
+          # Assign all 16384 slots to the single master (redis-cli --cluster
+          # create refuses <3 masters, so we call CLUSTER ADDSLOTSRANGE
+          # directly, same pattern as the helm chart's init Job).
+          docker exec redis-test redis-cli CLUSTER ADDSLOTSRANGE 0 16383
+          # Confirm cluster is healthy
+          for i in $(seq 1 15); do
+            state=$(docker exec redis-test redis-cli cluster info | awk -F: '/^cluster_state:/ {print $2}' | tr -d '[:cntrl:]')
+            if [ "$state" = "ok" ]; then
+              echo "Redis cluster ready (state=ok)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Redis cluster failed to reach ok state" >&2
+          docker exec redis-test redis-cli cluster info >&2
+          exit 1
 
       - name: Setup Supabase
         uses: supabase/setup-cli@v1
