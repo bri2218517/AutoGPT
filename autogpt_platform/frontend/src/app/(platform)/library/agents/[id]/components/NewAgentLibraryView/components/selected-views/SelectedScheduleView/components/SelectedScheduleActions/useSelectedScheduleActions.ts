@@ -14,6 +14,7 @@ import { okData } from "@/app/api/helpers";
 import { useToast } from "@/components/molecules/Toast/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { getLibraryAgentBuilderHref } from "../../../../../helpers";
 
 interface UseSelectedScheduleActionsProps {
   agent: LibraryAgent;
@@ -112,7 +113,7 @@ export function useSelectedScheduleActions({
     }
   }
 
-  const openInBuilderHref = `/build?flowID=${agent.graph_id}&flowVersion=${agent.graph_version}`;
+  const openInBuilderHref = getLibraryAgentBuilderHref(agent.graph_id);
 
   return {
     openInBuilderHref,
