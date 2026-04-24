@@ -63,6 +63,27 @@ def connect() -> RedisClient:
 @conn_retry("Redis", "Releasing connection")
 def disconnect():
     get_redis().close()
+    get_redis.cache_clear()
+    # Only close pub/sub if it was actually constructed — avoid opening a
+    # fresh connection at shutdown just to tear it down.
+    pubsub = _get_cached_pubsub()
+    if pubsub is not None:
+        try:
+            pubsub.close()
+        except Exception:
+            logger.warning("Failed to close pub/sub Redis connection", exc_info=True)
+    get_redis_pubsub.cache_clear()
+
+
+def _get_cached_pubsub() -> Redis | None:
+    """Return the cached pub/sub client if one exists, else ``None``.
+
+    ``cache_info()["size"]`` tells us whether the memo has been populated
+    without triggering a new call.
+    """
+    if get_redis_pubsub.cache_info()["size"] == 0:
+        return None
+    return get_redis_pubsub()
 
 
 @cached(ttl_seconds=3600)
