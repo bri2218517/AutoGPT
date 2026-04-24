@@ -1608,6 +1608,15 @@ class TestWorkspaceStorageLimits:
             )
             assert TIER_WORKSPACE_STORAGE_MB[tier] > 0
 
+    def test_every_subscription_tier_has_rate_limit_multiplier(self):
+        """Adding a new SubscriptionTier without a rate limit multiplier should fail."""
+        for tier in SubscriptionTier:
+            assert tier in _DEFAULT_TIER_MULTIPLIERS, (
+                f"SubscriptionTier.{tier.name} has no entry in "
+                f"_DEFAULT_TIER_MULTIPLIERS — add one"
+            )
+            assert _DEFAULT_TIER_MULTIPLIERS[tier] > 0
+
     @pytest.mark.parametrize(
         "tier,expected_mb",
         [
