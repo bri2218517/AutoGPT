@@ -27,7 +27,7 @@ from backend.data.workspace import (
     soft_delete_workspace_file,
 )
 from backend.util.settings import Config
-from backend.util.workspace import WorkspaceManager
+from backend.util.workspace import WorkspaceManager, _format_bytes
 from backend.util.workspace_storage import get_workspace_storage
 
 
@@ -282,8 +282,6 @@ async def upload_file(
                 f"Failed to soft-delete over-quota file {workspace_file.id} "
                 f"in workspace {workspace.id}: {e}"
             )
-        from backend.util.workspace import _format_bytes
-
         raise fastapi.HTTPException(
             status_code=413,
             detail=(

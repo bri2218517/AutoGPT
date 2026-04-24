@@ -1599,6 +1599,15 @@ class TestResetUserUsage:
 class TestWorkspaceStorageLimits:
     """Tests for tier-based workspace storage limits."""
 
+    def test_every_subscription_tier_has_storage_limit(self):
+        """Adding a new SubscriptionTier without a storage limit should fail."""
+        for tier in SubscriptionTier:
+            assert tier in TIER_WORKSPACE_STORAGE_MB, (
+                f"SubscriptionTier.{tier.name} has no entry in "
+                f"TIER_WORKSPACE_STORAGE_MB — add one"
+            )
+            assert TIER_WORKSPACE_STORAGE_MB[tier] > 0
+
     @pytest.mark.parametrize(
         "tier,expected_mb",
         [
