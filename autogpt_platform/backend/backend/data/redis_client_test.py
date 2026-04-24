@@ -36,6 +36,7 @@ def test_connect_builds_redis_cluster() -> None:
     assert kwargs["socket_connect_timeout"] == redis_client.SOCKET_CONNECT_TIMEOUT
     assert kwargs["socket_keepalive"] is True
     assert kwargs["health_check_interval"] == redis_client.HEALTH_CHECK_INTERVAL
+    assert kwargs["address_remap"] is redis_client._address_remap
     startup = kwargs["startup_nodes"]
     assert len(startup) == 1
     # ClusterNode resolves "localhost" → "127.0.0.1" internally; both are
@@ -43,6 +44,16 @@ def test_connect_builds_redis_cluster() -> None:
     assert startup[0].host in {redis_client.HOST, "127.0.0.1"}
     assert startup[0].port == redis_client.PORT
     client.ping.assert_called_once()
+
+
+def test_address_remap_pins_host_and_preserves_port() -> None:
+    """CLUSTER SLOTS returns the announced hostname of each shard; remap
+    rewrites that to the configured seed so a single deployment works from
+    both the compose network (HOST=redis) and the laptop (HOST=localhost)."""
+    assert redis_client._address_remap(("any-other-host", 6380)) == (
+        redis_client.HOST,
+        6380,
+    )
 
 
 @pytest.mark.asyncio
@@ -55,10 +66,17 @@ async def test_connect_async_builds_async_redis_cluster() -> None:
 
     mock_cluster.assert_called_once()
     kwargs = mock_cluster.call_args.kwargs
-    assert kwargs["host"] == redis_client.HOST
-    assert kwargs["port"] == redis_client.PORT
     assert kwargs["password"] == redis_client.PASSWORD
     assert kwargs["decode_responses"] is True
+    assert kwargs["socket_timeout"] == redis_client.SOCKET_TIMEOUT
+    assert kwargs["socket_connect_timeout"] == redis_client.SOCKET_CONNECT_TIMEOUT
+    assert kwargs["socket_keepalive"] is True
+    assert kwargs["health_check_interval"] == redis_client.HEALTH_CHECK_INTERVAL
+    assert kwargs["address_remap"] is redis_client._address_remap
+    startup = kwargs["startup_nodes"]
+    assert len(startup) == 1
+    assert startup[0].host in {redis_client.HOST, "127.0.0.1"}
+    assert startup[0].port == redis_client.PORT
     client.ping.assert_awaited_once()
 
 
@@ -222,3 +240,19 @@ async def test_disconnect_async_no_cached_client_is_noop() -> None:
     with patch.object(redis_client, "connect_async", autospec=True) as mock_connect:
         await redis_client.disconnect_async()
     mock_connect.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_async_closes_pubsub_without_cluster_client() -> None:
+    """A pub/sub-only caller must still have its FD released on shutdown."""
+    with patch.object(
+        redis_client, "connect_pubsub_async", autospec=True
+    ) as mock_pubsub:
+        fake_pubsub = MagicMock(spec=AsyncRedis)
+        fake_pubsub.close = AsyncMock()
+        mock_pubsub.return_value = fake_pubsub
+        await redis_client.get_redis_pubsub_async()
+        await redis_client.disconnect_async()
+
+    fake_pubsub.close.assert_awaited_once()
+    assert redis_client._async_pubsub_clients == {}

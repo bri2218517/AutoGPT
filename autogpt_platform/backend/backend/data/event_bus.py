@@ -134,8 +134,11 @@ class AsyncRedisEventBus(BaseRedisEventBus[M], ABC):
     def __init__(self):
         self._pubsub: AsyncPubSub | None = None
 
-    @property
-    async def pubsub_connection(self) -> AsyncRedis:
+    async def get_pubsub_connection(self) -> AsyncRedis:
+        # Plain async method (not an ``@property async``): attribute access
+        # on an async property returns a coroutine, which silently works if
+        # the caller awaits it and silently misbehaves if they forget. An
+        # explicit method makes the async-ness visible at the call site.
         # Async RedisCluster has no ``pubsub()`` method, so the dedicated
         # standalone client is mandatory for the subscribe/publish path.
         return await redis.get_redis_pubsub_async()
@@ -157,7 +160,7 @@ class AsyncRedisEventBus(BaseRedisEventBus[M], ABC):
         """
         try:
             message, full_channel_name = self._serialize_message(event, channel_key)
-            connection = await self.pubsub_connection
+            connection = await self.get_pubsub_connection()
             await connection.publish(full_channel_name, message)
         except Exception:
             logger.exception(
@@ -166,7 +169,7 @@ class AsyncRedisEventBus(BaseRedisEventBus[M], ABC):
             )
 
     async def listen_events(self, channel_key: str) -> AsyncGenerator[M, None]:
-        connection = await self.pubsub_connection
+        connection = await self.get_pubsub_connection()
         full_channel_name = self._build_channel_name(channel_key)
         pubsub: AsyncPubSub = connection.pubsub()
         self._pubsub = pubsub

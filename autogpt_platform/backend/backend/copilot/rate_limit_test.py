@@ -933,7 +933,14 @@ class TestResetDailyUsage:
 
         # The Lua script handles both decrement and floor-to-zero in a single
         # call — no separate SET is expected for the clamp branch any more.
+        # Pin the call shape so a regression that targets the wrong key or
+        # delta (e.g. the daily key, or a sign-flip) fails loudly.
         mock_redis.eval.assert_called_once()
+        eval_args = mock_redis.eval.call_args.args
+        # eval(script, numkeys, KEYS[1], ARGV[1])
+        assert eval_args[1] == 1
+        assert eval_args[2] == _weekly_key(_USER)
+        assert int(eval_args[3]) == 10000
         mock_redis.set.assert_not_called()
 
     @pytest.mark.asyncio

@@ -47,7 +47,7 @@ from pydantic import BaseModel, Field
 from redis.exceptions import RedisError
 
 from backend.data.db_accessors import user_db
-from backend.data.redis_client import get_redis_async
+from backend.data.redis_client import AsyncRedisClient, get_redis_async
 from backend.data.user import get_user_by_id
 from backend.util.cache import cached
 
@@ -437,7 +437,9 @@ async def record_cost_usage(
         )
 
 
-async def _incr_counter_atomic(redis, key: str, delta: int, ttl_seconds: int) -> None:
+async def _incr_counter_atomic(
+    redis: AsyncRedisClient, key: str, delta: int, ttl_seconds: int
+) -> None:
     """INCRBY + EXPIRE on a single key inside a MULTI/EXEC transaction."""
     pipe = redis.pipeline(transaction=True)
     pipe.incrby(key, delta)
@@ -458,7 +460,15 @@ return value
 """
 
 
-async def _decr_counter_floor_zero(redis, key: str, delta: int) -> None:
+async def _decr_counter_floor_zero(
+    redis: AsyncRedisClient, key: str, delta: int
+) -> None:
+    """Atomically DECRBY ``delta`` on ``key`` and DEL on underflow.
+
+    DEL on underflow avoids leaving a zero-valued key without a TTL, so the
+    next INCRBY in ``record_cost_usage`` re-seeds both the value and the
+    expiry in one shot.
+    """
     await redis.eval(_DECR_FLOOR_ZERO_SCRIPT, 1, key, delta)
 
 

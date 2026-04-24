@@ -45,6 +45,22 @@ RedisClient = RedisCluster
 AsyncRedisClient = AsyncRedisCluster
 
 
+def _address_remap(addr: tuple[str, int]) -> tuple[str, int]:
+    """Pin every cluster node to the configured seed host.
+
+    The local-dev cluster runs three redis-server processes in one container
+    on ports 6379/6380/6381 and announces its own container hostname. That
+    hostname is reachable via Docker DNS inside the compose network, but a
+    backend running natively on the host cannot resolve it. Remapping the
+    returned host to ``HOST`` lets the same deployment work from both the
+    compose network (HOST=redis) and the host (HOST=localhost) without any
+    ``/etc/hosts`` hackery. In prod the seed DNS name already routes to
+    every shard, so this is a no-op there too.
+    """
+    _, port = addr
+    return HOST, port
+
+
 @conn_retry("Redis", "Acquiring connection")
 def connect() -> RedisClient:
     c = RedisCluster(
@@ -55,6 +71,7 @@ def connect() -> RedisClient:
         socket_connect_timeout=SOCKET_CONNECT_TIMEOUT,
         socket_keepalive=True,
         health_check_interval=HEALTH_CHECK_INTERVAL,
+        address_remap=_address_remap,
     )
     c.ping()
     return c
@@ -94,14 +111,14 @@ def get_redis() -> RedisClient:
 @conn_retry("AsyncRedis", "Acquiring connection")
 async def connect_async() -> AsyncRedisClient:
     c = AsyncRedisCluster(
-        host=HOST,
-        port=PORT,
+        startup_nodes=[ClusterNode(HOST, PORT)],
         password=PASSWORD,
         decode_responses=True,
         socket_timeout=SOCKET_TIMEOUT,
         socket_connect_timeout=SOCKET_CONNECT_TIMEOUT,
         socket_keepalive=True,
         health_check_interval=HEALTH_CHECK_INTERVAL,
+        address_remap=_address_remap,
     )
     await c.ping()
     return c
@@ -123,9 +140,11 @@ _async_pubsub_clients: dict[int, AsyncRedis] = {}
 async def disconnect_async():
     loop = asyncio.get_running_loop()
     c = _async_clients.pop(id(loop), None)
-    if c is None:
-        return
-    await c.close()
+    if c is not None:
+        await c.close()
+    # Close the pub/sub client independently — a caller may have acquired
+    # ``get_redis_pubsub_async`` without ever calling ``get_redis_async``,
+    # and an early return on a missing cluster client would leak the FD.
     pubsub = _async_pubsub_clients.pop(id(loop), None)
     if pubsub is not None:
         await pubsub.close()
