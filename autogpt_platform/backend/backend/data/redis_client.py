@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 from redis import Redis
 from redis.asyncio import Redis as AsyncRedis
+from redis.asyncio.cluster import ClusterNode as AsyncClusterNode
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
 from redis.cluster import ClusterNode, RedisCluster
 
@@ -111,7 +112,7 @@ def get_redis() -> RedisClient:
 @conn_retry("AsyncRedis", "Acquiring connection")
 async def connect_async() -> AsyncRedisClient:
     c = AsyncRedisCluster(
-        startup_nodes=[ClusterNode(HOST, PORT)],
+        startup_nodes=[AsyncClusterNode(HOST, PORT)],
         password=PASSWORD,
         decode_responses=True,
         socket_timeout=SOCKET_TIMEOUT,
