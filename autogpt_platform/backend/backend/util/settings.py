@@ -329,14 +329,22 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
         description="The vhost for the RabbitMQ server",
     )
 
+    # Mirror the RabbitMQ alias pattern so the `backend.util.cache` Redis
+    # client picks up the sharded cluster (`REDIS_CLUSTER_HOST`) instead of
+    # the pre-migration single-node master (`REDIS_HOST`). Without this,
+    # `cache.py` builds a `ClusterNode` pointing at the old standalone Redis
+    # and every `RedisCluster` init fails with "Cluster mode is not enabled
+    # on this node".
     redis_host: str = Field(
         default="localhost",
         description="The host for the Redis server",
+        validation_alias=AliasChoices("REDIS_CLUSTER_HOST", "REDIS_HOST"),
     )
 
     redis_port: int = Field(
         default=6379,
         description="The port for the Redis server",
+        validation_alias=AliasChoices("REDIS_CLUSTER_PORT", "REDIS_PORT"),
     )
 
     redis_password: str = Field(
