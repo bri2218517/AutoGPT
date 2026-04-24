@@ -31,6 +31,7 @@ def _format_bytes(n: int) -> str:
         return f"{n / (1024 * 1024):.0f} MB"
     return f"{n / (1024 * 1024 * 1024):.1f} GB"
 
+
 logger = logging.getLogger(__name__)
 
 

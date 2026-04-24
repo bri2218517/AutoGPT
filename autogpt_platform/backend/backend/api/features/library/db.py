@@ -743,6 +743,7 @@ async def update_library_agent_version_and_settings(
         graph=agent_graph,
         hitl_safe_mode=library.settings.human_in_the_loop_safe_mode,
         sensitive_action_safe_mode=library.settings.sensitive_action_safe_mode,
+        builder_chat_session_id=library.settings.builder_chat_session_id,
     )
     if updated_settings != library.settings:
         library = await update_library_agent(
@@ -1803,7 +1804,7 @@ async def create_preset_from_graph_execution(
             raise NotFoundError(
                 f"Graph #{graph_execution.graph_id} not found or accessible"
             )
-        elif len(graph.aggregate_credentials_inputs()) > 0:
+        elif len(graph.regular_credentials_inputs) > 0:
             raise ValueError(
                 f"Graph execution #{graph_exec_id} can't be turned into a preset "
                 "because it was run before this feature existed "
