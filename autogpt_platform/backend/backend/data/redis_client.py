@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 
@@ -7,7 +8,7 @@ from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
 from redis.cluster import ClusterNode, RedisCluster
 
-from backend.util.cache import cached, thread_cached
+from backend.util.cache import cached
 from backend.util.retry import conn_retry
 
 load_dotenv()
@@ -86,9 +87,27 @@ async def disconnect_async():
     await c.close()
 
 
-@thread_cached
+# Cache one AsyncRedisCluster per event loop. `AsyncRedisCluster` binds to the
+# loop it is first awaited on (unlike the sync `RedisCluster` client), so a
+# simple module-level singleton breaks when tests run on multiple loops — the
+# cached client's internal Tasks are attached to a dead loop and every
+# subsequent call raises `RuntimeError: Event loop is closed`. Keying by
+# `id(loop)` keeps the prod hot-path (one loop for the process lifetime) as
+# fast as the old `@thread_cached` singleton while making test harnesses that
+# spin up per-test loops safe.
+_async_clients: dict[int, AsyncRedisCluster] = {}
+
+
 async def get_redis_async() -> AsyncRedisClient:
-    return await connect_async()
+    loop = asyncio.get_running_loop()
+    if loop.is_closed():
+        _async_clients.pop(id(loop), None)
+        raise RuntimeError("cannot obtain AsyncRedis client on a closed loop")
+    client = _async_clients.get(id(loop))
+    if client is None:
+        client = await connect_async()
+        _async_clients[id(loop)] = client
+    return client
 
 
 # Pub/sub uses a plain (Async)Redis connection to the seed node: async
