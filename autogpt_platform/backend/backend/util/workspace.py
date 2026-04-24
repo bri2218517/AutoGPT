@@ -21,15 +21,18 @@ from backend.util.virus_scanner import scan_content_safe
 from backend.util.workspace_storage import compute_file_checksum, get_workspace_storage
 
 
-def _format_bytes(n: int) -> str:
+def format_bytes(n: int) -> str:
     """Format bytes as a human-readable string (e.g. 250 MB, 1.0 GB)."""
-    if n < 1024:
+    KB, MB, GB = 1024, 1024**2, 1024**3
+    if n < KB:
         return f"{n} B"
-    if n < 1024 * 1024:
-        return f"{n / 1024:.0f} KB"
-    if n < 1024 * 1024 * 1024:
-        return f"{n / (1024 * 1024):.0f} MB"
-    return f"{n / (1024 * 1024 * 1024):.1f} GB"
+    if n < MB:
+        kb = round(n / KB)
+        return f"{n / MB:.1f} MB" if kb >= 1024 else f"{kb} KB"
+    if n < GB:
+        mb = round(n / MB)
+        return f"{n / GB:.1f} GB" if mb >= 1024 else f"{mb} MB"
+    return f"{n / GB:.1f} GB"
 
 
 logger = logging.getLogger(__name__)
@@ -225,8 +228,8 @@ class WorkspaceManager:
         if storage_limit > 0 and projected_usage > storage_limit:
             raise ValueError(
                 f"Storage limit exceeded. "
-                f"You've used {_format_bytes(current_usage)} of your "
-                f"{_format_bytes(storage_limit)} quota. "
+                f"You've used {format_bytes(current_usage)} of your "
+                f"{format_bytes(storage_limit)} quota. "
                 f"Delete some files or upgrade your plan for more storage."
             )
         if storage_limit > 0 and projected_usage / storage_limit >= 0.8:

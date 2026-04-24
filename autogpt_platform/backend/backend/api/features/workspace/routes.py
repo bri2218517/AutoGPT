@@ -27,7 +27,7 @@ from backend.data.workspace import (
     soft_delete_workspace_file,
 )
 from backend.util.settings import Config
-from backend.util.workspace import WorkspaceManager, _format_bytes
+from backend.util.workspace import WorkspaceManager, format_bytes
 from backend.util.workspace_storage import get_workspace_storage
 
 
@@ -286,8 +286,8 @@ async def upload_file(
             status_code=413,
             detail=(
                 f"Storage limit exceeded. "
-                f"You've used {_format_bytes(new_total)} of your "
-                f"{_format_bytes(storage_limit_bytes)} quota. "
+                f"You've used {format_bytes(new_total)} of your "
+                f"{format_bytes(storage_limit_bytes)} quota. "
                 f"Delete some files or upgrade your plan for more storage."
             ),
         )

@@ -166,7 +166,12 @@ export function UsagePanelContent({
 
   if (!daily && !weekly) {
     return (
-      <div className="text-xs text-neutral-500">No usage limits configured</div>
+      <div className="flex flex-col gap-3">
+        <div className="text-xs text-neutral-500">
+          No usage limits configured
+        </div>
+        <WorkspaceStorageSection />
+      </div>
     );
   }
 
