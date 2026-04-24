@@ -72,13 +72,15 @@ services:
       start_period: 5s
 
   # Single-container 3-master Redis Cluster for local dev. Three stock
-  # redis-server processes listen on 6379/6380/6381 inside one container,
+  # redis-server processes listen on 6379/16380/16381 inside one container,
   # and the entrypoint runs `redis-cli --cluster create` once — the minimum
   # that exercises real sharding + MOVED redirects locally. Cluster state
   # persists to /data/nodes-*.conf, so restarts are no-ops.
   # Nodes announce the container hostname ``redis`` so both in-compose
   # (DNS) and host-native (handled by the backend's address_remap) clients
-  # receive a consistent address on CLUSTER SLOTS.
+  # receive a consistent address on CLUSTER SLOTS. The two extra shards
+  # use 16380/16381 (not 6380/6381) so they don't collide with FalkorDB
+  # on host port 6380.
   redis:
     image: redis:latest
     hostname: redis
@@ -87,8 +89,8 @@ services:
       - -c
       - |
         set -e
-        mkdir -p /data/6379 /data/6380 /data/6381
-        for p in 6379 6380 6381; do
+        mkdir -p /data/6379 /data/16380 /data/16381
+        for p in 6379 16380 16381; do
           redis-server \
             --port $$p \
             --dir /data/$$p \
@@ -104,7 +106,7 @@ services:
             --logfile "" \
             --pidfile /var/run/redis-$$p.pid
         done
-        for p in 6379 6380 6381; do
+        for p in 6379 16380 16381; do
           until redis-cli -p $$p ping >/dev/null 2>&1; do sleep 0.2; done
         done
         # Skip bootstrap if the node already knows its peers — a restart
@@ -113,7 +115,7 @@ services:
         known=$$(redis-cli -p 6379 cluster info | awk -F: '/^cluster_known_nodes/ {print $$2+0}' | tr -d '[:cntrl:]')
         if [ "$${known:-0}" -lt 3 ]; then
           redis-cli --cluster create \
-            127.0.0.1:6379 127.0.0.1:6380 127.0.0.1:6381 \
+            127.0.0.1:6379 127.0.0.1:16380 127.0.0.1:16381 \
             --cluster-replicas 0 --cluster-yes
         fi
         # Tail as PID 1 so the container stays up while the daemonized
@@ -121,8 +123,8 @@ services:
         exec tail -f /dev/null
     ports:
       - "6379:6379"
-      - "6380:6380"
-      - "6381:6381"
+      - "16380:16380"
+      - "16381:16381"
     volumes:
       - redis-data:/data
     networks:
