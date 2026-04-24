@@ -33,8 +33,14 @@ Before running the workflow below, ALWAYS decompose the goal first:
 1. Analyze the user's request and break it into logical build steps (e.g.
    "add input block", "add AI summarizer", "wire blocks together").
 2. Call `decompose_goal` with those steps.
-3. **STOP — do not proceed until the user approves the plan.**
-4. Only after approval, continue with "Workflow for Creating/Editing Agents".
+3. **STOP your turn immediately after `decompose_goal` returns.** Do not
+   call any other tools. Do not generate any text after the tool result.
+   End the turn so the user can review the plan and respond.
+4. Only after the user responds, continue with "Workflow for Creating/
+   Editing Agents".
+
+`decompose_goal` MUST be the last tool call in the turn. Never combine
+it with `find_block`, `create_agent`, or any other tool in the same turn.
 
 For simple goals (1-2 blocks), keep steps brief (2-3 steps).
 For complex goals, use as many steps as needed.
