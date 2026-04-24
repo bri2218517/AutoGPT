@@ -1407,8 +1407,9 @@ class TestResetUserUsage:
             "backend.copilot.rate_limit.get_redis_async", return_value=mock_redis
         ):
             await reset_user_usage("user-1", reset_weekly=True)
-        args = mock_redis.delete.call_args[0]
-        assert len(args) == 2  # both daily and weekly keys
+        # Daily and weekly keys hash to different cluster slots, so they are
+        # deleted via two separate DELETE calls (not a single multi-key one).
+        assert mock_redis.delete.call_count == 2
 
     @pytest.mark.asyncio
     async def test_raises_on_redis_failure(self):

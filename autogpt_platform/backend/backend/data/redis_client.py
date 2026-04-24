@@ -139,11 +139,15 @@ def get_redis_pubsub() -> Redis:
     return connect_pubsub()
 
 
-@thread_cached
 async def get_redis_pubsub_async() -> AsyncRedis:
     """Async equivalent of :func:`get_redis_pubsub`.
 
-    Separate connection for the same reason as the sync helper, and because
-    the async ``RedisCluster`` client does not expose ``pubsub()`` at all.
+    Not cached: ``AsyncRedis`` clients bind to the event loop they are first
+    awaited on, and pub/sub callers (``event_bus``, ``notification_bus``,
+    ``copilot.pending_messages``) can be invoked from test fixtures that
+    teardown the loop — a cached connection bound to a dead loop raises
+    ``RuntimeError: Event loop is closed`` on next publish. A fresh client
+    per call is the simplest loop-safe pattern; publish cost dominates the
+    handshake cost for our traffic.
     """
     return await connect_pubsub_async()

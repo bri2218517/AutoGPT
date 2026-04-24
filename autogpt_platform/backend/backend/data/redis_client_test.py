@@ -19,6 +19,7 @@ from backend.util.cache import clear_thread_cache
 def _reset_module_caches() -> None:
     """Flush cached singletons between tests so each test sees a fresh connect."""
     redis_client.get_redis.cache_clear()
+    redis_client.get_redis_pubsub.cache_clear()
     clear_thread_cache(redis_client.get_redis_async)
 
 
@@ -123,15 +124,20 @@ async def test_get_redis_async_caches_connect() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_redis_pubsub_async_caches_connect() -> None:
+async def test_get_redis_pubsub_async_is_uncached() -> None:
+    """Each call to the async pub/sub helper must build a fresh client.
+
+    Caching it bound the ``AsyncRedis`` to the first event loop that awaited
+    it, which broke tests that teardown their loop (cached client then raises
+    ``Event loop is closed`` on the next publish).
+    """
     with patch.object(redis_client, "connect_pubsub_async", autospec=True) as m:
         fake = MagicMock(spec=AsyncRedis)
         m.return_value = fake
-        a = await redis_client.get_redis_pubsub_async()
-        b = await redis_client.get_redis_pubsub_async()
+        await redis_client.get_redis_pubsub_async()
+        await redis_client.get_redis_pubsub_async()
 
-    assert a is b
-    m.assert_called_once()
+    assert m.call_count == 2
 
 
 def test_disconnect_closes_cached_client() -> None:
