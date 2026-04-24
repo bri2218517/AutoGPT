@@ -4,7 +4,14 @@ import re
 from enum import Enum
 from typing import Any, Dict, Generic, List, Set, Tuple, Type, TypeVar
 
-from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+    PrivateAttr,
+    ValidationInfo,
+    field_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     JsonConfigSettingsSource,
@@ -302,14 +309,19 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
         description="The pool size for the scheduler database connection pool",
     )
 
+    # `RABBITMQ_CLUSTER_HOST` points at the new 3-node cluster; `RABBITMQ_HOST`
+    # is the pre-migration single-node service. Prefer the cluster var so the
+    # new image can co-exist with pods still on the old image during rollout.
     rabbitmq_host: str = Field(
         default="localhost",
         description="The host for the RabbitMQ server",
+        validation_alias=AliasChoices("RABBITMQ_CLUSTER_HOST", "RABBITMQ_HOST"),
     )
 
     rabbitmq_port: int = Field(
         default=5672,
         description="The port for the RabbitMQ server",
+        validation_alias=AliasChoices("RABBITMQ_CLUSTER_PORT", "RABBITMQ_PORT"),
     )
 
     rabbitmq_vhost: str = Field(

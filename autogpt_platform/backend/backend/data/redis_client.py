@@ -13,8 +13,13 @@ from backend.util.retry import conn_retry
 
 load_dotenv()
 
-HOST = os.getenv("REDIS_HOST", "localhost")
-PORT = int(os.getenv("REDIS_PORT", "6379"))
+# Prefer REDIS_CLUSTER_HOST (the new sharded cluster) over REDIS_HOST so the
+# cluster-only image can land in an environment where both services still
+# exist. Old-image pods don't read the cluster vars and keep using the old
+# standalone Redis via REDIS_HOST. Once the rollout is stable, the cleanup PR
+# removes both the old env vars and this fallback.
+HOST = os.getenv("REDIS_CLUSTER_HOST") or os.getenv("REDIS_HOST", "localhost")
+PORT = int(os.getenv("REDIS_CLUSTER_PORT") or os.getenv("REDIS_PORT", "6379"))
 PASSWORD = os.getenv("REDIS_PASSWORD", None)
 
 # Default socket timeouts so a wedged Redis endpoint can't hang callers
