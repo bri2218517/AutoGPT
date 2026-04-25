@@ -25,6 +25,7 @@ from backend.copilot.response_model import StreamToolOutputAvailable
 from .service import (
     _flush_orphan_tool_uses_to_session,
     _restore_partial_with_error_marker,
+    _rollback_attempt_capturing_partial,
 )
 
 
@@ -161,6 +162,99 @@ class TestFlushOrphanToolUses:
         state.adapter = adapter
         _flush_orphan_tool_uses_to_session(session, state)
         adapter._flush_unresolved_tool_calls.assert_not_called()
+
+
+class TestRollbackCapturingPartial:
+    """Direct tests of `_rollback_attempt_capturing_partial`.
+
+    The retry loop relies on this helper not to leak error markers that
+    `_run_stream_attempt` already appended to `session.messages` — otherwise
+    the post-loop restore replays a stale marker before adding its own,
+    leaving duplicate error bubbles.
+    """
+
+    def _builder_with_snap(self):
+        builder = MagicMock()
+        builder.restore = MagicMock()
+        return builder
+
+    def test_returns_partial_when_no_marker_present(self):
+        session = _make_session(
+            [
+                ChatMessage(role="user", content="hi"),
+                ChatMessage(role="assistant", content="part-1"),
+            ]
+        )
+        builder = self._builder_with_snap()
+        captured = _rollback_attempt_capturing_partial(
+            session, builder, transcript_snap=object(), pre_attempt_msg_count=1
+        )
+        assert [m.content for m in captured] == ["part-1"]
+        assert session.messages == [ChatMessage(role="user", content="hi")]
+
+    def test_strips_trailing_error_marker(self):
+        # _run_stream_attempt appended a marker via _append_error_marker
+        # (e.g. idle timeout, circuit breaker) before raising
+        # _HandledStreamError. The rollback must NOT carry it forward, or
+        # the post-loop restore will replay the stale marker + add its own.
+        marker = (
+            f"{COPILOT_RETRYABLE_ERROR_PREFIX} The session has been idle "
+            "for too long. Please try again."
+        )
+        session = _make_session(
+            [
+                ChatMessage(role="user", content="hi"),
+                ChatMessage(role="assistant", content="part-1"),
+                ChatMessage(role="assistant", content=marker),
+            ]
+        )
+        captured = _rollback_attempt_capturing_partial(
+            session,
+            self._builder_with_snap(),
+            transcript_snap=object(),
+            pre_attempt_msg_count=1,
+        )
+        assert [m.content for m in captured] == ["part-1"]
+
+    def test_strips_consecutive_error_markers(self):
+        # Defensive: if more than one marker landed back-to-back (legacy
+        # path or future regression), strip them all.
+        session = _make_session(
+            [
+                ChatMessage(role="user", content="hi"),
+                ChatMessage(role="assistant", content="part-1"),
+                ChatMessage(role="assistant", content=f"{COPILOT_ERROR_PREFIX} a"),
+                ChatMessage(
+                    role="assistant",
+                    content=f"{COPILOT_RETRYABLE_ERROR_PREFIX} b",
+                ),
+            ]
+        )
+        captured = _rollback_attempt_capturing_partial(
+            session,
+            self._builder_with_snap(),
+            transcript_snap=object(),
+            pre_attempt_msg_count=1,
+        )
+        assert [m.content for m in captured] == ["part-1"]
+
+    def test_does_not_strip_non_marker_assistant(self):
+        # Regular assistant text starting with similar-but-not-prefix
+        # content must be preserved — only the canonical error markers
+        # should be filtered.
+        session = _make_session(
+            [
+                ChatMessage(role="user", content="hi"),
+                ChatMessage(role="assistant", content="Important note"),
+            ]
+        )
+        captured = _rollback_attempt_capturing_partial(
+            session,
+            self._builder_with_snap(),
+            transcript_snap=object(),
+            pre_attempt_msg_count=1,
+        )
+        assert [m.content for m in captured] == ["Important note"]
 
 
 class TestRetryRollbackContract:
