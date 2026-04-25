@@ -2,6 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import type { UIMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useCopilotUIStore } from "../store";
 import { useCopilotStream } from "../useCopilotStream";
 
 // Capture the args passed to ``useChat`` so tests can invoke onFinish/onError
@@ -67,6 +68,7 @@ vi.mock("@/components/molecules/Toast/use-toast", () => ({
 vi.mock("@/services/environment", () => ({
   environment: {
     getAGPTServerBaseUrl: () => "http://localhost",
+    isServerSide: () => false,
   },
 }));
 
@@ -145,6 +147,39 @@ describe("useCopilotStream — reconnect debounce", () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });
     expect(resumeStreamMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores the unsent text and drops the optimistic user bubble on 429 usage-limit", async () => {
+    useCopilotUIStore.getState().setInitialPrompt(null);
+    const { result } = renderStream();
+
+    await act(async () => {
+      await result.current.sendMessage({ text: "recover me" });
+    });
+    expect(sdkSendMessageMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      lastUseChatArgs!.onError!(
+        new Error(JSON.stringify({ detail: "Daily usage limit exceeded" })),
+      );
+    });
+
+    expect(useCopilotUIStore.getState().initialPrompt).toBe("recover me");
+    expect(result.current.rateLimitMessage).toContain("Daily usage limit");
+
+    const dropCall = setMessagesMock.mock.calls.find(([arg]) => {
+      if (typeof arg !== "function") return false;
+      const prev: UIMessage[] = [
+        {
+          id: "u1",
+          role: "user",
+          parts: [{ type: "text", text: "recover me" }],
+        } as unknown as UIMessage,
+      ];
+      const next = (arg as (p: UIMessage[]) => UIMessage[])(prev);
+      return next.length === 0;
+    });
+    expect(dropCall).toBeTruthy();
   });
 
   it("does not debounce a reconnect that arrives after the window closes", async () => {
