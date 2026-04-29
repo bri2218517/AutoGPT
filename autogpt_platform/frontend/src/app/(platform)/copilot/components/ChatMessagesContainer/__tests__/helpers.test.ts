@@ -7,6 +7,7 @@ import {
   splitReasoningAndResponse,
 } from "../helpers";
 import type { MessagePart } from "../helpers";
+import { ResponseType } from "@/app/api/__generated__/models/responseType";
 
 function textPart(text: string): MessagePart {
   return { type: "text", text } as MessagePart;
@@ -228,7 +229,27 @@ describe("splitReasoningAndResponse", () => {
       }),
       textPart("Here is the plan."),
     ];
+    // DEBUG: surface runtime state in CI to diagnose env-specific failures.
+    // eslint-disable-next-line no-console
+    console.log(
+      "[DEBUG splits]",
+      JSON.stringify({
+        types: parts.map((p) => p.type),
+        toolPartIsInteractive: isInteractiveToolPart(parts[1]),
+        responseTypeImport: ResponseType.task_decomposition,
+      }),
+    );
     const { reasoning, response } = splitReasoningAndResponse(parts);
+    // eslint-disable-next-line no-console
+    console.log(
+      "[DEBUG splits result]",
+      JSON.stringify({
+        reasoningLen: reasoning.length,
+        reasoningTypes: reasoning.map((p) => p.type),
+        responseLen: response.length,
+        responseTypes: response.map((p) => p.type),
+      }),
+    );
     expect(reasoning).toHaveLength(1);
     expect(reasoning[0]).toBe(parts[0]);
     expect(response).toHaveLength(2);
