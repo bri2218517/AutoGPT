@@ -1,0 +1,375 @@
+"""
+Stripe Link — Spend Request blocks.
+
+These blocks interact with the Link API (api.link.com) to create, retrieve,
+and approve spend requests. A spend request provisions a one-time-use virtual
+card or shared payment token from the user's Link wallet.
+
+IMPORTANT: These are SKELETON implementations for exploration. The HTTP client
+logic (calling api.link.com) needs to be fleshed out, and the device-code auth
+flow needs to land before these can actually run.
+"""
+
+import logging
+from typing import Any
+
+
+from backend.blocks.stripe_link._auth import (
+    TEST_CREDENTIALS,
+    TEST_CREDENTIALS_INPUT,
+    StripeLinkCredentials,
+    StripeLinkCredentialsField,
+    StripeLinkCredentialsInput,
+)
+from backend.data.block import Block, BlockOutput, BlockSchemaInput
+from backend.data.model import SchemaField
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+LINK_API_BASE = "https://api.link.com"
+
+
+async def _link_api_request(
+    credentials: StripeLinkCredentials,
+    method: str,
+    path: str,
+    body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Make an authenticated request to the Link API.
+
+    Uses the access_token from OAuth2Credentials as a Bearer token.
+    In a real implementation, this should handle 401 → token refresh.
+    """
+    import httpx
+
+    headers = {
+        "Authorization": f"Bearer {credentials.access_token.get_secret_value()}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.request(
+            method=method,
+            url=f"{LINK_API_BASE}{path}",
+            headers=headers,
+            json=body,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+# ---------------------------------------------------------------------------
+# Block: List Payment Methods
+# ---------------------------------------------------------------------------
+class StripeLinkListPaymentMethodsBlock(Block):
+    """List payment methods (cards and bank accounts) from the user's Link wallet."""
+
+    class Input(BlockSchemaInput):
+        credentials: StripeLinkCredentialsInput = StripeLinkCredentialsField()
+
+    class Output(BlockSchemaInput):
+        payment_methods: list[dict[str, Any]] = SchemaField(
+            description="List of payment methods in the Link wallet"
+        )
+        error: str = SchemaField(
+            description="Error message if the request failed",
+            default="",
+        )
+
+    def __init__(self):
+        super().__init__(
+            id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",  # placeholder UUID
+            description="List payment methods from a Stripe Link wallet",
+            categories=set(),
+            input_schema=self.Input,
+            output_schema=self.Output,
+            test_input={
+                "credentials": TEST_CREDENTIALS_INPUT,
+            },
+            test_credentials=TEST_CREDENTIALS,
+            test_output=[
+                (
+                    "payment_methods",
+                    [
+                        {
+                            "id": "csmrpd_test",
+                            "type": "card",
+                            "is_default": True,
+                            "card_details": {
+                                "brand": "visa",
+                                "last4": "4242",
+                                "exp_month": 12,
+                                "exp_year": 2030,
+                            },
+                        }
+                    ],
+                )
+            ],
+            test_mock={
+                "_link_api_request": lambda *args, **kwargs: [
+                    {
+                        "id": "csmrpd_test",
+                        "type": "card",
+                        "is_default": True,
+                        "card_details": {
+                            "brand": "visa",
+                            "last4": "4242",
+                            "exp_month": 12,
+                            "exp_year": 2030,
+                        },
+                    }
+                ]
+            },
+        )
+
+    async def run(
+        self,
+        input_data: Input,
+        *,
+        credentials: StripeLinkCredentials,
+        **kwargs: Any,
+    ) -> BlockOutput:
+        try:
+            methods = await _link_api_request(credentials, "GET", "/payment_methods")
+            yield "payment_methods", methods
+        except Exception as e:
+            yield "error", str(e)
+
+
+# ---------------------------------------------------------------------------
+# Block: Create Spend Request
+# ---------------------------------------------------------------------------
+class StripeLinkCreateSpendRequestBlock(Block):
+    """
+    Create a spend request to get a one-time-use payment credential.
+
+    The user must approve the request via the Link app before card details
+    are available. Use StripeLinkRetrieveSpendRequestBlock to check status
+    and get the credential once approved.
+    """
+
+    class Input(BlockSchemaInput):
+        credentials: StripeLinkCredentialsInput = StripeLinkCredentialsField()
+        payment_method_id: str = SchemaField(
+            description="ID of the payment method to use (from list payment methods)"
+        )
+        merchant_name: str = SchemaField(
+            description="Name of the merchant for this purchase"
+        )
+        merchant_url: str = SchemaField(description="URL of the merchant website")
+        context: str = SchemaField(
+            description=(
+                "Description of the purchase context (min 100 characters). "
+                "Shown to the user when they approve the request."
+            )
+        )
+        amount: int = SchemaField(
+            description="Amount in cents (max 50000)", ge=1, le=50000
+        )
+        currency: str = SchemaField(
+            description="3-letter ISO currency code", default="usd"
+        )
+        request_approval: bool = SchemaField(
+            description=(
+                "If true, immediately sends a push notification to the user "
+                "for approval. Otherwise, call request-approval separately."
+            ),
+            default=True,
+        )
+        test_mode: bool = SchemaField(
+            description="Use test mode (fake card 4242424242424242)",
+            default=False,
+        )
+
+    class Output(BlockSchemaInput):
+        spend_request_id: str = SchemaField(
+            description="ID of the created spend request"
+        )
+        status: str = SchemaField(
+            description="Status: created, pending_approval, approved, denied, etc."
+        )
+        approval_url: str = SchemaField(
+            description="URL the user can visit to approve (if not using push)",
+            default="",
+        )
+        error: str = SchemaField(
+            description="Error message if the request failed",
+            default="",
+        )
+
+    def __init__(self):
+        super().__init__(
+            id="b2c3d4e5-f6a7-8901-bcde-f12345678901",  # placeholder UUID
+            description="Create a Stripe Link spend request for a one-time payment credential",
+            categories=set(),
+            input_schema=self.Input,
+            output_schema=self.Output,
+            test_input={
+                "credentials": TEST_CREDENTIALS_INPUT,
+                "payment_method_id": "csmrpd_test",
+                "merchant_name": "Test Store",
+                "merchant_url": "https://example.com",
+                "context": "x" * 100,
+                "amount": 1000,
+            },
+            test_credentials=TEST_CREDENTIALS,
+            test_output=[
+                ("spend_request_id", "lsrq_test123"),
+                ("status", "pending_approval"),
+            ],
+            test_mock={
+                "_link_api_request": lambda *args, **kwargs: {
+                    "id": "lsrq_test123",
+                    "status": "pending_approval",
+                    "approval_url": "",
+                }
+            },
+        )
+
+    async def run(
+        self,
+        input_data: Input,
+        *,
+        credentials: StripeLinkCredentials,
+        **kwargs: Any,
+    ) -> BlockOutput:
+        try:
+            result = await _link_api_request(
+                credentials,
+                "POST",
+                "/spend_requests",
+                body={
+                    "payment_details": input_data.payment_method_id,
+                    "merchant_name": input_data.merchant_name,
+                    "merchant_url": input_data.merchant_url,
+                    "context": input_data.context,
+                    "amount": input_data.amount,
+                    "currency": input_data.currency,
+                    "request_approval": input_data.request_approval,
+                    "test": input_data.test_mode,
+                },
+            )
+            yield "spend_request_id", result["id"]
+            yield "status", result["status"]
+            if result.get("approval_url"):
+                yield "approval_url", result["approval_url"]
+        except Exception as e:
+            yield "error", str(e)
+
+
+# ---------------------------------------------------------------------------
+# Block: Retrieve Spend Request
+# ---------------------------------------------------------------------------
+class StripeLinkRetrieveSpendRequestBlock(Block):
+    """
+    Retrieve a spend request and its credentials (once approved).
+
+    After the user approves a spend request, this block returns the
+    virtual card details (number, CVC, expiry, billing address) that
+    can be used for a one-time purchase.
+    """
+
+    class Input(BlockSchemaInput):
+        credentials: StripeLinkCredentialsInput = StripeLinkCredentialsField()
+        spend_request_id: str = SchemaField(
+            description="ID of the spend request to retrieve (e.g., lsrq_...)"
+        )
+        include_card: bool = SchemaField(
+            description="Include unmasked card details in the response",
+            default=True,
+        )
+
+    class Output(BlockSchemaInput):
+        status: str = SchemaField(description="Current status of the spend request")
+        card_number: str = SchemaField(
+            description="Virtual card number (only if approved and include_card=True)",
+            default="",
+        )
+        card_cvc: str = SchemaField(
+            description="Virtual card CVC",
+            default="",
+        )
+        card_exp_month: int = SchemaField(
+            description="Card expiry month",
+            default=0,
+        )
+        card_exp_year: int = SchemaField(
+            description="Card expiry year",
+            default=0,
+        )
+        card_brand: str = SchemaField(
+            description="Card brand (visa, mastercard, etc.)",
+            default="",
+        )
+        valid_until: str = SchemaField(
+            description="ISO timestamp when the virtual card expires",
+            default="",
+        )
+        error: str = SchemaField(
+            description="Error message if the request failed",
+            default="",
+        )
+
+    def __init__(self):
+        super().__init__(
+            id="c3d4e5f6-a7b8-9012-cdef-123456789012",  # placeholder UUID
+            description="Retrieve a Stripe Link spend request and card credentials",
+            categories=set(),
+            input_schema=self.Input,
+            output_schema=self.Output,
+            test_input={
+                "credentials": TEST_CREDENTIALS_INPUT,
+                "spend_request_id": "lsrq_test123",
+            },
+            test_credentials=TEST_CREDENTIALS,
+            test_output=[
+                ("status", "approved"),
+                ("card_number", "4242424242424242"),
+            ],
+            test_mock={
+                "_link_api_request": lambda *args, **kwargs: {
+                    "status": "approved",
+                    "card": {
+                        "number": "4242424242424242",
+                        "cvc": "123",
+                        "exp_month": 12,
+                        "exp_year": 2030,
+                        "brand": "visa",
+                        "valid_until": "2025-12-31T23:59:59Z",
+                    },
+                }
+            },
+        )
+
+    async def run(
+        self,
+        input_data: Input,
+        *,
+        credentials: StripeLinkCredentials,
+        **kwargs: Any,
+    ) -> BlockOutput:
+        try:
+            include = ["card"] if input_data.include_card else []
+            path = f"/spend_requests/{input_data.spend_request_id}"
+            if include:
+                path += f"?include={','.join(include)}"
+
+            result = await _link_api_request(credentials, "GET", path)
+
+            yield "status", result["status"]
+
+            card = result.get("card")
+            if card:
+                yield "card_number", card.get("number", "")
+                yield "card_cvc", card.get("cvc", "")
+                yield "card_exp_month", card.get("exp_month", 0)
+                yield "card_exp_year", card.get("exp_year", 0)
+                yield "card_brand", card.get("brand", "")
+                yield "valid_until", card.get("valid_until", "")
+        except Exception as e:
+            yield "error", str(e)
