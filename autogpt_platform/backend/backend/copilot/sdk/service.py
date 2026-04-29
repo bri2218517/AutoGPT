@@ -51,7 +51,6 @@ from ..constants import (
     COPILOT_RETRYABLE_ERROR_PREFIX,
     FRIENDLY_TRANSIENT_MSG,
     STOPPED_BY_USER_MARKER,
-    STREAM_IDLE_TIMEOUT_SECONDS,
     is_transient_api_error,
 )
 from ..session_cleanup import prune_orphan_tool_calls
@@ -133,7 +132,7 @@ from ..transcript import (
     upload_transcript,
     validate_transcript,
 )
-from ..transcript_builder import TranscriptBuilder
+from ..transcript_builder import TranscriptBuilder, TranscriptSnapshot
 from .compaction import CompactionTracker, filter_compaction_messages
 from .env import build_sdk_env  # noqa: F401 — re-export for backward compat
 from .openrouter_cost import record_turn_cost_from_openrouter
@@ -185,13 +184,32 @@ _CIRCUIT_BREAKER_ERROR_MSG = (
     "Try breaking your request into smaller parts."
 )
 
-# Idle timeout: abort the stream if no meaningful SDK message (only heartbeats)
-# arrives for this many seconds. Derived from MAX_TOOL_WAIT_SECONDS so the
-# invariant "no single tool blocks close to this long" holds by construction —
-# long-running tools use the async "start + poll" pattern (initial tool returns
-# with a handle, polling tool waits in ≤MAX_TOOL_WAIT_SECONDS chunks), so an
-# idle of 2× that genuinely means the SDK itself is stuck.
-_IDLE_TIMEOUT_SECONDS = STREAM_IDLE_TIMEOUT_SECONDS
+# Two regimes: no tool pending → 30 min (SDK genuinely idle); tool pending →
+# 2 h hard cap (lets long sub-AutoPilots run, still backstops a hung tool).
+_IDLE_TIMEOUT_SECONDS = 30 * 60
+_HUNG_TOOL_CAP_SECONDS = 2 * 60 * 60
+
+
+def _idle_timeout_threshold(adapter: SDKResponseAdapter) -> int:
+    """Pick the idle-timeout threshold for the current heartbeat.
+
+    Returns ``_HUNG_TOOL_CAP_SECONDS`` (longer) whenever any tool call is
+    still pending, so a legitimately long operation isn't killed. Returns
+    ``_IDLE_TIMEOUT_SECONDS`` (shorter) when nothing is pending — the SDK
+    itself is idle with no work in flight.
+    """
+    if adapter.has_unresolved_tool_calls:
+        return _HUNG_TOOL_CAP_SECONDS
+    return _IDLE_TIMEOUT_SECONDS
+
+
+# StreamError codes that should render as a retryable error in the UI (retry
+# button) rather than a terminal ErrorCard. Codes appended via
+# ``_append_error_marker`` directly already pass ``retryable=True``; this set
+# covers the codes that flow through the adapter -> ``_dispatch_response``.
+_RETRYABLE_STREAM_ERROR_CODES: frozenset[str] = frozenset(
+    {"transient_api_error", "empty_completion"}
+)
 
 
 # Event types that are ephemeral / cosmetic and must NOT be counted toward
@@ -535,26 +553,214 @@ async def _reduce_context(
     return ReducedContext(TranscriptBuilder(), False, None, True, True, retry_target)
 
 
+def _humanise_tool_list(names: list[str]) -> str:
+    """Format a list of tool names for user-facing messages.
+
+    ``["WebSearch"]``              → ``"'WebSearch'"``
+    ``["WebSearch", "run_block"]`` → ``"'WebSearch' and 'run_block'"``
+    Three or more items collapse to ``"'A', 'B', and 1 other"`` so the
+    toast stays readable.
+    """
+    if not names:
+        return ""
+    quoted = [f"'{n}'" for n in names]
+    if len(quoted) == 1:
+        return quoted[0]
+    if len(quoted) == 2:
+        return f"{quoted[0]} and {quoted[1]}"
+    extras = len(quoted) - 2
+    suffix = "others" if extras > 1 else "other"
+    return f"{quoted[0]}, {quoted[1]}, and {extras} {suffix}"
+
+
 def _append_error_marker(
     session: ChatSession | None,
     display_msg: str,
     *,
     retryable: bool = False,
 ) -> None:
-    """Append a copilot error marker to *session* so it persists across refresh.
-
-    Args:
-        session: The chat session to append to (no-op if `None`).
-        display_msg: User-visible error text.
-        retryable: If `True`, use the retryable prefix so the frontend
-            shows a "Try Again" button.
-    """
+    """Append a copilot error marker to *session* so it persists across refresh."""
     if session is None:
         return
     prefix = COPILOT_RETRYABLE_ERROR_PREFIX if retryable else COPILOT_ERROR_PREFIX
     session.messages.append(
         ChatMessage(role="assistant", content=f"{prefix} {display_msg}")
     )
+
+
+def _is_error_marker(msg: ChatMessage) -> bool:
+    """True if *msg* is an error marker emitted by ``_append_error_marker``."""
+    if msg.role != "assistant" or not msg.content:
+        return False
+    return msg.content.startswith(COPILOT_ERROR_PREFIX) or msg.content.startswith(
+        COPILOT_RETRYABLE_ERROR_PREFIX
+    )
+
+
+@dataclass
+class _InterruptedAttempt:
+    """Captured state of a failed SDK attempt, carried across the retry loop.
+
+    The SDK always rolls back ``session.messages`` before deciding whether
+    to retry (so attempt #2 starts clean). That rollback would otherwise
+    discard everything the assistant produced — the user sees tokens stream
+    live, then a refresh shows nothing. This dataclass holds the rolled-back
+    messages plus the ``_HandledStreamError`` info needed to emit a final
+    ``StreamError`` once the loop decides not to retry.
+
+    The retry loop calls ``capture()`` on every failed attempt, ``clear()``
+    on a successful retry (so prior rolled-back content is not replayed),
+    and ``finalize()`` exactly once after the loop on final failure.
+    """
+
+    partial: list[ChatMessage] = dataclass_field(default_factory=list)
+    # Populated by the ``except _HandledStreamError`` branch so the post-loop
+    # block can restore the partial and (when the inner handler didn't) emit
+    # the client-facing StreamError. Transient errors deliberately suppress
+    # the early StreamError flash and rely on this post-loop emit.
+    handled_error: "_HandledErrorInfo | None" = None
+
+    def capture(
+        self,
+        session: ChatSession,
+        transcript_builder: "TranscriptBuilder",
+        transcript_snap: TranscriptSnapshot,
+        pre_attempt_msg_count: int,
+    ) -> None:
+        """Roll back ``session.messages`` + transcript, keeping the partial.
+
+        Trailing error markers appended inside ``_run_stream_attempt`` (idle
+        timeout, circuit breaker) are stripped: re-attaching them would make
+        the post-loop restore replay a stale marker before adding its own,
+        leaving duplicate error bubbles.
+        """
+        tail = list(session.messages[pre_attempt_msg_count:])
+        while tail and _is_error_marker(tail[-1]):
+            tail.pop()
+        self.partial = tail
+        session.messages = session.messages[:pre_attempt_msg_count]
+        transcript_builder.restore(transcript_snap)
+
+    def clear(self) -> None:
+        """Drop captured state — used on successful retry."""
+        self.partial = []
+        self.handled_error = None
+
+    def finalize(
+        self,
+        session: ChatSession | None,
+        state: "_RetryState | None",
+        display_msg: str,
+        *,
+        retryable: bool,
+    ) -> list[StreamBaseResponse]:
+        """Re-attach partial + synthetic tool_result rows + error marker.
+
+        Called exactly once after the retry loop on final-failure exit.
+        Idempotent on empty state, so it's safe to call on paths where no
+        rollback happened.
+
+        Returns the ``StreamBaseResponse`` events produced by the safety
+        flush so the caller can yield them to the client (the flush mutates
+        adapter state, so a second flush elsewhere would return nothing and
+        stale UI elements like spinners would stay open).
+        """
+        if session is None:
+            return []
+        if self.partial:
+            session.messages.extend(self.partial)
+            self.partial = []
+        events = _flush_orphan_tool_uses_to_session(session, state)
+        _append_error_marker(session, display_msg, retryable=retryable)
+        return events
+
+
+def _flush_orphan_tool_uses_to_session(
+    session: "ChatSession | None",
+    state: "_RetryState | None",
+) -> list[StreamBaseResponse]:
+    """Synthesize ``tool_result`` rows for ``tool_use`` blocks that never resolved.
+
+    Re-attached partial work may carry orphan ``tool_use`` blocks; without
+    matching ``tool_result`` rows the next turn's LLM call would error with
+    ``tool_use_id without tool_result``. The adapter's safety-flush produces
+    interrupted-marker results that satisfy the API contract.
+
+    Returns the flushed events so callers can yield them to the client
+    alongside persisting the synthetic rows in session history.
+    """
+    if session is None or state is None:
+        return []
+    if not state.adapter.has_unresolved_tool_calls:
+        return []
+    safety: list[StreamBaseResponse] = []
+    state.adapter.flush_unresolved_tool_calls(safety)
+    for resp in safety:
+        if isinstance(resp, StreamToolOutputAvailable):
+            content = (
+                resp.output
+                if isinstance(resp.output, str)
+                else json.dumps(resp.output, ensure_ascii=False)
+            )
+            session.messages.append(
+                ChatMessage(role="tool", content=content, tool_call_id=resp.toolCallId)
+            )
+    return safety
+
+
+@dataclass(frozen=True)
+class _FinalFailure:
+    """Display message + stream code + retryable flag for a final-failure exit.
+
+    Shared by the in-history error marker (via ``_InterruptedAttempt.finalize``)
+    and the client-facing ``StreamError`` SSE yield so the two stay in sync.
+    """
+
+    display_msg: str
+    code: str
+    retryable: bool
+
+
+def _classify_final_failure(
+    interrupted: _InterruptedAttempt,
+    attempts_exhausted: bool,
+    transient_exhausted: bool,
+    stream_err: BaseException | None,
+) -> _FinalFailure | None:
+    """Pick the display message, stream code, and retryable flag for the exit.
+
+    Returns ``None`` when no failure was recorded (success path) — the caller
+    should skip both the history marker and the SSE yield in that case.
+    """
+    if interrupted.handled_error is not None:
+        return _FinalFailure(
+            display_msg=interrupted.handled_error.error_msg,
+            code=interrupted.handled_error.code,
+            retryable=interrupted.handled_error.retryable,
+        )
+    if attempts_exhausted:
+        return _FinalFailure(
+            display_msg=(
+                "Your conversation is too long. "
+                "Please start a new chat or clear some history."
+            ),
+            code="all_attempts_exhausted",
+            retryable=False,
+        )
+    if transient_exhausted:
+        return _FinalFailure(
+            display_msg=FRIENDLY_TRANSIENT_MSG,
+            code="transient_api_error",
+            retryable=True,
+        )
+    if stream_err is not None:
+        safe_err = str(stream_err).replace("\n", " ").replace("\r", "")[:500]
+        return _FinalFailure(
+            display_msg=_friendly_error_text(safe_err),
+            code="sdk_stream_error",
+            retryable=False,
+        )
+    return None
 
 
 def _setup_langfuse_otel() -> None:
@@ -733,38 +939,46 @@ async def _iter_sdk_messages(
 
 
 def _normalize_model_name(raw_model: str) -> str:
-    """Normalize a model name for the current routing configuration.
+    """Normalize a model name for the **actual** SDK CLI transport.
 
-    Two routing modes:
+    Three transports (see ``ChatConfig.effective_transport``):
 
-    1. **OpenRouter active** — the canonical OpenRouter slug is
-       ``"<vendor>/<model>"`` (e.g. ``"anthropic/claude-opus-4.6"``,
-       ``"moonshotai/kimi-k2.6"``).  Pass the prefixed name through
+    1. **OpenRouter** — the canonical OpenRouter slug is
+       ``"<vendor>/<model>"`` (e.g. ``"anthropic/claude-opus-4-6"``,
+       ``"moonshotai/kimi-k2-6"``).  Pass the prefixed name through
        unchanged so OpenRouter can route to the correct provider.  Anthropic
        names happen to also resolve when stripped, but non-Anthropic vendors
        (Moonshot, Google, etc.) do not — keeping the prefix is the only form
        that works for every model in the catalog.
-    2. **Direct Anthropic** — strip the OpenRouter ``anthropic/`` prefix
-       and convert dots to hyphens (``"claude-opus-4.6"`` →
-       ``"claude-opus-4-6"``) since the Anthropic Messages API rejects
-       both the prefix and dot-separated versions.  Raises ``ValueError``
-       when a non-Anthropic vendor slug is paired with direct-Anthropic
-       mode — silently stripping ``moonshotai/`` would send ``kimi-k2.6``
-       to the Anthropic API and produce an opaque ``model_not_found``
-       error far from the misconfiguration source.
+    2. **Subscription / Direct Anthropic** — strip the OpenRouter
+       ``anthropic/`` prefix and convert dots to hyphens
+       (``"claude-opus-4.6"`` → ``"claude-opus-4-6"``).  The CLI subprocess
+       (subscription mode) and the Anthropic Messages API both reject the
+       prefix and dot-separated versions.  Raises ``ValueError`` when a
+       non-Anthropic vendor slug is paired with these transports — silently
+       stripping ``moonshotai/`` would send ``kimi-k2-6`` to the Anthropic
+       API / CLI and produce an opaque ``model_not_found`` error far from
+       the misconfiguration source.
+
+    Gating on the **actual transport** (not just config shape) matters
+    because subscription mode and OpenRouter config can coexist —
+    ``CHAT_USE_CLAUDE_CODE_SUBSCRIPTION=true`` paired with a populated
+    ``CHAT_BASE_URL`` / ``CHAT_API_KEY`` (left over from an earlier
+    OpenRouter setup) used to incorrectly pass ``anthropic/claude-opus-4-7``
+    to the CLI subprocess, which the CLI rejects.
     """
-    if config.openrouter_active:
+    if config.effective_transport == "openrouter":
         return raw_model
     model = raw_model
     if "/" in model:
         vendor, model = model.split("/", 1)
         if vendor != "anthropic":
             raise ValueError(
-                f"Direct-Anthropic mode (use_openrouter=False or missing "
-                f"OpenRouter credentials) requires an Anthropic model, got "
-                f"vendor={vendor!r} from model={raw_model!r}. Set "
-                f"CHAT_THINKING_STANDARD_MODEL/CHAT_THINKING_ADVANCED_MODEL "
-                f"to an anthropic/* slug, or enable OpenRouter."
+                f"{config.effective_transport!r} transport requires an "
+                f"Anthropic model, got vendor={vendor!r} from "
+                f"model={raw_model!r}. Set CHAT_THINKING_STANDARD_MODEL/"
+                f"CHAT_THINKING_ADVANCED_MODEL to an anthropic/* slug, or "
+                f"enable OpenRouter."
             )
     return model.replace(".", "-")
 
@@ -794,8 +1008,8 @@ async def _resolve_thinking_model_for_user(
 ) -> str:
     """LD-aware thinking-tier model pick for a specific user.
 
-    Consults ``copilot-thinking-{tier}-model`` and falls back to the
-    ``ChatConfig`` default on missing user / missing flag.
+    Consults ``copilot-model-routing[thinking][{tier}]`` and falls back
+    to the ``ChatConfig`` default on missing user / missing flag.
     """
     return await resolve_model("thinking", tier, user_id, config=config)
 
@@ -831,10 +1045,11 @@ async def _resolve_sdk_model_for_request(
 
     Priority (highest first):
     1. ``config.claude_agent_model`` — unconditional override, bypasses LD.
-    2. LaunchDarkly ``copilot-thinking-{tier}-model`` if it serves a value
-       different from the config default for *user_id*.  An LD-served
-       override wins over subscription mode so admins can route specific
-       users to a specific model without flipping subscription on/off.
+    2. LaunchDarkly ``copilot-model-routing[thinking][{tier}]`` if it
+       serves a value different from the config default for *user_id*.
+       An LD-served override wins over subscription mode so admins can
+       route specific users to a specific model without flipping
+       subscription on/off.
     3. ``config.use_claude_code_subscription`` on the standard tier —
        returns ``None`` so the CLI picks the subscription default (this
        branch fires when LD has no opinion, i.e. the value equals the
@@ -864,8 +1079,8 @@ async def _resolve_sdk_model_for_request(
     # user somewhere).  Any LD override — even to the same value with
     # stripped whitespace normalised — is an explicit admin choice that
     # must be honoured.  Without this, a subscription-mode deployment
-    # silently ignores the ``copilot-thinking-standard-model`` flag
-    # entirely, which defeats the point of cohort-based routing.
+    # silently ignores the ``copilot-model-routing[thinking][standard]``
+    # flag entirely, which defeats the point of cohort-based routing.
     ld_overrides_default = resolved != tier_default
     if (
         not ld_overrides_default
@@ -1857,7 +2072,7 @@ def _dispatch_response(
         _append_error_marker(
             ctx.session,
             response.errorText,
-            retryable=(response.code == "transient_api_error"),
+            retryable=response.code in _RETRYABLE_STREAM_ERROR_CODES,
         )
 
     if isinstance(response, StreamReasoningStart):
@@ -2003,6 +2218,21 @@ class _HandledStreamError(Exception):
         self.code = code
         self.retryable = retryable
         self.already_yielded = already_yielded
+
+
+@dataclass(frozen=True)
+class _HandledErrorInfo:
+    """Carries a `_HandledStreamError`'s decisions out of the retry loop.
+
+    Set inside the `except _HandledStreamError` branch and consumed by the
+    post-loop block, which restores the partial and (if the inner handler
+    didn't already do it) yields the client-facing StreamError.
+    """
+
+    error_msg: str
+    code: str
+    retryable: bool
+    already_yielded: bool
 
 
 @dataclass
@@ -2170,6 +2400,13 @@ async def _run_stream_attempt(
             for ev in ctx.compaction.emit_pre_query(ctx.session):
                 yield ev
 
+        # Narrate the silent gap between dispatching the query and the
+        # SDK's first real chunk — usually <1s but can stretch to several
+        # seconds on cold-starts or large contexts. The frontend prefers
+        # this over the generic "Thinking…" copy; fast turns replace it
+        # with content immediately.
+        yield StreamStatus(message="Contacting the model\u2026")
+
         if ctx.attachments.image_blocks:
             content_blocks: list[dict[str, Any]] = [
                 *ctx.attachments.image_blocks,
@@ -2204,21 +2441,41 @@ async def _run_stream_attempt(
                     yield ev
                 yield StreamHeartbeat()
 
-                # Idle timeout: abort if the SDK has been silent for too long.
-                # Long-running tools use the async "start + poll" pattern so
-                # the MCP handler never blocks longer than the poll cap (5 min)
-                # — a 10-min gap here means the SDK itself is stuck.
+                # Threshold flips to the long cap while a tool is pending; clock never resets.
                 idle_seconds = time.monotonic() - _last_real_msg_time
-                if idle_seconds >= _IDLE_TIMEOUT_SECONDS:
+                threshold = _idle_timeout_threshold(state.adapter)
+                if idle_seconds >= threshold:
+                    unresolved_tool_names = sorted(
+                        {
+                            info.get("name", "unknown")
+                            for tid, info in state.adapter.current_tool_calls.items()
+                            if tid not in state.adapter.resolved_tool_calls
+                        }
+                    )
                     logger.error(
-                        "%s Idle timeout after %.0fs — aborting stream",
+                        "%s Idle timeout after %.0fs (threshold=%ds, "
+                        "unresolved tools: %s) — aborting stream",
                         ctx.log_prefix,
                         idle_seconds,
+                        threshold,
+                        ", ".join(unresolved_tool_names) or "none",
+                    )
+                    # The retryable marker written to the session omits
+                    # the `[code:<id>]` prefix — the AI SDK serializer
+                    # (`StreamError.to_sse`) attaches that automatically
+                    # on the wire so the frontend can still parse a
+                    # machine-readable code out of the otherwise opaque
+                    # `{type, errorText}` schema.
+                    stream_error_code = "idle_timeout"
+                    tool_phrase = (
+                        f" while running {_humanise_tool_list(unresolved_tool_names)}"
+                        if unresolved_tool_names
+                        else ""
                     )
                     stream_error_msg = (
-                        "The session has been idle for too long. Please try again."
+                        f"AutoPilot stopped responding{tool_phrase}. "
+                        "This usually means a tool got stuck. Please try again."
                     )
-                    stream_error_code = "idle_timeout"
                     _append_error_marker(ctx.session, stream_error_msg, retryable=True)
                     yield StreamError(
                         errorText=stream_error_msg,
@@ -2724,7 +2981,7 @@ async def _run_stream_attempt(
             - len(state.adapter.resolved_tool_calls),
         )
         safety_responses: list[StreamBaseResponse] = []
-        state.adapter._flush_unresolved_tool_calls(safety_responses)
+        state.adapter.flush_unresolved_tool_calls(safety_responses)
         for response in safety_responses:
             if isinstance(
                 response,
@@ -2993,7 +3250,7 @@ async def _maybe_prepend_builder_context(
     return block + query_message if block else query_message
 
 
-async def stream_chat_completion_sdk(
+async def stream_chat_completion_sdk(  # pyright: ignore[reportGeneralTypeIssues]
     session_id: str,
     message: str | None = None,
     is_user_message: bool = True,
@@ -3006,6 +3263,13 @@ async def stream_chat_completion_sdk(
     request_arrival_at: float = 0.0,
     **_kwargs: Any,
 ) -> AsyncGenerator[StreamBaseResponse, None]:
+    # Pyright's complexity heuristic bails on this ~1500 LoC function (retry
+    # loop with context-overflow fallback + transient backoff + partial-work
+    # preservation). Splitting the retry loop further hurts readability —
+    # branches share mutable state (session, adapter, transcript builder,
+    # usage accumulators) that doesn't pass cleanly through helpers. The
+    # suppression only silences the complexity bailout; real type errors in
+    # the function body still surface.
     """Stream chat completion using Claude Agent SDK.
 
     Args:
@@ -3169,6 +3433,11 @@ async def stream_chat_completion_sdk(
     turn_cost_usd: float | None = None
     graphiti_enabled = False
     pre_attempt_msg_count = 0
+    # State of the latest failed attempt: rolled-back messages + any
+    # _HandledStreamError info to emit on final-failure exit. The retry loop
+    # mutates this via capture()/clear(); the post-loop block calls
+    # finalize() once.
+    interrupted = _InterruptedAttempt()
     # Defaults ensure the finally block can always reference these safely even when
     # an early return (e.g. sdk_cwd error) skips their normal assignment below.
     sdk_model: str | None = None
@@ -3829,6 +4098,9 @@ async def stream_chat_completion_sdk(
                             "using fallback model for this request"
                         )
                     yield event
+                # Discard any state captured from prior failed attempts so
+                # outer cleanup paths don't replay pre-retry content.
+                interrupted.clear()
                 break  # Stream completed — exit retry loop
             except asyncio.CancelledError:
                 logger.warning(
@@ -3844,8 +4116,12 @@ async def stream_chat_completion_sdk(
                 # session messages and set the error flag — do NOT set
                 # stream_err so the post-loop code won't emit a
                 # duplicate StreamError.
-                session.messages = session.messages[:pre_attempt_msg_count]
-                state.transcript_builder.restore(transcript_snap)
+                interrupted.capture(
+                    session,
+                    state.transcript_builder,
+                    transcript_snap,
+                    pre_attempt_msg_count,
+                )
                 # Check if this is a transient error we can retry with backoff.
                 # exc.code is the only reliable signal — str(exc) is always the
                 # static "Stream error handled — StreamError already yielded" message.
@@ -3879,27 +4155,13 @@ async def stream_chat_completion_sdk(
                 # attempt that no longer match session.messages.  Skip upload
                 # so a future --resume doesn't replay rolled-back content.
                 skip_transcript_upload = True
-                # Re-append the error marker so it survives the rollback
-                # and is persisted by the finally block (see #2947655365).
-                # Use the specific error message from the attempt (e.g.
-                # circuit breaker msg) rather than always the generic one.
-                _append_error_marker(
-                    session,
-                    exc.error_msg or FRIENDLY_TRANSIENT_MSG,
-                    retryable=True,
+                interrupted.handled_error = _HandledErrorInfo(
+                    error_msg=exc.error_msg or FRIENDLY_TRANSIENT_MSG,
+                    code=exc.code or "transient_api_error",
+                    retryable=exc.retryable,
+                    already_yielded=exc.already_yielded,
                 )
                 ended_with_stream_error = True
-                # For transient errors the StreamError was deliberately NOT
-                # yielded inside _run_stream_attempt (already_yielded=False)
-                # so the client didn't see a premature error flash.  Yield it
-                # now that we know retries are exhausted.
-                # For non-transient errors (circuit breaker, idle timeout)
-                # already_yielded=True — do NOT yield again.
-                if not exc.already_yielded:
-                    yield StreamError(
-                        errorText=exc.error_msg or FRIENDLY_TRANSIENT_MSG,
-                        code=exc.code or "transient_api_error",
-                    )
                 break
             except Exception as e:
                 stream_err = e
@@ -3917,8 +4179,12 @@ async def stream_chat_completion_sdk(
                     stream_err,
                     exc_info=True,
                 )
-                session.messages = session.messages[:pre_attempt_msg_count]
-                state.transcript_builder.restore(transcript_snap)
+                interrupted.capture(
+                    session,
+                    state.transcript_builder,
+                    transcript_snap,
+                    pre_attempt_msg_count,
+                )
                 if events_yielded > 0:
                     # Events were already sent to the frontend and cannot be
                     # unsent.  Retrying would produce duplicate/inconsistent
@@ -3956,9 +4222,6 @@ async def stream_chat_completion_sdk(
                     # at line ~2310.
                     transient_exhausted = True
                     skip_transcript_upload = True
-                    _append_error_marker(
-                        session, FRIENDLY_TRANSIENT_MSG, retryable=True
-                    )
                     ended_with_stream_error = True
                     break
 
@@ -3982,43 +4245,38 @@ async def stream_chat_completion_sdk(
                 _MAX_STREAM_ATTEMPTS,
                 stream_err,
             )
-
-        if ended_with_stream_error and state is not None:
-            # Flush any unresolved tool calls so the frontend can close
-            # stale UI elements (e.g. spinners) that were started before
-            # the exception interrupted the stream.
-            error_flush: list[StreamBaseResponse] = []
-            state.adapter._end_text_if_open(error_flush)
-            if state.adapter.has_unresolved_tool_calls:
-                logger.warning(
-                    "%s Flushing %d unresolved tool(s) after stream error",
-                    log_prefix,
-                    len(state.adapter.current_tool_calls)
-                    - len(state.adapter.resolved_tool_calls),
+        # Consolidated final-failure handling. _classify_final_failure picks
+        # the display message + stream code + retryable flag, finalize() adds
+        # the history marker and produces the safety-flush events that close
+        # stale UI widgets on the client, and the StreamError yield below
+        # surfaces the same message over SSE. The _HandledStreamError path
+        # sets ``already_yielded=True`` for non-transient errors (circuit
+        # breaker, idle timeout) whose inner handler already yielded — skip
+        # the re-yield in that case.
+        if ended_with_stream_error:
+            failure = _classify_final_failure(
+                interrupted, attempts_exhausted, transient_exhausted, stream_err
+            )
+            if failure is not None:
+                cleanup_events: list[StreamBaseResponse] = []
+                if state is not None:
+                    state.adapter._end_text_if_open(cleanup_events)
+                cleanup_events.extend(
+                    interrupted.finalize(
+                        session,
+                        state,
+                        failure.display_msg,
+                        retryable=failure.retryable,
+                    )
                 )
-                state.adapter._flush_unresolved_tool_calls(error_flush)
-            for response in error_flush:
-                yield response
-
-        if ended_with_stream_error and stream_err is not None:
-            # Use distinct error codes depending on how the loop ended:
-            # • "all_attempts_exhausted" — context compaction ran out of room
-            # • "transient_api_error" — 429/5xx/ECONNRESET retries exhausted
-            # • "sdk_stream_error" — non-context, non-transient fatal error
-            safe_err = str(stream_err).replace("\n", " ").replace("\r", "")[:500]
-            if attempts_exhausted:
-                error_text = (
-                    "Your conversation is too long. "
-                    "Please start a new chat or clear some history."
+                for response in cleanup_events:
+                    yield response
+                already_yielded = (
+                    interrupted.handled_error is not None
+                    and interrupted.handled_error.already_yielded
                 )
-                error_code = "all_attempts_exhausted"
-            elif transient_exhausted:
-                error_text = FRIENDLY_TRANSIENT_MSG
-                error_code = "transient_api_error"
-            else:
-                error_text = _friendly_error_text(safe_err)
-                error_code = "sdk_stream_error"
-            yield StreamError(errorText=error_text, code=error_code)
+                if not already_yielded:
+                    yield StreamError(errorText=failure.display_msg, code=failure.code)
 
         # Copy token usage from retry state to outer-scope accumulators
         # so the finally block can persist them.
@@ -4100,12 +4358,13 @@ async def stream_chat_completion_sdk(
         else:
             display_msg, code = error_msg, "sdk_error"
 
-        # Append error marker to session (non-invasive text parsing approach).
-        # The finally block will persist the session with this error marker.
-        # Skip if a marker was already appended inside the stream loop
-        # (ended_with_stream_error) to avoid duplicate stale markers.
+        # Append error marker + restore any rolled-back partial when the retry
+        # loop didn't already finalize. ``interrupted`` is empty on success and
+        # on paths where the retry loop's own post-loop finalize() already ran,
+        # so this is a no-op for those and only kicks in for unhandled errors
+        # that bypass the retry-loop handlers entirely.
         if not ended_with_stream_error:
-            _append_error_marker(session, display_msg, retryable=is_transient)
+            interrupted.finalize(session, state, display_msg, retryable=is_transient)
             logger.debug(
                 "%s Appended error marker, will be persisted in finally",
                 log_prefix,
