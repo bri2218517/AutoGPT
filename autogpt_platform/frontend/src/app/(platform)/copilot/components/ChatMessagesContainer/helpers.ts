@@ -34,6 +34,20 @@ const CUSTOM_TOOL_TYPES = new Set([
   "tool-decompose_goal",
 ]);
 
+const REASONING_TOOL_TYPES = new Set([
+  "tool-find_block",
+  "tool-find_agent",
+  "tool-find_library_agent",
+  "tool-search_docs",
+  "tool-get_doc_page",
+  "tool-search_feature_requests",
+  "tool-ask_question",
+]);
+
+export function isReasoningToolPart(part: MessagePart): boolean {
+  return REASONING_TOOL_TYPES.has(part.type);
+}
+
 const WORKSPACE_FILE_PATTERN =
   /\/api\/proxy\/api\/workspace\/files\/([a-f0-9-]+)\/download/;
 const WORKSPACE_URI_PATTERN = /workspace:\/\/([a-f0-9-]+)(?:#([^\s)\]]+))?/g;
@@ -124,40 +138,44 @@ export function buildRenderSegments(
   return segments;
 }
 
+function isReasoningBoundary(part: MessagePart): boolean {
+  return part.type === "reasoning" || isReasoningToolPart(part);
+}
+
 export function splitReasoningAndResponse(parts: MessagePart[]): {
   reasoning: MessagePart[];
   response: MessagePart[];
 } {
   // Manual reverse loop instead of `Array.prototype.findLastIndex`. The
   // built-in version was being elided by the bundler in CI's vitest run,
-  // causing the function to misread `lastToolIndex` and return the input
+  // causing the function to misread the boundary index and return the input
   // unchanged. The explicit loop is opaque to that optimization.
-  let lastToolIndex = -1;
+  let lastReasoningIndex = -1;
   for (let i = parts.length - 1; i >= 0; i--) {
-    if (parts[i].type.startsWith("tool-")) {
-      lastToolIndex = i;
+    if (isReasoningBoundary(parts[i])) {
+      lastReasoningIndex = i;
       break;
     }
   }
 
-  if (lastToolIndex === -1) {
+  if (lastReasoningIndex === -1) {
     return { reasoning: [], response: parts };
   }
 
-  let hasResponseAfterTools = false;
-  for (let i = lastToolIndex + 1; i < parts.length; i++) {
+  let hasResponseAfterReasoning = false;
+  for (let i = lastReasoningIndex + 1; i < parts.length; i++) {
     if (parts[i].type === "text") {
-      hasResponseAfterTools = true;
+      hasResponseAfterReasoning = true;
       break;
     }
   }
 
-  if (!hasResponseAfterTools) {
+  if (!hasResponseAfterReasoning) {
     return { reasoning: [], response: parts };
   }
 
-  const rawReasoning = parts.slice(0, lastToolIndex + 1);
-  const rawResponse = parts.slice(lastToolIndex + 1);
+  const rawReasoning = parts.slice(0, lastReasoningIndex + 1);
+  const rawResponse = parts.slice(lastReasoningIndex + 1);
 
   const reasoning: MessagePart[] = [];
   const pinnedParts: MessagePart[] = [];

@@ -216,47 +216,6 @@ describe("splitReasoningAndResponse", () => {
     expect(response).toHaveLength(2);
   });
 
-  it("splits reasoning and response when text follows the last tool", () => {
-    const parts: MessagePart[] = [
-      textPart("Let me plan this..."),
-      toolPart("decompose_goal", "output-available", {
-        type: "task_decomposition",
-        message: "Plan",
-        goal: "Build agent",
-        steps: [],
-        step_count: 0,
-      }),
-      textPart("Here is the plan."),
-    ];
-    const { reasoning, response } = splitReasoningAndResponse(parts);
-    expect(reasoning).toHaveLength(1);
-    expect(reasoning[0]).toBe(parts[0]);
-    expect(response).toHaveLength(2);
-  });
-
-  it("pins interactive tool parts to response section", () => {
-    const interactiveTool = toolPart("decompose_goal", "output-available", {
-      type: "task_decomposition",
-      message: "Plan",
-      goal: "Build agent",
-      steps: [],
-      step_count: 0,
-    });
-    const parts: MessagePart[] = [
-      textPart("Thinking..."),
-      interactiveTool,
-      textPart("Here is the summary."),
-    ];
-    const { reasoning, response } = splitReasoningAndResponse(parts);
-
-    expect(reasoning).toHaveLength(1);
-    expect(reasoning[0]).toBe(parts[0]);
-
-    expect(response).toHaveLength(2);
-    expect(response[0]).toBe(interactiveTool);
-    expect(response[1]).toBe(parts[2]);
-  });
-
   it("keeps non-interactive tool parts in reasoning", () => {
     const genericTool = toolPart("find_block", "output-available", {
       type: "block_list",

@@ -126,6 +126,7 @@ MODEL_COST: dict[LlmModel, int] = {
     LlmModel.CLAUDE_4_OPUS: 21,
     LlmModel.CLAUDE_4_SONNET: 5,
     LlmModel.CLAUDE_4_6_OPUS: 14,
+    LlmModel.CLAUDE_4_7_OPUS: 14,
     LlmModel.CLAUDE_4_6_SONNET: 9,
     LlmModel.CLAUDE_4_5_HAIKU: 4,
     LlmModel.CLAUDE_4_5_OPUS: 14,
@@ -277,7 +278,7 @@ TOKEN_COST: dict[LlmModel, TokenRate] = {
     # OpenAI
     LlmModel.GPT5_2: TokenRate(input=263, output=2100),
     LlmModel.GPT5_1: TokenRate(input=188, output=1500),
-    LlmModel.GPT5: TokenRate(input=94, output=750),
+    LlmModel.GPT5: TokenRate(input=188, output=1500),
     LlmModel.GPT5_MINI: TokenRate(input=38, output=300),
     LlmModel.GPT5_NANO: TokenRate(input=8, output=60),
     LlmModel.GPT5_CHAT: TokenRate(input=188, output=1500),
@@ -300,21 +301,32 @@ TOKEN_COST: dict[LlmModel, TokenRate] = {
     LlmModel.GEMINI_3_1_PRO_PREVIEW: TokenRate(input=300, output=1800),
     LlmModel.GEMINI_3_FLASH_PREVIEW: TokenRate(input=75, output=450),
     LlmModel.GEMINI_3_1_FLASH_LITE_PREVIEW: TokenRate(input=38, output=225),
-    # xAI Grok
+    # xAI Grok. docs.x.ai currently lists only Grok 4.20 and grok-4-1-fast;
+    # the rest (grok-3, grok-4-0709, grok-4-fast, grok-code-fast-1) were
+    # removed from the public pricing page but remain callable via the
+    # API. Rates below match their launch pricing (verified historically):
+    # grok-3 / grok-4 $3/$15, grok-4-fast / grok-4-1-fast $0.20/$0.50,
+    # grok-code-fast-1 $0.20/$1.50.
     LlmModel.GROK_3: TokenRate(input=450, output=2250),
     LlmModel.GROK_4: TokenRate(input=450, output=2250),
     LlmModel.GROK_4_FAST: TokenRate(input=30, output=75),
     LlmModel.GROK_4_1_FAST: TokenRate(input=30, output=75),
     LlmModel.GROK_4_20: TokenRate(input=300, output=900),
     LlmModel.GROK_CODE_FAST_1: TokenRate(input=30, output=225),
-    # DeepSeek (deepseek-chat = V3.2 at $0.28/$0.42; reasoner at $0.55/$2.19).
-    LlmModel.DEEPSEEK_CHAT: TokenRate(input=42, output=63),
-    LlmModel.DEEPSEEK_R1_0528: TokenRate(input=82, output=329),
-    # Mistral
+    # DeepSeek: both `deepseek-chat` and `deepseek-reasoner` now alias to
+    # `deepseek-v4-flash` (non-thinking + thinking modes) at unified
+    # $0.14/$0.28 per 1M (Sept 2025 price unification).
+    LlmModel.DEEPSEEK_CHAT: TokenRate(input=21, output=42),
+    LlmModel.DEEPSEEK_R1_0528: TokenRate(input=21, output=42),
+    # Mistral — models route through OpenRouter (ModelMetadata provider =
+    # "open_router"). TOKEN_COST here is the safety floor when OpenRouter
+    # fails to return x-total-cost; rates below match OpenRouter's current
+    # pass-through pricing (NOT Mistral's direct /v1/chat prices, which
+    # we never call).
     LlmModel.MISTRAL_LARGE_3: TokenRate(input=300, output=900),
     LlmModel.MISTRAL_MEDIUM_3_1: TokenRate(input=60, output=300),
     LlmModel.MISTRAL_SMALL_3_2: TokenRate(input=15, output=45),
-    LlmModel.MISTRAL_NEMO: TokenRate(input=3, output=6),
+    LlmModel.MISTRAL_NEMO: TokenRate(input=5, output=5),
     LlmModel.CODESTRAL: TokenRate(input=45, output=135),
     # Cohere
     LlmModel.COHERE_COMMAND_R_08_2024: TokenRate(input=23, output=90),
@@ -322,9 +334,11 @@ TOKEN_COST: dict[LlmModel, TokenRate] = {
     LlmModel.COHERE_COMMAND_A_03_2025: TokenRate(input=375, output=1500),
     # Moonshot Kimi
     LlmModel.KIMI_K2: TokenRate(input=90, output=375),
-    LlmModel.KIMI_K2_0905: TokenRate(input=82, output=330),
-    LlmModel.KIMI_K2_5: TokenRate(input=90, output=450),
-    LlmModel.KIMI_K2_6: TokenRate(input=143, output=600),
+    LlmModel.KIMI_K2_0905: TokenRate(input=90, output=375),
+    # K2.5 / K2.6 aren't on Moonshot's direct pricing page today; OpenRouter
+    # passes through $0.44/$2.00 for K2.5 and $0.7448/$4.655 for K2.6.
+    LlmModel.KIMI_K2_5: TokenRate(input=66, output=300),
+    LlmModel.KIMI_K2_6: TokenRate(input=112, output=698),
     LlmModel.KIMI_K2_THINKING: TokenRate(input=90, output=375),
     # Perplexity Sonar
     LlmModel.PERPLEXITY_SONAR: TokenRate(input=150, output=150),
@@ -335,7 +349,7 @@ TOKEN_COST: dict[LlmModel, TokenRate] = {
     LlmModel.LLAMA3_3_70B: TokenRate(input=89, output=119),
     LlmModel.LLAMA3_1_8B: TokenRate(input=8, output=12),
     LlmModel.META_LLAMA_4_SCOUT: TokenRate(input=17, output=51),
-    LlmModel.META_LLAMA_4_MAVERICK: TokenRate(input=30, output=90),
+    LlmModel.META_LLAMA_4_MAVERICK: TokenRate(input=75, output=116),
     LlmModel.OPENAI_GPT_OSS_120B: TokenRate(input=23, output=90),
     LlmModel.OPENAI_GPT_OSS_20B: TokenRate(input=11, output=45),
 }
@@ -549,9 +563,13 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             cost_amount=150,
         )
     ],
+    # D-ID: $5.90/min of generated video. Median 10-sec clip ≈ $0.98 →
+    # 148 cr at 1.5x. 100 cr flat is a conservative middle; long clips
+    # still under-bill, short clips over-bill modestly. Revisit if the
+    # block starts surfacing per-call duration from D-ID's response.
     CreateTalkingAvatarVideoBlock: [
         BlockCost(
-            cost_amount=15,
+            cost_amount=100,
             cost_filter={
                 "credentials": {
                     "id": did_credentials.id,
@@ -561,13 +579,11 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             },
         )
     ],
-    # Jina Reader Search: $0.01/query on the paid tier. Block emits
-    # merge_stats(provider_cost=0.01, cost_usd) so the COST_USD resolver
-    # bills 1 platform credit per call AND the platform cost telemetry
-    # captures real USD spend (RUN wouldn't populate costMicrodollars).
+    # Jina Reader Search: $0.01/query on the paid tier. 150 cr/$ matches
+    # the 1.5x margin baseline used across every other COST_USD block.
     SearchTheWebBlock: [
         BlockCost(
-            cost_amount=100,
+            cost_amount=150,
             cost_type=BlockCostType.COST_USD,
             cost_filter={
                 "credentials": {
@@ -591,9 +607,10 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             },
         )
     ],
+    # Ideogram V2/default = $0.08/image; V3 Quality = $0.09/image.
     IdeogramModelBlock: [
         BlockCost(
-            cost_amount=16,
+            cost_amount=12,
             cost_filter={
                 "credentials": {
                     "id": ideogram_credentials.id,
@@ -603,7 +620,7 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             },
         ),
         BlockCost(
-            cost_amount=18,
+            cost_amount=14,
             cost_filter={
                 "ideogram_model_name": "V_3",
                 "credentials": {
@@ -662,9 +679,18 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             },
         )
     ],
+    # ReplicateModelBlock is a generic wrapper — users pass ANY Replicate
+    # model ref. A flat 10 cr/run was:
+    #   - 20x over-billing cheap models (~$0.005 SDXL tiny runs)
+    #   - 10-500x under-billing long video/LLM runs ($1-$50+)
+    # Block now reads prediction.metrics.predict_time after completion
+    # and bills that × $0.0014/s (Nvidia L40S mid-tier) via COST_USD
+    # 150 cr/$. Heavy LLMs on A100 under-bill slightly, cheap L4 runs
+    # over-bill slightly, but the catastrophic under-bill is gone.
     ReplicateModelBlock: [
         BlockCost(
-            cost_amount=10,
+            cost_amount=150,
+            cost_type=BlockCostType.COST_USD,
             cost_filter={
                 "credentials": {
                     "id": replicate_credentials.id,
@@ -687,7 +713,7 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             },
         ),
         BlockCost(
-            cost_amount=20,
+            cost_amount=12,  # Flux Kontext Max: ~$0.08/image @ 1.5x margin
             cost_filter={
                 "model": FluxKontextModelName.FLUX_KONTEXT_MAX,
                 "credentials": {
@@ -744,9 +770,14 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             },
         )
     ],
+    # Unreal Speech: $16 / 1M chars = $0.000016/char. Block emits
+    # provider_cost=chars*0.000016, cost_usd; 150 cr/$ keeps the 1.5x
+    # platform-wide margin. Replaces the prior flat 5 cr RUN which
+    # under-billed long narrations by 10x+.
     UnrealTextToSpeechBlock: [
         BlockCost(
-            cost_amount=5,
+            cost_amount=150,
+            cost_type=BlockCostType.COST_USD,
             cost_filter={
                 "credentials": {
                     "id": unreal_credentials.id,
@@ -794,7 +825,7 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
     ],
     GetLinkedinProfilePictureBlock: [
         BlockCost(
-            cost_amount=3,
+            cost_amount=1,
             cost_filter={
                 "credentials": {
                     "id": enrichlayer_credentials.id,
@@ -908,7 +939,7 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             },
         ),
         BlockCost(
-            cost_amount=14,  # Nano Banana Pro: $0.14 per image at 2K
+            cost_amount=21,  # Nano Banana Pro: $0.14/image at 2K @ 1.5x margin
             cost_filter={
                 "model": ImageGenModel.NANO_BANANA_PRO,
                 "credentials": {
@@ -919,7 +950,7 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             },
         ),
         BlockCost(
-            cost_amount=14,  # Nano Banana 2: same pricing tier as Pro
+            cost_amount=21,  # Nano Banana 2: same pricing tier as Pro
             cost_filter={
                 "model": ImageGenModel.NANO_BANANA_2,
                 "credentials": {
@@ -943,7 +974,7 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             },
         ),
         BlockCost(
-            cost_amount=14,  # Nano Banana Pro: $0.14 per image at 2K
+            cost_amount=21,  # Nano Banana Pro: $0.14/image at 2K @ 1.5x margin
             cost_filter={
                 "model": GeminiImageModel.NANO_BANANA_PRO,
                 "credentials": {
@@ -954,7 +985,7 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             },
         ),
         BlockCost(
-            cost_amount=14,  # Nano Banana 2: same pricing tier as Pro
+            cost_amount=21,  # Nano Banana 2: same pricing tier as Pro
             cost_filter={
                 "model": GeminiImageModel.NANO_BANANA_2,
                 "credentials": {
@@ -1155,13 +1186,12 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             },
         )
     ],
-    # ZeroBounce: $16 / 2K validations = $0.008 per email. One email per call.
-    # Block emits merge_stats(provider_cost=0.008, cost_usd) so the platform
-    # cost telemetry records real USD; resolver bills 2 credits per call
-    # (ceil(0.008 * 250)).
+    # ZeroBounce: ~$0.008-$0.02/validation depending on tier. 150 cr/$
+    # normalizes the margin to the 1.5x baseline used across other
+    # COST_USD blocks (was 250 cr/$ = 2.5x margin).
     ValidateEmailsBlock: [
         BlockCost(
-            cost_amount=250,
+            cost_amount=150,
             cost_type=BlockCostType.COST_USD,
             cost_filter={
                 "credentials": {
@@ -1220,12 +1250,13 @@ BLOCK_COSTS: dict[Type[Block], list[BlockCost]] = {
             },
         )
     ],
-    # FAL video generation: $0.001–$0.02 per output second. Charge 3 credits
-    # per walltime second (~$0.03) — covers the median tier with margin and
-    # scales fairly across short clips vs long renders.
+    # FAL video generation: Veo/Seedance tier $0.25-0.30/s, Lite tier
+    # ~$0.05-0.10/s. 15 cr/s (~$0.15/s) covers the Lite tier with 1.5x
+    # margin; higher tiers still slightly under-bill until the block
+    # surfaces per-call provider_cost and we migrate to COST_USD.
     AIVideoGeneratorBlock: [
         BlockCost(
-            cost_amount=3,
+            cost_amount=15,
             cost_type=BlockCostType.SECOND,
             cost_filter={
                 "credentials": {
