@@ -53,7 +53,15 @@ export function useOnboardingPage() {
     };
   }, [ldClient, ldEnabled, areFlagsReady]);
 
-  const isPaymentEnabled = useGetFlag(Flag.ENABLE_PLATFORM_PAYMENT);
+  // Snapshot the flag once LaunchDarkly resolves so an admin toggling
+  // ENABLE_PLATFORM_PAYMENT mid-session can't shuffle steps under a user
+  // who is already inside the wizard.
+  const livePaymentEnabled = useGetFlag(Flag.ENABLE_PLATFORM_PAYMENT);
+  const paymentEnabledSnapshot = useRef<boolean | null>(null);
+  if (paymentEnabledSnapshot.current === null && areFlagsReady) {
+    paymentEnabledSnapshot.current = livePaymentEnabled;
+  }
+  const isPaymentEnabled = paymentEnabledSnapshot.current ?? false;
   const preparingStep: Step = isPaymentEnabled ? 5 : 4;
   const totalSteps = isPaymentEnabled ? 4 : 3;
 
