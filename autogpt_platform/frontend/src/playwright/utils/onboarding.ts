@@ -45,7 +45,8 @@ export async function skipOnboardingIfPresent(
 }
 
 /**
- * Walk through the full 5-step onboarding wizard in the browser.
+ * Walk through the onboarding wizard in the browser. The Subscription step
+ * is gated behind ENABLE_PLATFORM_PAYMENT and only walked when present.
  * Returns the data that was entered so tests can verify it was submitted.
  */
 export async function completeOnboardingWizard(
@@ -84,15 +85,21 @@ export async function completeOnboardingWizard(
   }
   await page.getByRole("button", { name: "Continue" }).click();
 
-  // Step 4: Subscription — pick a plan to advance.
-  // (The "Team" CTA opens an external intake form and does not advance.)
-  await expect(page.getByText(/choose the plan that.s right/i)).toBeVisible({
-    timeout: 5000,
-  });
-  const planCta = plan === "max" ? "Upgrade to Max" : "Get Pro";
-  await page.getByRole("button", { name: planCta }).click();
+  // Subscription step (only when ENABLE_PLATFORM_PAYMENT is on) — pick a
+  // plan to advance. The "Team" CTA opens an external intake form and does
+  // not advance, so we don't exercise it here.
+  const subscriptionHeader = page.getByText(/choose the plan that.s right/i);
+  const subscriptionShown = await subscriptionHeader
+    .waitFor({ state: "visible", timeout: 2000 })
+    .then(() => true)
+    .catch(() => false);
 
-  // Step 5: Preparing — require the real transition state to appear first,
+  if (subscriptionShown) {
+    const planCta = plan === "max" ? "Upgrade to Max" : "Get Pro";
+    await page.getByRole("button", { name: planCta }).click();
+  }
+
+  // Final step: Preparing — require the real transition state to appear first,
   // then wait for the app shell on /copilot rather than racing the redirect.
   await expect(
     page.getByText("Preparing your workspace...", { exact: false }),

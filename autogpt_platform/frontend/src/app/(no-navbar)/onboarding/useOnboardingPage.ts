@@ -5,13 +5,14 @@ import {
 } from "@/app/api/__generated__/endpoints/onboarding/onboarding";
 import { resolveResponse } from "@/app/api/helpers";
 import { useSupabase } from "@/lib/supabase/hooks/useSupabase";
+import { Flag, useGetFlag } from "@/services/feature-flags/use-get-flag";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Step, useOnboardingWizardStore } from "./store";
 
-function parseStep(value: string | null): Step {
+function parseStep(value: string | null, maxStep: number): Step {
   const n = Number(value);
-  if (n >= 1 && n <= 5) return n as Step;
+  if (n >= 1 && n <= maxStep) return n as Step;
   return 1;
 }
 
@@ -22,6 +23,8 @@ export function useOnboardingPage() {
   const currentStep = useOnboardingWizardStore((s) => s.currentStep);
   const goToStep = useOnboardingWizardStore((s) => s.goToStep);
   const reset = useOnboardingWizardStore((s) => s.reset);
+  const isPaymentEnabled = useGetFlag(Flag.ENABLE_PLATFORM_PAYMENT);
+  const preparingStep = isPaymentEnabled ? 5 : 4;
   const [isLoading, setIsLoading] = useState(true);
   const hasSubmitted = useRef(false);
   const hasInitialized = useRef(false);
@@ -30,18 +33,18 @@ export function useOnboardingPage() {
   useEffect(() => {
     if (hasInitialized.current) return;
     hasInitialized.current = true;
-    const urlStep = parseStep(searchParams.get("step"));
+    const urlStep = parseStep(searchParams.get("step"), preparingStep);
     reset();
     goToStep(urlStep);
-  }, [searchParams, reset, goToStep]);
+  }, [searchParams, reset, goToStep, preparingStep]);
 
   // Sync store → URL when step changes
   useEffect(() => {
-    const urlStep = parseStep(searchParams.get("step"));
+    const urlStep = parseStep(searchParams.get("step"), preparingStep);
     if (currentStep !== urlStep) {
       router.replace(`/onboarding?step=${currentStep}`, { scroll: false });
     }
-  }, [currentStep, router, searchParams]);
+  }, [currentStep, router, searchParams, preparingStep]);
 
   // Check if onboarding already completed
   useEffect(() => {
@@ -63,9 +66,9 @@ export function useOnboardingPage() {
     checkCompletion();
   }, [isLoggedIn, router]);
 
-  // Submit profile when entering step 5 (Preparing)
+  // Submit profile when entering the Preparing step
   useEffect(() => {
-    if (currentStep !== 5 || hasSubmitted.current) return;
+    if (currentStep !== preparingStep || hasSubmitted.current) return;
     hasSubmitted.current = true;
 
     const { name, role, otherRole, painPoints, otherPainPoint } =
@@ -86,7 +89,7 @@ export function useOnboardingPage() {
     }).catch(() => {
       // Best effort — profile data is non-critical for accessing copilot
     });
-  }, [currentStep]);
+  }, [currentStep, preparingStep]);
 
   async function handlePreparingComplete() {
     for (let attempt = 0; attempt < 3; attempt++) {
