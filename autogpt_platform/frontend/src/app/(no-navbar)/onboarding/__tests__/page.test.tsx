@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@/tests/integrations/test-utils";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@/tests/integrations/test-utils";
 import OnboardingPage from "../page";
 import { useOnboardingWizardStore } from "../store";
 
@@ -16,8 +23,12 @@ vi.mock("../steps/SubscriptionStep/SubscriptionStep", () => ({
   SubscriptionStep: () => <div data-testid="step-subscription" />,
 }));
 vi.mock("../steps/PreparingStep", () => ({
-  PreparingStep: ({ onComplete: _onComplete }: { onComplete: () => void }) => (
-    <div data-testid="step-preparing" />
+  PreparingStep: ({ onComplete }: { onComplete: () => void }) => (
+    <div data-testid="step-preparing">
+      <button data-testid="preparing-finish" onClick={onComplete}>
+        finish
+      </button>
+    </div>
   ),
 }));
 
@@ -37,14 +48,16 @@ vi.mock("@/lib/supabase/hooks/useSupabase", () => ({
   useSupabase: () => ({ isLoggedIn: true, isUserLoading: false, user: null }),
 }));
 
+const completeStepMock = vi.fn();
+const submitProfileMock = vi.fn();
 vi.mock("@/app/api/__generated__/endpoints/onboarding/onboarding", () => ({
   getV1OnboardingState: () =>
     Promise.resolve({ status: 200, data: { completedSteps: [] } }),
   getV1CheckIfOnboardingIsCompleted: () =>
     Promise.resolve({ status: 200, data: false }),
   patchV1UpdateOnboardingState: () => Promise.resolve({ status: 200 }),
-  postV1CompleteOnboardingStep: () => Promise.resolve({ status: 200 }),
-  postV1SubmitOnboardingProfile: () => Promise.resolve({ status: 200 }),
+  postV1CompleteOnboardingStep: (body: unknown) => completeStepMock(body),
+  postV1SubmitOnboardingProfile: (body: unknown) => submitProfileMock(body),
 }));
 
 vi.mock("@/app/api/helpers", () => ({
@@ -67,6 +80,10 @@ beforeEach(() => {
   currentSearchParams = new URLSearchParams();
   mockFlagValue = false;
   routerReplace.mockClear();
+  completeStepMock.mockClear();
+  completeStepMock.mockReturnValue(Promise.resolve({ status: 200 }));
+  submitProfileMock.mockClear();
+  submitProfileMock.mockReturnValue(Promise.resolve({ status: 200 }));
   useOnboardingWizardStore.getState().reset();
 });
 
@@ -127,5 +144,55 @@ describe("OnboardingPage — flag-gated SubscriptionStep", () => {
     currentSearchParams = new URLSearchParams("step=foo");
     render(<OnboardingPage />);
     expect(await screen.findByTestId("step-welcome")).toBeDefined();
+  });
+
+  it("submits the profile after the user advances into Preparing", async () => {
+    mockFlagValue = false;
+    currentSearchParams = new URLSearchParams("step=1");
+    render(<OnboardingPage />);
+    expect(await screen.findByTestId("step-welcome")).toBeDefined();
+    await act(async () => {
+      useOnboardingWizardStore.setState({
+        name: "Avery",
+        role: "Engineering",
+        painPoints: ["Research", "Something else"],
+        otherPainPoint: "  drafting status updates  ",
+      });
+      useOnboardingWizardStore.getState().goToStep(4);
+    });
+    expect(await screen.findByTestId("step-preparing")).toBeDefined();
+    await waitFor(() => expect(submitProfileMock).toHaveBeenCalledTimes(1));
+    expect(submitProfileMock).toHaveBeenCalledWith({
+      user_name: "Avery",
+      user_role: "Engineering",
+      pain_points: ["Research", "drafting status updates"],
+    });
+  });
+
+  it("redirects to /copilot when handlePreparingComplete fires", async () => {
+    mockFlagValue = false;
+    currentSearchParams = new URLSearchParams("step=4");
+    render(<OnboardingPage />);
+    const finish = await screen.findByTestId("preparing-finish");
+    await act(async () => {
+      fireEvent.click(finish);
+    });
+    await waitFor(() => expect(completeStepMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(routerReplace).toHaveBeenCalledWith("/copilot"));
+  });
+
+  it("syncs URL when the store advances past the URL step", async () => {
+    mockFlagValue = false;
+    currentSearchParams = new URLSearchParams("step=1");
+    render(<OnboardingPage />);
+    expect(await screen.findByTestId("step-welcome")).toBeDefined();
+    await act(async () => {
+      useOnboardingWizardStore.getState().goToStep(3);
+    });
+    await waitFor(() =>
+      expect(routerReplace).toHaveBeenCalledWith("/onboarding?step=3", {
+        scroll: false,
+      }),
+    );
   });
 });
