@@ -1,7 +1,6 @@
 "use client";
 
 import { CaretLeft } from "@phosphor-icons/react";
-import { Flag, useGetFlag } from "@/services/feature-flags/use-get-flag";
 import { ProgressBar } from "./components/ProgressBar";
 import { StepIndicator } from "./components/StepIndicator";
 import { PainPointsStep } from "./steps/PainPointsStep";
@@ -13,18 +12,20 @@ import { useOnboardingWizardStore } from "./store";
 import { useOnboardingPage } from "./useOnboardingPage";
 
 export default function OnboardingPage() {
-  const { currentStep, isLoading, handlePreparingComplete } =
-    useOnboardingPage();
+  const {
+    currentStep,
+    isLoading,
+    handlePreparingComplete,
+    isPaymentEnabled,
+    preparingStep,
+    totalSteps,
+  } = useOnboardingPage();
   const prevStep = useOnboardingWizardStore((s) => s.prevStep);
-  const isPaymentEnabled = useGetFlag(Flag.ENABLE_PLATFORM_PAYMENT);
 
   if (isLoading) return null;
 
-  // ProgressBar + StepIndicator track only the user-interactive steps. When
-  // payments are gated off, SubscriptionStep is skipped and PreparingStep
-  // takes its slot, shrinking the visible step count by one.
-  const totalSteps = isPaymentEnabled ? 4 : 3;
-  const preparingStep = isPaymentEnabled ? 5 : 4;
+  // ProgressBar + StepIndicator track only the user-interactive steps.
+  // PreparingStep is a transition view that hides both indicators.
   const showDots = currentStep <= totalSteps;
   const showBack = currentStep > 1 && currentStep <= totalSteps;
   const showProgressBar = currentStep <= totalSteps;
