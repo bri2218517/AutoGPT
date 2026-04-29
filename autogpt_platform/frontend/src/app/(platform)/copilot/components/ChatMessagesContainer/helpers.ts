@@ -128,34 +128,29 @@ export function splitReasoningAndResponse(parts: MessagePart[]): {
   reasoning: MessagePart[];
   response: MessagePart[];
 } {
-  const lastToolIndex = parts.findLastIndex((p) => p.type.startsWith("tool-"));
-
-  // eslint-disable-next-line no-console
-  console.log(
-    "[DEBUG inside splitReasoningAndResponse]",
-    JSON.stringify({
-      partsLen: parts.length,
-      types: parts.map((p) => p?.type),
-      lastToolIndex,
-    }),
-  );
+  // Manual reverse loop instead of `Array.prototype.findLastIndex`. The
+  // built-in version was being elided by the bundler in CI's vitest run,
+  // causing the function to misread `lastToolIndex` and return the input
+  // unchanged. The explicit loop is opaque to that optimization.
+  let lastToolIndex = -1;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i].type.startsWith("tool-")) {
+      lastToolIndex = i;
+      break;
+    }
+  }
 
   if (lastToolIndex === -1) {
     return { reasoning: [], response: parts };
   }
 
-  const hasResponseAfterTools = parts
-    .slice(lastToolIndex + 1)
-    .some((p) => p.type === "text");
-
-  // eslint-disable-next-line no-console
-  console.log(
-    "[DEBUG inside splitReasoningAndResponse 2]",
-    JSON.stringify({
-      hasResponseAfterTools,
-      sliceAfterTool: parts.slice(lastToolIndex + 1).map((p) => p.type),
-    }),
-  );
+  let hasResponseAfterTools = false;
+  for (let i = lastToolIndex + 1; i < parts.length; i++) {
+    if (parts[i].type === "text") {
+      hasResponseAfterTools = true;
+      break;
+    }
+  }
 
   if (!hasResponseAfterTools) {
     return { reasoning: [], response: parts };
