@@ -130,6 +130,16 @@ export function splitReasoningAndResponse(parts: MessagePart[]): {
 } {
   const lastToolIndex = parts.findLastIndex((p) => p.type.startsWith("tool-"));
 
+  // eslint-disable-next-line no-console
+  console.log(
+    "[DEBUG inside splitReasoningAndResponse]",
+    JSON.stringify({
+      partsLen: parts.length,
+      types: parts.map((p) => p?.type),
+      lastToolIndex,
+    }),
+  );
+
   if (lastToolIndex === -1) {
     return { reasoning: [], response: parts };
   }
@@ -137,6 +147,15 @@ export function splitReasoningAndResponse(parts: MessagePart[]): {
   const hasResponseAfterTools = parts
     .slice(lastToolIndex + 1)
     .some((p) => p.type === "text");
+
+  // eslint-disable-next-line no-console
+  console.log(
+    "[DEBUG inside splitReasoningAndResponse 2]",
+    JSON.stringify({
+      hasResponseAfterTools,
+      sliceAfterTool: parts.slice(lastToolIndex + 1).map((p) => p.type),
+    }),
+  );
 
   if (!hasResponseAfterTools) {
     return { reasoning: [], response: parts };
