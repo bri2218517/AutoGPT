@@ -2406,46 +2406,6 @@
         }
       }
     },
-    "/api/chat/sessions/{session_id}/cancel-auto-approve": {
-      "post": {
-        "tags": ["v2", "chat", "chat"],
-        "summary": "Cancel Auto Approve Task",
-        "description": "Cancel the pending auto-approve timer for a decompose_goal plan.\n\nCalled by the frontend when the user clicks \"Modify\" on the build-plan\nbox. Without this, the server-side timer would fire the default\n\"Approved\" message while the user is still editing.",
-        "operationId": "postV2CancelAutoApproveTask",
-        "security": [{ "HTTPBearerJWT": [] }],
-        "parameters": [
-          {
-            "name": "session_id",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string", "title": "Session Id" }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CancelSessionResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "$ref": "#/components/responses/HTTP401NotAuthenticatedError"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/HTTPValidationError" }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/chat/sessions/{session_id}/messages/pending": {
       "get": {
         "tags": ["v2", "chat", "chat"],
@@ -16261,23 +16221,6 @@
             "title": "Step Count",
             "description": "Number of steps (auto-derived from steps list)",
             "default": 0
-          },
-          "requires_approval": {
-            "type": "boolean",
-            "title": "Requires Approval",
-            "default": true
-          },
-          "auto_approve_seconds": {
-            "type": "integer",
-            "title": "Auto Approve Seconds",
-            "description": "Seconds the client should count down before auto-approving. Kept in sync with the server-side fallback timer, which runs a grace period longer to absorb network latency.",
-            "default": 60
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Created At",
-            "description": "UTC timestamp when the tool returned. The client uses this with auto_approve_seconds to compute the correct remaining countdown when the user reopens the session — so the timer reflects real elapsed time instead of restarting from zero."
           }
         },
         "type": "object",

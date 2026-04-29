@@ -3,7 +3,6 @@ import {
   fireEvent,
   render,
   screen,
-  waitFor,
 } from "@/tests/integrations/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DecomposeGoalTool } from "../DecomposeGoal";
@@ -16,10 +15,6 @@ vi.mock(
     useCopilotChatActions: () => ({ onSend: mockOnSend }),
   }),
 );
-
-vi.mock("@/app/api/__generated__/endpoints/chat/chat", () => ({
-  postV2CancelAutoApproveTask: vi.fn(() => Promise.resolve()),
-}));
 
 const STEPS = [
   {
@@ -51,9 +46,6 @@ const DECOMPOSITION: TaskDecompositionOutput = {
   goal: "Build a news summarizer",
   steps: STEPS,
   step_count: 3,
-  requires_approval: true,
-  auto_approve_seconds: 60,
-  created_at: new Date().toISOString(),
   session_id: "test-session-1",
 };
 
@@ -84,33 +76,18 @@ describe("DecomposeGoalTool", () => {
   });
 
   it("renders analyzing animation during input-streaming", () => {
-    render(
-      <DecomposeGoalTool
-        part={makePart("input-streaming") as any}
-        isLastMessage
-      />,
-    );
+    render(<DecomposeGoalTool part={makePart("input-streaming") as any} />);
     expect(screen.getByText(/A/)).toBeDefined();
   });
 
   it("renders error card when state is output-error", () => {
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-error") as any}
-        isLastMessage
-      />,
-    );
+    render(<DecomposeGoalTool part={makePart("output-error") as any} />);
     expect(screen.getByText(/Failed to analyze the goal/i)).toBeDefined();
     expect(screen.getByText("Try again")).toBeDefined();
   });
 
   it("sends retry message when Try again is clicked on error", () => {
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-error") as any}
-        isLastMessage
-      />,
-    );
+    render(<DecomposeGoalTool part={makePart("output-error") as any} />);
     fireEvent.click(screen.getByText("Try again"));
     expect(mockOnSend).toHaveBeenCalledWith(
       "Please try decomposing the goal again.",
@@ -126,17 +103,15 @@ describe("DecomposeGoalTool", () => {
     render(
       <DecomposeGoalTool
         part={makePart("output-available", errorOutput) as any}
-        isLastMessage
       />,
     );
     expect(screen.getByText("Please provide at least one step.")).toBeDefined();
   });
 
-  it("renders the build plan accordion with steps", () => {
+  it("renders the build plan accordion with steps as a read-only list", () => {
     render(
       <DecomposeGoalTool
         part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
       />,
     );
     expect(screen.getByText(/Build Plan — 3 steps/)).toBeDefined();
@@ -151,254 +126,37 @@ describe("DecomposeGoalTool", () => {
     render(
       <DecomposeGoalTool
         part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
       />,
     );
     expect(screen.getByText("AI Text Generator")).toBeDefined();
   });
 
-  it("shows approve and modify buttons when requires_approval and isLastMessage", () => {
+  it("does not render approve, modify, or edit controls", () => {
     render(
       <DecomposeGoalTool
         part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
-      />,
-    );
-    expect(screen.getByText("Modify")).toBeDefined();
-    expect(screen.getByText(/Starting in/)).toBeDefined();
-  });
-
-  it("hides action buttons when isLastMessage is false", () => {
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage={false}
       />,
     );
     expect(screen.queryByText("Modify")).toBeNull();
-    expect(screen.getByText(/Review the plan above and approve/)).toBeDefined();
+    expect(screen.queryByText("Approve")).toBeNull();
+    expect(screen.queryByText(/Starting in/)).toBeNull();
+    expect(screen.queryByPlaceholderText("Step description")).toBeNull();
+    expect(screen.queryByLabelText("Remove step")).toBeNull();
+    expect(screen.queryByLabelText("Insert step here")).toBeNull();
   });
 
-  it("hides action buttons when requires_approval is false", () => {
-    const noApproval = { ...DECOMPOSITION, requires_approval: false };
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-available", noApproval) as any}
-        isLastMessage
-      />,
-    );
-    expect(screen.queryByText("Modify")).toBeNull();
-  });
-
-  it("disables buttons while message is still streaming", () => {
+  it("does not call onSend when the plan card renders", () => {
     render(
       <DecomposeGoalTool
         part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
-        isMessageStreaming
       />,
     );
-    const modifyBtn = screen.getByText("Modify").closest("button");
-    expect(modifyBtn?.disabled).toBe(true);
-  });
-
-  it("sends approval message when approve button is clicked", async () => {
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
-      />,
-    );
-
-    const startBtn = screen.getByText(/Starting in/).closest("button");
-    expect(startBtn).toBeDefined();
-    fireEvent.click(startBtn!);
-
-    await waitFor(() => {
-      expect(mockOnSend).toHaveBeenCalledWith(
-        "Approved. Please build the agent.",
-      );
-    });
-  });
-
-  it("does not send duplicate approval on second click", async () => {
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
-      />,
-    );
-
-    const startBtn = screen.getByText(/Starting in/).closest("button");
-    fireEvent.click(startBtn!);
-    fireEvent.click(startBtn!);
-
-    await waitFor(() => {
-      expect(mockOnSend).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  it("enters edit mode when Modify is clicked", async () => {
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
-      />,
-    );
-
-    fireEvent.click(screen.getByText("Modify"));
-
-    await waitFor(() => {
-      const textareas = screen.getAllByPlaceholderText("Step description");
-      expect(textareas.length).toBe(3);
-    });
-  });
-
-  it("cancels auto-approve on the server when Modify is clicked", async () => {
-    const { postV2CancelAutoApproveTask } = await import(
-      "@/app/api/__generated__/endpoints/chat/chat"
-    );
-
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
-      />,
-    );
-
-    fireEvent.click(screen.getByText("Modify"));
-
-    await waitFor(() => {
-      expect(postV2CancelAutoApproveTask).toHaveBeenCalledWith(
-        "test-session-1",
-      );
-    });
-  });
-
-  it("allows editing step descriptions in edit mode", async () => {
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
-      />,
-    );
-
-    fireEvent.click(screen.getByText("Modify"));
-
-    await waitFor(() => {
-      expect(screen.getAllByPlaceholderText("Step description").length).toBe(3);
-    });
-
-    const textareas = screen.getAllByPlaceholderText("Step description");
-    fireEvent.change(textareas[0], {
-      target: { value: "Fetch RSS feed" },
-    });
-
-    expect(
-      (
-        screen.getAllByPlaceholderText(
-          "Step description",
-        )[0] as HTMLTextAreaElement
-      ).value,
-    ).toBe("Fetch RSS feed");
-  });
-
-  it("allows deleting steps in edit mode", async () => {
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
-      />,
-    );
-
-    fireEvent.click(screen.getByText("Modify"));
-
-    await waitFor(() => {
-      expect(screen.getAllByPlaceholderText("Step description").length).toBe(3);
-    });
-
-    const removeButtons = screen.getAllByLabelText("Remove step");
-    fireEvent.click(removeButtons[0]);
-
-    await waitFor(() => {
-      expect(screen.getAllByPlaceholderText("Step description").length).toBe(2);
-    });
-  });
-
-  it("allows inserting new steps in edit mode", async () => {
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
-      />,
-    );
-
-    fireEvent.click(screen.getByText("Modify"));
-
-    await waitFor(() => {
-      expect(screen.getAllByPlaceholderText("Step description").length).toBe(3);
-    });
-
-    const insertButtons = screen.getAllByLabelText("Insert step here");
-    fireEvent.click(insertButtons[0]);
-
-    await waitFor(() => {
-      expect(screen.getAllByPlaceholderText("Step description").length).toBe(4);
-    });
-  });
-
-  it("sends modified steps message when approve is clicked in edit mode", async () => {
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
-      />,
-    );
-
-    fireEvent.click(screen.getByText("Modify"));
-
-    await waitFor(() => {
-      expect(screen.getAllByPlaceholderText("Step description").length).toBe(3);
-    });
-
-    const textareas = screen.getAllByPlaceholderText("Step description");
-    fireEvent.change(textareas[0], {
-      target: { value: "Fetch RSS feed" },
-    });
-
-    fireEvent.click(screen.getByText("Approve"));
-
-    await waitFor(() => {
-      expect(mockOnSend).toHaveBeenCalledWith(
-        expect.stringContaining("Approved with modifications"),
-      );
-      expect(mockOnSend).toHaveBeenCalledWith(
-        expect.stringContaining("Fetch RSS feed"),
-      );
-    });
-  });
-
-  it("renders countdown timer in the approve button", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(DECOMPOSITION.created_at!));
-
-    render(
-      <DecomposeGoalTool
-        part={makePart("output-available", DECOMPOSITION) as any}
-        isLastMessage
-      />,
-    );
-
-    expect(screen.getByText("60")).toBeDefined();
-    vi.useRealTimers();
+    expect(mockOnSend).not.toHaveBeenCalled();
   });
 
   it("renders nothing pending when output is not yet available", () => {
     const { container } = render(
-      <DecomposeGoalTool
-        part={makePart("input-available") as any}
-        isLastMessage
-      />,
+      <DecomposeGoalTool part={makePart("input-available") as any} />,
     );
     expect(container.querySelector(".py-2")).toBeDefined();
   });

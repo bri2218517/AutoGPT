@@ -8,7 +8,6 @@ from backend.copilot.model import ChatSession
 
 from .agent_generator.pipeline import fetch_library_agents, fix_validate_and_save
 from .base import BaseTool
-from .decompose_goal import needs_build_plan_approval
 from .helpers import require_guide_read
 from .models import ErrorResponse, ToolResponseBase
 
@@ -76,25 +75,6 @@ class CreateAgentTool(BaseTool):
         guide_gate = require_guide_read(session, "create_agent")
         if guide_gate is not None:
             return guide_gate
-
-        # Enforce the decompose_goal approval gate at the code level.
-        # Prompt-only "STOP" is unreliable: the LLM has been observed
-        # (a) calling decompose_goal + create_agent in the same turn and
-        # (b) skipping decompose_goal entirely on follow-up build requests.
-        # Require that the most recent user message is an approval AND a
-        # decompose_goal call exists before it in the session.
-        if session and needs_build_plan_approval(session):
-            return ErrorResponse(
-                message=(
-                    "You must call decompose_goal first and wait for user "
-                    "approval before calling create_agent. Call decompose_goal "
-                    "now with the build steps, then end your turn — the "
-                    "platform will resume the conversation after the user "
-                    "responds with Approved (or Approved with modifications)."
-                ),
-                error="build_plan_approval_required",
-                session_id=session_id,
-            )
 
         if not agent_json:
             return ErrorResponse(

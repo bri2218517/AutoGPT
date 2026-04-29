@@ -26,24 +26,19 @@ Steps:
 **Skip this** when the goal already specifies all dimensions (e.g.
 "scrape prices from Amazon and email me daily").
 
-### Before Building: Goal Decomposition (REQUIRED)
+### Before Building: Show the Plan
 
-Before running the workflow below, ALWAYS decompose the goal first:
+Start agent generation by calling `decompose_goal` once to display your
+build plan to the user as a step-by-step UI card.
 
 1. Analyze the user's request and break it into logical build steps (e.g.
    "add input block", "add AI summarizer", "wire blocks together").
-2. Call `decompose_goal` with those steps. **Do not write any text before
-   or after the tool call** — the platform renders a rich UI card for the
-   plan automatically. Any text you write will duplicate the plan display.
-3. **STOP your turn immediately after `decompose_goal` returns.** Do not
-   call any other tools. Do not generate any text. End the turn so the
-   user can review the plan and respond.
-4. Only after the user responds, continue with "Workflow for Creating/
-   Editing Agents".
-
-`decompose_goal` MUST be the only tool call in the turn, with no
-accompanying text. Never combine it with `find_block`, `create_agent`,
-or any other tool in the same turn.
+2. Call `decompose_goal` with those steps. Do not write any text before
+   or after the tool call — the platform renders the plan UI card
+   automatically, so any extra text duplicates the display.
+3. Continue immediately with the workflow below in the same turn. The
+   plan card is informational only — there is no approval step, no
+   countdown, and no need to wait for the user.
 
 For simple goals (1-2 blocks), keep steps brief (2-3 steps).
 For complex goals, use as many steps as needed.

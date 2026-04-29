@@ -1,6 +1,6 @@
 """Pydantic models for tool responses."""
 
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
@@ -844,24 +844,6 @@ class TaskDecompositionResponse(ToolResponseBase):
     steps: list[DecompositionStepModel]
     step_count: int = Field(
         default=0, description="Number of steps (auto-derived from steps list)"
-    )
-    requires_approval: bool = True
-    auto_approve_seconds: int = Field(
-        default=60,
-        description=(
-            "Seconds the client should count down before auto-approving. "
-            "Kept in sync with the server-side fallback timer, which runs a "
-            "grace period longer to absorb network latency."
-        ),
-    )
-    created_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC),
-        description=(
-            "UTC timestamp when the tool returned. The client uses this with "
-            "auto_approve_seconds to compute the correct remaining countdown "
-            "when the user reopens the session — so the timer reflects real "
-            "elapsed time instead of restarting from zero."
-        ),
     )
 
     @model_validator(mode="after")

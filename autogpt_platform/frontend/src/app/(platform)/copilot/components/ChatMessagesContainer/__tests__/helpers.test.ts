@@ -56,7 +56,6 @@ describe("isInteractiveToolPart", () => {
       goal: "Build agent",
       steps: [],
       step_count: 0,
-      requires_approval: true,
     });
     expect(isInteractiveToolPart(part)).toBe(true);
   });
