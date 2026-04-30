@@ -109,7 +109,19 @@ def main() -> None:
     grace_deadline = start + MISSING_GRACE_SECONDS
 
     while True:
-        runs = fetch_runs(env, headers)
+        try:
+            runs = fetch_runs(env, headers)
+        except requests.RequestException as exc:
+            if time.monotonic() > deadline:
+                print(
+                    f"Timeout after {MAX_WAIT_SECONDS}s while fetching runs: {exc}"
+                )
+                write_output("proceed", "false")
+                sys.exit(1)
+            print(f"Transient GitHub API error while fetching runs: {exc}")
+            time.sleep(POLL_INTERVAL)
+            continue
+
         by_name = latest_per_workflow(runs, env["workflows"])
 
         missing = [w for w in env["workflows"] if w not in by_name]
