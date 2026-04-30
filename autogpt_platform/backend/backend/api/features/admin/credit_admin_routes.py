@@ -56,6 +56,7 @@ async def admin_get_all_user_history(
     page: int = 1,
     page_size: int = 20,
     transaction_filter: typing.Optional[CreditTransactionType] = None,
+    include_inactive: bool = False,
 ):
     """ """
     logger.info(f"Admin user {admin_user_id} is getting grant history")
@@ -66,6 +67,7 @@ async def admin_get_all_user_history(
             page_size=page_size,
             search=search,
             transaction_filter=transaction_filter,
+            include_inactive=include_inactive,
         )
         logger.info(f"Admin user {admin_user_id} got {len(resp.history)} grant history")
         return resp

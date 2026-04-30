@@ -2556,12 +2556,16 @@ async def admin_get_user_history(
     page_size: int = 20,
     search: str | None = None,
     transaction_filter: CreditTransactionType | None = None,
+    include_inactive: bool = False,
 ) -> UserHistoryResponse:
 
     if page < 1 or page_size < 1:
         raise ValueError("Invalid pagination input")
 
     where_clause: CreditTransactionWhereInput = {}
+    # Off by default so phantom rows from abandoned Stripe checkouts aren't surfaced.
+    if not include_inactive:
+        where_clause["isActive"] = True
     if transaction_filter:
         where_clause["type"] = transaction_filter
     if search:

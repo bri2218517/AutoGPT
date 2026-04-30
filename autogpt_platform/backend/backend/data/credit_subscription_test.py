@@ -3198,3 +3198,48 @@ async def test_fulfill_checkout_preserves_top_up_reason_metadata():
     assert isinstance(metadata, SafeJson)
     assert metadata.data["reason"] == "User-initiated Stripe checkout"
     assert "checkout_session" in metadata.data
+
+
+@pytest.mark.asyncio
+async def test_admin_get_user_history_excludes_inactive_by_default():
+    """Default call must filter out inactive ledger rows so phantom TOP_UP entries
+    from abandoned Stripe checkouts don't pollute the admin dashboard."""
+    from backend.data.credit import admin_get_user_history
+
+    prisma_mock = MagicMock(
+        find_many=AsyncMock(return_value=[]),
+        count=AsyncMock(return_value=0),
+    )
+    with patch(
+        "backend.data.credit.CreditTransaction.prisma", return_value=prisma_mock
+    ):
+        await admin_get_user_history()
+
+    where = prisma_mock.find_many.await_args.kwargs["where"]
+    assert where == {"isActive": True}
+    count_where = prisma_mock.count.await_args.kwargs["where"]
+    assert count_where == {"isActive": True}
+
+
+@pytest.mark.asyncio
+async def test_admin_get_user_history_include_inactive_omits_filter():
+    """include_inactive=True surfaces phantom rows for debugging abandoned checkouts."""
+    from prisma.enums import CreditTransactionType
+
+    from backend.data.credit import admin_get_user_history
+
+    prisma_mock = MagicMock(
+        find_many=AsyncMock(return_value=[]),
+        count=AsyncMock(return_value=0),
+    )
+    with patch(
+        "backend.data.credit.CreditTransaction.prisma", return_value=prisma_mock
+    ):
+        await admin_get_user_history(
+            transaction_filter=CreditTransactionType.TOP_UP,
+            include_inactive=True,
+        )
+
+    where = prisma_mock.find_many.await_args.kwargs["where"]
+    assert "isActive" not in where
+    assert where["type"] == CreditTransactionType.TOP_UP

@@ -3104,6 +3104,16 @@
               ],
               "title": "Transaction Filter"
             }
+          },
+          {
+            "name": "include_inactive",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Inactive"
+            }
           }
         ],
         "responses": {
