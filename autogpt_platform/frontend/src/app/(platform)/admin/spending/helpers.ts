@@ -100,9 +100,11 @@ export function dateInputToUtcIsoEnd(input: string): Date | null {
   return new Date(`${input}T23:59:59.999Z`);
 }
 
+// Use UTC arithmetic so the default 30-day window matches the UI's UTC label
+// regardless of the viewer's local timezone.
 export function defaultStartDate(): string {
   const d = new Date();
-  d.setDate(d.getDate() - 30);
+  d.setUTCDate(d.getUTCDate() - 30);
   return d.toISOString().slice(0, 10);
 }
 
