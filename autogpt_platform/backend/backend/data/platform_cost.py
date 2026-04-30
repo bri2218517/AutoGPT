@@ -824,7 +824,9 @@ async def get_copilot_weekly_usage_for_export(
         except ValueError:
             tier_enum = DEFAULT_TIER
         multiplier = tier_multipliers.get(tier_enum.value, 1.0)
-        weekly_limit = int(base_weekly * multiplier)
+        # Clamp to >= 0 so a misconfigured/negative multiplier never emits
+        # negative limits in the CSV.
+        weekly_limit = max(0, int(base_weekly * multiplier))
         if weekly_limit > 0:
             percent_used = round(100.0 * cost / weekly_limit, 2)
         else:
