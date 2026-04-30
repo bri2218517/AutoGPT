@@ -18,11 +18,17 @@ from typing import Dict, List, Optional
 import requests
 
 REQUEST_TIMEOUT = 15
-# Give upstream workflows a moment to register their runs before we
-# decide they didn't trigger.
+# Wait this long before we even start polling — gives webhooks +
+# workflow registration time on busy queues.
 INITIAL_DELAY = 60
 POLL_INTERVAL = 30
 MAX_WAIT_SECONDS = 90 * 60
+# Grace period (measured from preflight start) during which a missing
+# upstream workflow is treated as "still pending registration" rather
+# than "path-filtered out / never going to run". Without this, a slow
+# webhook delivery could let us emit proceed=true before backend/frontend
+# CI have even appeared on the SHA — defeating the cost guard.
+MISSING_GRACE_SECONDS = 10 * 60
 
 
 def get_env() -> Optional[Dict[str, object]]:
@@ -95,10 +101,12 @@ def main() -> None:
     print(f"Gating on upstream workflows for SHA {env['sha']}:")
     for w in env["workflows"]:
         print(f"  - {w}")
+    start = time.monotonic()
     print(f"Initial delay {INITIAL_DELAY}s to let upstream runs register...")
     time.sleep(INITIAL_DELAY)
 
-    deadline = time.monotonic() + MAX_WAIT_SECONDS
+    deadline = start + MAX_WAIT_SECONDS
+    grace_deadline = start + MISSING_GRACE_SECONDS
 
     while True:
         runs = fetch_runs(env, headers)
@@ -120,10 +128,23 @@ def main() -> None:
             write_output("proceed", "false")
             return
 
+        # Don't treat "missing" as "skipped" until the grace period
+        # has fully elapsed — otherwise a slow webhook / queue could
+        # let us pass the gate before backend/frontend CI even appears.
+        if missing and time.monotonic() < grace_deadline:
+            remaining = int(grace_deadline - time.monotonic())
+            print(
+                f"Waiting (within {MISSING_GRACE_SECONDS}s grace, "
+                f"{remaining}s left): missing={missing}, "
+                f"in_progress={in_progress}"
+            )
+            time.sleep(POLL_INTERVAL)
+            continue
+
         if not in_progress:
             if missing:
                 print(
-                    "Workflow(s) did not trigger for this SHA "
+                    "Workflow(s) did not trigger after grace period "
                     f"(treating as skipped): {missing}"
                 )
             print(f"Upstream passed: {list(by_name.keys())}")
@@ -133,7 +154,7 @@ def main() -> None:
         if time.monotonic() > deadline:
             print(
                 f"Timeout after {MAX_WAIT_SECONDS}s; still in_progress="
-                f"{in_progress}"
+                f"{in_progress}, missing={missing}"
             )
             write_output("proceed", "false")
             sys.exit(1)
