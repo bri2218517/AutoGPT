@@ -144,7 +144,13 @@ class UserCreditBase(ABC):
         pass
 
     @abstractmethod
-    async def grant_credits(self, user_id: str, amount: int, reason: str) -> int:
+    async def grant_credits(
+        self,
+        user_id: str,
+        amount: int,
+        reason: str,
+        transaction_key: str | None = None,
+    ) -> int:
         """
         Grant non-purchased credits to the user (no Stripe charge).
 
@@ -158,6 +164,10 @@ class UserCreditBase(ABC):
             user_id (str): The user ID.
             amount (int): The amount of credits to grant (positive).
             reason (str): Human-readable reason recorded in transaction metadata.
+            transaction_key (str | None): Optional deterministic key for
+                idempotent retries.  If supplied and a row already exists with
+                this key for the user, the existing balance is returned
+                without inserting a new row.
 
         Returns:
             int: The new balance after the grant.
@@ -666,15 +676,27 @@ class UserCredit(UserCreditBase):
             user_id=user_id, amount=amount, top_up_type=top_up_type
         )
 
-    async def grant_credits(self, user_id: str, amount: int, reason: str) -> int:
+    async def grant_credits(
+        self,
+        user_id: str,
+        amount: int,
+        reason: str,
+        transaction_key: str | None = None,
+    ) -> int:
         if amount < 0:
             raise ValueError(f"Grant amount must not be negative: {amount}")
-        balance, _ = await self._add_transaction(
-            user_id=user_id,
-            amount=amount,
-            transaction_type=CreditTransactionType.GRANT,
-            metadata=SafeJson({"reason": reason}),
-        )
+        try:
+            balance, _ = await self._add_transaction(
+                user_id=user_id,
+                amount=amount,
+                transaction_type=CreditTransactionType.GRANT,
+                transaction_key=transaction_key,
+                metadata=SafeJson({"reason": reason}),
+            )
+        except UniqueViolationError:
+            # Idempotent: another request with the same transaction_key already
+            # granted this — return the current balance without double-crediting.
+            balance, _ = await self._get_credits(user_id)
         return balance
 
     async def onboarding_reward(self, user_id: str, credits: int, step: OnboardingStep):
