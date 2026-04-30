@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DownloadSimpleIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/atoms/Button/Button";
 import { Dialog } from "@/components/molecules/Dialog/Dialog";
@@ -44,6 +44,16 @@ export function ExportCreditTransactionsButton() {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("ALL");
   const [userId, setUserId] = useState("");
   const [exporting, setExporting] = useState(false);
+
+  // Refresh the default window each time the dialog opens — the lazy useState
+  // initializer only runs once on mount, so without this the dates would
+  // freeze at component-mount time and drift on a long-lived page.
+  useEffect(() => {
+    if (open) {
+      setStart(defaultStartDate());
+      setEnd(defaultEndDate());
+    }
+  }, [open]);
 
   async function handleExport() {
     if (!start || !end) {
