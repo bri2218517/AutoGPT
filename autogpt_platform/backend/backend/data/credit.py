@@ -144,6 +144,27 @@ class UserCreditBase(ABC):
         pass
 
     @abstractmethod
+    async def grant_credits(self, user_id: str, amount: int, reason: str) -> int:
+        """
+        Grant non-purchased credits to the user (no Stripe charge).
+
+        Use this for any credit movement that is NOT a user-initiated Stripe
+        checkout: in-app refunds for failed services, beta-tester top-ups,
+        manual corrections, subscription credit grants, etc. Writes a
+        ``GRANT`` row so the dashboard does not misreport free credits as
+        ``TOP_UP`` (which is reserved for real Stripe checkouts).
+
+        Args:
+            user_id (str): The user ID.
+            amount (int): The amount of credits to grant (positive).
+            reason (str): Human-readable reason recorded in transaction metadata.
+
+        Returns:
+            int: The new balance after the grant.
+        """
+        pass
+
+    @abstractmethod
     async def onboarding_reward(
         self, user_id: str, credits: int, step: OnboardingStep
     ) -> bool:
@@ -645,6 +666,17 @@ class UserCredit(UserCreditBase):
             user_id=user_id, amount=amount, top_up_type=top_up_type
         )
 
+    async def grant_credits(self, user_id: str, amount: int, reason: str) -> int:
+        if amount < 0:
+            raise ValueError(f"Grant amount must not be negative: {amount}")
+        balance, _ = await self._add_transaction(
+            user_id=user_id,
+            amount=amount,
+            transaction_type=CreditTransactionType.GRANT,
+            metadata=SafeJson({"reason": reason}),
+        )
+        return balance
+
     async def onboarding_reward(self, user_id: str, credits: int, step: OnboardingStep):
         try:
             await self._add_transaction(
@@ -1003,7 +1035,12 @@ class UserCredit(UserCreditBase):
             transaction_type=CreditTransactionType.TOP_UP,
             transaction_key=checkout_session.id,
             is_active=False,
-            metadata=SafeJson(checkout_session),
+            metadata=SafeJson(
+                {
+                    "reason": "User-initiated Stripe checkout",
+                    "checkout_session": checkout_session,
+                }
+            ),
         )
 
         return checkout_session.url or ""
@@ -1200,6 +1237,9 @@ class DisabledUserCredit(UserCreditBase):
 
     async def top_up_credits(self, *args, **kwargs):
         pass
+
+    async def grant_credits(self, *args, **kwargs) -> int:
+        return 100
 
     async def onboarding_reward(self, *args, **kwargs) -> bool:
         return True
