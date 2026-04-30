@@ -1,114 +1,144 @@
-import json
+"""PR status gate.
+
+Triggered via ``workflow_run`` after each upstream CI workflow completes.
+Walks every check-run on the head SHA, and — only when all non-self runs
+have finished — posts a "Check PR Status" check-run with the aggregate
+conclusion. Branch protection should require that check name.
+
+If any check is still in_progress, the script exits without posting; the
+next ``workflow_run`` firing (when the next upstream workflow completes)
+will re-evaluate.
+"""
+
 import os
-import requests
 import sys
 import time
 from typing import Dict, List, Tuple
 
-CHECK_INTERVAL = 30
+import requests
+
+CHECK_NAME = "Check PR Status"
+REQUEST_TIMEOUT = 15
+# Brief retry to absorb the gap between a workflow finishing and its
+# check-runs flipping to "completed" in the API.
+SETTLE_RETRIES = 3
+SETTLE_DELAY = 10
 
 
-def get_environment_variables() -> Tuple[str, str, str, str, str]:
-    """Retrieve and return necessary environment variables."""
+def get_env() -> Tuple[str, str, str, str]:
     try:
-        with open(os.environ["GITHUB_EVENT_PATH"]) as f:
-            event = json.load(f)
-
-        # Handle both PR and merge group events
-        if "pull_request" in event:
-            sha = event["pull_request"]["head"]["sha"]
-        else:
-            sha = os.environ["GITHUB_SHA"]
-
         return (
             os.environ["GITHUB_API_URL"],
             os.environ["GITHUB_REPOSITORY"],
-            sha,
+            os.environ["HEAD_SHA"],
             os.environ["GITHUB_TOKEN"],
-            os.environ["GITHUB_RUN_ID"],
         )
     except KeyError as e:
-        print(f"Error: Missing required environment variable or event data: {e}")
+        print(f"Error: missing required environment variable: {e}")
         sys.exit(1)
 
 
-def make_api_request(url: str, headers: Dict[str, str]) -> Dict:
-    """Make an API request and return the JSON response."""
-    try:
-        print("Making API request to:", url)
-        response = requests.get(url, headers=headers, timeout=10)
+def fetch_check_runs(
+    api_url: str, repo: str, sha: str, headers: Dict[str, str]
+) -> List[Dict]:
+    """Return all check-runs for the SHA, following pagination."""
+    runs: List[Dict] = []
+    url = f"{api_url}/repos/{repo}/commits/{sha}/check-runs?per_page=100"
+    while url:
+        response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        print(f"Error: API request failed. {e}")
-        sys.exit(1)
+        runs.extend(response.json().get("check_runs", []))
+        next_url = None
+        for part in response.headers.get("Link", "").split(","):
+            if 'rel="next"' in part:
+                next_url = part.split(";")[0].strip().strip("<>")
+                break
+        url = next_url
+    return runs
 
 
-def process_check_runs(check_runs: List[Dict]) -> Tuple[bool, bool]:
-    """Process check runs and return their status."""
-    runs_in_progress = False
-    all_others_passed = True
-
+def evaluate(check_runs: List[Dict]) -> Tuple[bool, bool, List[str]]:
+    """Return (all_done, all_passed, failures)."""
+    all_done = True
+    all_passed = True
+    failures: List[str] = []
     for run in check_runs:
-        if str(run["name"]) != "Check PR Status":
-            status = run["status"]
-            conclusion = run["conclusion"]
-
-            if status == "completed":
-                if conclusion not in ["success", "skipped", "neutral"]:
-                    all_others_passed = False
-                    print(
-                        f"Check run {run['name']} (ID: {run['id']}) has conclusion: {conclusion}"
-                    )
-            else:
-                runs_in_progress = True
-                print(f"Check run {run['name']} (ID: {run['id']}) is still {status}.")
-                all_others_passed = False
-        else:
-            print(
-                f"Skipping check run {run['name']} (ID: {run['id']}) as it is the current run."
-            )
-
-    return runs_in_progress, all_others_passed
+        if run["name"] == CHECK_NAME:
+            continue
+        if run["status"] != "completed":
+            all_done = False
+            print(f"  pending: {run['name']} ({run['status']})")
+            continue
+        if run["conclusion"] not in ("success", "skipped", "neutral"):
+            all_passed = False
+            failures.append(f"{run['name']} ({run['conclusion']})")
+            print(f"  failed:  {run['name']} -> {run['conclusion']}")
+    return all_done, all_passed, failures
 
 
-def main():
-    api_url, repo, sha, github_token, current_run_id = get_environment_variables()
-
-    endpoint = f"{api_url}/repos/{repo}/commits/{sha}/check-runs"
-    headers = {
-        "Accept": "application/vnd.github.v3+json",
+def post_check_run(
+    api_url: str,
+    repo: str,
+    sha: str,
+    headers: Dict[str, str],
+    conclusion: str,
+    summary: str,
+) -> None:
+    url = f"{api_url}/repos/{repo}/check-runs"
+    body = {
+        "name": CHECK_NAME,
+        "head_sha": sha,
+        "status": "completed",
+        "conclusion": conclusion,
+        "output": {"title": f"PR Status: {conclusion}", "summary": summary},
     }
-    if github_token:
-        headers["Authorization"] = f"token {github_token}"
+    response = requests.post(
+        url, headers=headers, json=body, timeout=REQUEST_TIMEOUT
+    )
+    response.raise_for_status()
+    print(f"Posted check-run '{CHECK_NAME}' = {conclusion} for {sha}")
 
-    print(f"Current run ID: {current_run_id}")
 
-    while True:
-        data = make_api_request(endpoint, headers)
+def main() -> None:
+    api_url, repo, sha, token = get_env()
+    triggering = os.environ.get("TRIGGERING_WORKFLOW", "(unknown)")
+    print(f"Gate evaluation for {sha} (triggered by: {triggering})")
 
-        check_runs = data["check_runs"]
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
 
-        print("Processing check runs...")
-
-        print(check_runs)
-
-        runs_in_progress, all_others_passed = process_check_runs(check_runs)
-
-        if not runs_in_progress:
+    all_done = False
+    all_passed = False
+    failures: List[str] = []
+    for attempt in range(SETTLE_RETRIES):
+        runs = fetch_check_runs(api_url, repo, sha, headers)
+        all_done, all_passed, failures = evaluate(runs)
+        if all_done:
             break
+        if attempt < SETTLE_RETRIES - 1:
+            print(
+                f"Some checks still in progress; retrying in {SETTLE_DELAY}s "
+                f"(attempt {attempt + 1}/{SETTLE_RETRIES})"
+            )
+            time.sleep(SETTLE_DELAY)
 
+    if not all_done:
         print(
-            "Some check runs are still in progress. "
-            f"Waiting {CHECK_INTERVAL} seconds before checking again..."
+            "Upstream checks still in progress. Skipping final report; "
+            "the next workflow_run firing will re-evaluate."
         )
-        time.sleep(CHECK_INTERVAL)
+        return
 
-    if all_others_passed:
-        print("All other completed check runs have passed. This check passes.")
-        sys.exit(0)
+    if all_passed:
+        post_check_run(
+            api_url, repo, sha, headers, "success", "All upstream checks passed."
+        )
     else:
-        print("Some check runs have failed or have not completed. This check fails.")
+        summary = "Failed checks:\n" + "\n".join(f"- {f}" for f in failures)
+        post_check_run(api_url, repo, sha, headers, "failure", summary)
         sys.exit(1)
 
 

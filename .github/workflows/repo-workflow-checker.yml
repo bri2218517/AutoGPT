@@ -1,32 +1,46 @@
 name: Repo - PR Status Checker
+
+# Fires after each upstream CI workflow completes (workflow_run), instead of
+# polling for the duration of a PR's CI run. The script queries the
+# check-runs API once, and only posts the final "Check PR Status" check-run
+# on the PR's head SHA when every upstream workflow has finished.
+#
+# Branch protection should require the check-run named "Check PR Status".
+
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-  merge_group:
+  workflow_run:
+    workflows:
+      - "AutoGPT Platform - Full-stack CI"
+      - "AutoGPT Platform - Backend CI"
+      - "AutoGPT Platform - Frontend CI"
+      - "CodeQL"
+      - "Classic - Python checks"
+      - "PR Overlap Detection"
+    types: [completed]
+
+concurrency:
+  group: pr-status-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
 
 jobs:
   status-check:
     name: Check PR Status
     runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      pull-requests: read
+      actions: read
     steps:
-      # - name: Wait some time for all actions to start
-      #   run: sleep 30
       - uses: actions/checkout@v6
-        # with:
-          # fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.13"
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
+        run: pip install requests
       - name: Check PR Status
-        run: |
-          echo "Current directory before running Python script:"
-          pwd
-          echo "Attempting to run Python script:"
-          python .github/workflows/scripts/check_actions_status.py
+        run: python .github/workflows/scripts/check_actions_status.py
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          TRIGGERING_WORKFLOW: ${{ github.event.workflow_run.name }}
