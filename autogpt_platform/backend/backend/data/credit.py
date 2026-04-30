@@ -2595,7 +2595,12 @@ async def admin_get_user_history(
                 if admin_id
                 else ""
             )
-            reason = metadata.get("reason", "No reason provided")
+            # Older _top_up_credits rows wrap reason as {"reason": {"reason": "..."}};
+            # unwrap so the dashboard column shows the plain string.
+            raw_reason = metadata.get("reason", "No reason provided")
+            if isinstance(raw_reason, dict):
+                raw_reason = raw_reason.get("reason", "No reason provided")
+            reason = str(raw_reason)
 
         user_credit_model = await get_user_credit_model(tx.userId)
         balance, _ = await user_credit_model._get_credits(tx.userId)
