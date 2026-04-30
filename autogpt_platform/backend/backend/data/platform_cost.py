@@ -765,11 +765,16 @@ async def get_copilot_weekly_usage_for_export(
             f"(got {(end - start).total_seconds() / 86400:.2f} days)"
         )
 
+    # date_trunc('week', timestamptz) uses the session time zone by default,
+    # which makes the per-week buckets non-deterministic across replicas in
+    # different time zones.  Convert to UTC explicitly via AT TIME ZONE so
+    # the boundary is always Monday 00:00 UTC.
     rows = await query_raw_with_schema(
         'SELECT log."userId" AS user_id,'
         '  u."email" AS user_email,'
         '  u."subscriptionTier" AS tier,'
-        "  date_trunc('week', log.\"createdAt\") AS week_start,"
+        "  (date_trunc('week', log.\"createdAt\" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
+        " AS week_start,"
         '  SUM(COALESCE(log."costMicrodollars", 0))::bigint AS cost_microdollars'
         ' FROM {schema_prefix}"PlatformCostLog" log'
         ' LEFT JOIN {schema_prefix}"User" u ON u."id" = log."userId"'
@@ -777,7 +782,7 @@ async def get_copilot_weekly_usage_for_export(
         '   AND log."createdAt" <= $2::timestamptz'
         "   AND log.\"blockName\" ILIKE 'copilot:%'"
         ' GROUP BY log."userId", u."email", u."subscriptionTier",'
-        "   date_trunc('week', log.\"createdAt\")"
+        "   (date_trunc('week', log.\"createdAt\" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
         " ORDER BY week_start ASC, cost_microdollars DESC"
         f" LIMIT {COPILOT_USAGE_EXPORT_MAX_ROWS + 1}",
         start,
@@ -809,7 +814,9 @@ async def get_copilot_weekly_usage_for_export(
         week_start: datetime = r["week_start"]
         if week_start.tzinfo is None:
             week_start = week_start.replace(tzinfo=timezone.utc)
-        week_end = week_start + timedelta(days=7)
+        # Inclusive end-of-week (Sunday 23:59:59.999999 UTC) — matches finance
+        # conventions where "the week" is Mon–Sun, not Mon–next Mon.
+        week_end = week_start + timedelta(days=7, microseconds=-1)
         cost = int(r.get("cost_microdollars") or 0)
         tier_str = r.get("tier") or DEFAULT_TIER.value
         try:

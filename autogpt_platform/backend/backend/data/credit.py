@@ -2644,7 +2644,12 @@ async def admin_export_user_history(
         metadata: dict = cast(dict, tx.metadata) or {}
         admin_id = metadata.get("admin_id") or ""
         admin_email = await _resolve_admin_email(admin_id) if admin_id else ""
-        reason = metadata.get("reason", "") if metadata else ""
+        # _top_up_credits writes reason as {"reason": "..."}; unwrap so the CSV
+        # column carries a plain string regardless of source.
+        raw_reason = metadata.get("reason", "") if metadata else ""
+        if isinstance(raw_reason, dict):
+            raw_reason = raw_reason.get("reason", "")
+        reason = str(raw_reason) if raw_reason is not None else ""
         history.append(
             UserTransaction(
                 transaction_key=tx.transactionKey,
