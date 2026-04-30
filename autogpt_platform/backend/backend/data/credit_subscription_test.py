@@ -3159,3 +3159,42 @@ async def test_grant_credits_rejects_negative_amount():
     credit_system = UserCredit()
     with pytest.raises(ValueError, match="must not be negative"):
         await credit_system.grant_credits("user-1", -100, "bug")
+
+
+@pytest.mark.asyncio
+async def test_fulfill_checkout_preserves_top_up_reason_metadata():
+    """Fulfilling an inactive TOP_UP row must keep the original reason — the
+    dashboard relies on it to distinguish user checkouts from refunds, and
+    _enable_transaction overwrites metadata wholesale."""
+    from backend.data.credit import UserCredit
+    from backend.util.json import SafeJson
+
+    inactive_tx = MagicMock()
+    inactive_tx.transactionKey = "cs_test_fulfill"
+    inactive_tx.userId = "user-1"
+    inactive_tx.metadata = {"reason": "User-initiated Stripe checkout"}
+
+    mock_session = MagicMock()
+    mock_session.payment_status = "paid"
+    mock_session.payment_intent = None
+
+    credit_system = UserCredit()
+    enable_mock = AsyncMock(return_value=1500)
+    with (
+        patch(
+            "backend.data.credit.CreditTransaction.prisma",
+            return_value=MagicMock(find_first=AsyncMock(return_value=inactive_tx)),
+        ),
+        patch(
+            "backend.data.credit.stripe.checkout.Session.retrieve",
+            new=MagicMock(return_value=mock_session),
+        ),
+        patch.object(credit_system, "_enable_transaction", enable_mock),
+    ):
+        await credit_system.fulfill_checkout(session_id="cs_test_fulfill")
+
+    enable_mock.assert_awaited_once()
+    metadata = enable_mock.await_args.kwargs["metadata"]
+    assert isinstance(metadata, SafeJson)
+    assert metadata.data["reason"] == "User-initiated Stripe checkout"
+    assert "checkout_session" in metadata.data
