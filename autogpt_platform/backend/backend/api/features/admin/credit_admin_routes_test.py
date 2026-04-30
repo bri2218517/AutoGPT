@@ -220,6 +220,7 @@ def test_get_user_history_with_filters(
         page_size=10,
         search="test@example.com",
         transaction_filter=prisma.enums.CreditTransactionType.TOP_UP,
+        include_inactive=False,
     )
 
     # Snapshot test the response

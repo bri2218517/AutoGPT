@@ -758,10 +758,15 @@ async def reset_copilot_usage(
         # Reset daily usage in Redis.  If this fails, refund the credits
         # so the user is not charged for a service they did not receive.
         if not await reset_daily_usage(user_id, daily_cost_limit=daily_limit):
-            # Compensate: refund the charged credits.
+            # Compensate: refund the charged credits as a GRANT (no Stripe
+            # charge — TOP_UP is reserved for real user-initiated checkouts).
             refunded = False
             try:
-                await credit_model.top_up_credits(user_id, cost)
+                await credit_model.grant_credits(
+                    user_id,
+                    cost,
+                    "Refund for failed CoPilot rate-limit reset",
+                )
                 refunded = True
                 logger.warning(
                     "Refunded %d credits to user %s after Redis reset failure",

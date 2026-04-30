@@ -3140,3 +3140,86 @@ async def test_release_pending_subscription_schedule_invalidates_cache_on_partia
             await release_pending_subscription_schedule("user-partial")
 
         mock_cache_delete.assert_called_once_with("user-partial")
+
+
+# ─── TOP_UP vs GRANT routing ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_grant_credits_writes_grant_not_top_up():
+    """grant_credits writes a GRANT row and never touches Stripe — TOP_UP is
+    reserved for actual user-initiated Stripe checkouts."""
+    from prisma.enums import CreditTransactionType
+
+    from backend.data.credit import UserCredit
+    from backend.util.json import SafeJson
+
+    credit_system = UserCredit()
+    add_tx_mock = AsyncMock(return_value=(1500, "grant-txkey"))
+    with patch.object(credit_system, "_add_transaction", add_tx_mock):
+        balance = await credit_system.grant_credits(
+            "user-1", 500, "Refund for failed CoPilot rate-limit reset"
+        )
+
+    assert balance == 1500
+    add_tx_mock.assert_awaited_once()
+    kwargs = add_tx_mock.await_args.kwargs
+    assert kwargs["transaction_type"] == CreditTransactionType.GRANT
+    metadata = kwargs["metadata"]
+    assert isinstance(metadata, SafeJson)
+    assert metadata.data["reason"] == "Refund for failed CoPilot rate-limit reset"
+
+
+@pytest.mark.asyncio
+async def test_grant_credits_rejects_negative_amount():
+    """grant_credits only adds credits — negative amounts must raise."""
+    from backend.data.credit import UserCredit
+
+    credit_system = UserCredit()
+    with pytest.raises(ValueError, match="must not be negative"):
+        await credit_system.grant_credits("user-1", -100, "bug")
+
+
+@pytest.mark.asyncio
+async def test_admin_get_user_history_excludes_inactive_by_default():
+    """Default call must filter out inactive ledger rows so phantom TOP_UP entries
+    from abandoned Stripe checkouts don't pollute the admin dashboard."""
+    from backend.data.credit import admin_get_user_history
+
+    prisma_mock = MagicMock(
+        find_many=AsyncMock(return_value=[]),
+        count=AsyncMock(return_value=0),
+    )
+    with patch(
+        "backend.data.credit.CreditTransaction.prisma", return_value=prisma_mock
+    ):
+        await admin_get_user_history()
+
+    where = prisma_mock.find_many.await_args.kwargs["where"]
+    assert where == {"isActive": True}
+    count_where = prisma_mock.count.await_args.kwargs["where"]
+    assert count_where == {"isActive": True}
+
+
+@pytest.mark.asyncio
+async def test_admin_get_user_history_include_inactive_omits_filter():
+    """include_inactive=True surfaces phantom rows for debugging abandoned checkouts."""
+    from prisma.enums import CreditTransactionType
+
+    from backend.data.credit import admin_get_user_history
+
+    prisma_mock = MagicMock(
+        find_many=AsyncMock(return_value=[]),
+        count=AsyncMock(return_value=0),
+    )
+    with patch(
+        "backend.data.credit.CreditTransaction.prisma", return_value=prisma_mock
+    ):
+        await admin_get_user_history(
+            transaction_filter=CreditTransactionType.TOP_UP,
+            include_inactive=True,
+        )
+
+    where = prisma_mock.find_many.await_args.kwargs["where"]
+    assert "isActive" not in where
+    assert where["type"] == CreditTransactionType.TOP_UP

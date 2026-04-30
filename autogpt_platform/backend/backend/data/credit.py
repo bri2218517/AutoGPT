@@ -168,6 +168,37 @@ class UserCreditBase(ABC):
         pass
 
     @abstractmethod
+    async def grant_credits(
+        self,
+        user_id: str,
+        amount: int,
+        reason: str,
+        transaction_key: str | None = None,
+    ) -> int:
+        """
+        Grant non-purchased credits to the user (no Stripe charge).
+
+        Use this for any credit movement that is NOT a user-initiated Stripe
+        checkout: in-app refunds for failed services, beta-tester top-ups,
+        manual corrections, subscription credit grants, etc. Writes a
+        ``GRANT`` row so the dashboard does not misreport free credits as
+        ``TOP_UP`` (which is reserved for real Stripe checkouts).
+
+        Args:
+            user_id (str): The user ID.
+            amount (int): The amount of credits to grant (positive).
+            reason (str): Human-readable reason recorded in transaction metadata.
+            transaction_key (str | None): Optional deterministic key for
+                idempotent retries.  If supplied and a row already exists with
+                this key for the user, the existing balance is returned
+                without inserting a new row.
+
+        Returns:
+            int: The new balance after the grant.
+        """
+        pass
+
+    @abstractmethod
     async def onboarding_reward(
         self, user_id: str, credits: int, step: OnboardingStep
     ) -> bool:
@@ -680,6 +711,29 @@ class UserCredit(UserCreditBase):
         await self._top_up_credits(
             user_id=user_id, amount=amount, top_up_type=top_up_type
         )
+
+    async def grant_credits(
+        self,
+        user_id: str,
+        amount: int,
+        reason: str,
+        transaction_key: str | None = None,
+    ) -> int:
+        if amount < 0:
+            raise ValueError(f"Grant amount must not be negative: {amount}")
+        try:
+            balance, _ = await self._add_transaction(
+                user_id=user_id,
+                amount=amount,
+                transaction_type=CreditTransactionType.GRANT,
+                transaction_key=transaction_key,
+                metadata=SafeJson({"reason": reason}),
+            )
+        except UniqueViolationError:
+            # Idempotent: another request with the same transaction_key already
+            # granted this — return the current balance without double-crediting.
+            balance, _ = await self._get_credits(user_id)
+        return balance
 
     async def onboarding_reward(self, user_id: str, credits: int, step: OnboardingStep):
         try:
@@ -1247,6 +1301,9 @@ class DisabledUserCredit(UserCreditBase):
 
     async def top_up_credits(self, *args, **kwargs):
         pass
+
+    async def grant_credits(self, *args, **kwargs) -> int:
+        return 100
 
     async def onboarding_reward(self, *args, **kwargs) -> bool:
         return True
@@ -2538,12 +2595,16 @@ async def admin_get_user_history(
     page_size: int = 20,
     search: str | None = None,
     transaction_filter: CreditTransactionType | None = None,
+    include_inactive: bool = False,
 ) -> UserHistoryResponse:
 
     if page < 1 or page_size < 1:
         raise ValueError("Invalid pagination input")
 
     where_clause: CreditTransactionWhereInput = {}
+    # Off by default so phantom rows from abandoned Stripe checkouts aren't surfaced.
+    if not include_inactive:
+        where_clause["isActive"] = True
     if transaction_filter:
         where_clause["type"] = transaction_filter
     if search:
@@ -2577,7 +2638,12 @@ async def admin_get_user_history(
                 if admin_id
                 else ""
             )
-            reason = metadata.get("reason", "No reason provided")
+            # Older _top_up_credits rows wrap reason as {"reason": {"reason": "..."}};
+            # unwrap so the dashboard column shows the plain string.
+            raw_reason = metadata.get("reason", "No reason provided")
+            if isinstance(raw_reason, dict):
+                raw_reason = raw_reason.get("reason", "No reason provided")
+            reason = str(raw_reason)
 
         user_credit_model = await get_user_credit_model(tx.userId)
         balance, _ = await user_credit_model._get_credits(tx.userId)
