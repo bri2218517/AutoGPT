@@ -49,3 +49,4 @@ async def test_visit_copilot_grants_no_reward():
         )
 
     get_credit_model.assert_not_called()
+    assert onboarding.rewardedFor == []
