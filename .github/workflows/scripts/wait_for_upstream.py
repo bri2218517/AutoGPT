@@ -5,9 +5,9 @@ big-boi E2E job: only run E2E if every listed upstream workflow has
 completed successfully on the same SHA. Outputs ``proceed=true|false``
 to ``$GITHUB_OUTPUT`` for downstream ``if:`` conditions.
 
-A workflow that did not trigger for this SHA at all (e.g. excluded by a
-``paths`` filter) is treated as a non-blocker — we only block when an
-upstream workflow ran and failed.
+A workflow that has not appeared on the SHA after the grace period is
+treated as not-triggered and blocks the gate (proceed=false), so a slow
+webhook or path-filtered upstream cannot let the expensive job through.
 """
 
 import os
@@ -72,7 +72,11 @@ def latest_per_workflow(runs: List[Dict], names: List[str]) -> Dict[str, Dict]:
         if name not in name_set:
             continue
         prev = by_name.get(name)
-        if prev is None or run["run_number"] > prev["run_number"]:
+        run_key = (run["run_number"], run.get("run_attempt", 0))
+        if prev is None or run_key > (
+            prev["run_number"],
+            prev.get("run_attempt", 0),
+        ):
             by_name[name] = run
     return by_name
 
@@ -157,8 +161,10 @@ def main() -> None:
             if missing:
                 print(
                     "Workflow(s) did not trigger after grace period "
-                    f"(treating as skipped): {missing}"
+                    f"(treating as not-triggered, blocking): {missing}"
                 )
+                write_output("proceed", "false")
+                return
             print(f"Upstream passed: {list(by_name.keys())}")
             write_output("proceed", "true")
             return
