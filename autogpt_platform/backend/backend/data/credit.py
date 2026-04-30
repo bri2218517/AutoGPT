@@ -3,7 +3,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 import stripe
@@ -2676,3 +2676,105 @@ async def admin_get_user_history(
             page_size=page_size,
         ),
     )
+
+
+# Limits for credit-transaction CSV export. Window cap matches a typical
+# finance-month query; row cap protects the API from accidental wide pulls
+# (one big tenant can easily exceed 100k rows in 90 days).
+CREDIT_EXPORT_MAX_DAYS = 90
+CREDIT_EXPORT_MAX_ROWS = 100_000
+
+
+async def admin_export_user_history(
+    start: datetime,
+    end: datetime,
+    transaction_type: CreditTransactionType | None = None,
+    user_id: str | None = None,
+    include_inactive: bool = False,
+) -> list[UserTransaction]:
+    """Return all CreditTransactions in the [start, end] window for export.
+
+    Caps the window at CREDIT_EXPORT_MAX_DAYS and the row count at
+    CREDIT_EXPORT_MAX_ROWS — callers should validate the window before calling
+    so the user sees a 4xx instead of a silently truncated CSV.
+
+    By default filters out `isActive=False` rows (e.g. abandoned Stripe
+    checkouts whose `runningBalance` snapshot never advanced the user's real
+    balance).  Pass `include_inactive=True` to surface them when debugging
+    why a checkout never completed.
+    """
+    # Normalize naive datetimes to UTC so direct API callers that send
+    # `2026-01-01T00:00:00` (no tz) don't trip a TypeError when subtracted
+    # against an aware `2026-01-31T00:00:00Z` partner.
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    if end < start:
+        raise ValueError("end must be >= start")
+    # Compare timedeltas directly so 90d + any sub-day remainder still trips
+    # the cap (.days truncates fractional days and was letting ~91d through).
+    if (end - start) > timedelta(days=CREDIT_EXPORT_MAX_DAYS):
+        raise ValueError(
+            f"Export window must be <= {CREDIT_EXPORT_MAX_DAYS} days "
+            f"(got {(end - start).total_seconds() / 86400:.2f} days)"
+        )
+
+    where: CreditTransactionWhereInput = {
+        "createdAt": {"gte": start, "lte": end},
+    }
+    if transaction_type:
+        where["type"] = transaction_type
+    if user_id:
+        where["userId"] = user_id
+    if not include_inactive:
+        where["isActive"] = True
+
+    # Fetch one over the cap and reject — avoids the TOCTOU race a separate
+    # count() + take=cap pair would have if rows land between the two queries.
+    transactions = await CreditTransaction.prisma().find_many(
+        where=where,
+        include={"User": True},
+        order={"createdAt": "desc"},
+        take=CREDIT_EXPORT_MAX_ROWS + 1,
+    )
+    if len(transactions) > CREDIT_EXPORT_MAX_ROWS:
+        raise ValueError(
+            f"Export would return more than {CREDIT_EXPORT_MAX_ROWS} rows; "
+            "narrow the window or add filters."
+        )
+
+    admin_id_to_email: dict[str, str] = {}
+
+    async def _resolve_admin_email(admin_id: str) -> str:
+        if admin_id in admin_id_to_email:
+            return admin_id_to_email[admin_id]
+        email = await get_user_email_by_id(admin_id) or ""
+        admin_id_to_email[admin_id] = email
+        return email
+
+    history: list[UserTransaction] = []
+    for tx in transactions:
+        metadata: dict = cast(dict, tx.metadata) or {}
+        admin_id = metadata.get("admin_id") or ""
+        admin_email = await _resolve_admin_email(admin_id) if admin_id else ""
+        # _top_up_credits writes reason as {"reason": "..."}; unwrap so the CSV
+        # column carries a plain string regardless of source.
+        raw_reason = metadata.get("reason", "") if metadata else ""
+        if isinstance(raw_reason, dict):
+            raw_reason = raw_reason.get("reason", "")
+        reason = str(raw_reason) if raw_reason is not None else ""
+        history.append(
+            UserTransaction(
+                transaction_key=tx.transactionKey,
+                transaction_time=tx.createdAt,
+                transaction_type=tx.type,
+                amount=tx.amount,
+                running_balance=tx.runningBalance or 0,
+                user_id=tx.userId,
+                user_email=tx.User.email if tx.User else None,
+                reason=reason,
+                admin_email=admin_email,
+            )
+        )
+    return history
