@@ -744,10 +744,16 @@ async def get_copilot_weekly_usage_for_export(
     """Aggregate copilot:* PlatformCostLog rows by (user, ISO week) for export.
 
     Joins User to surface the email and subscription tier in a single query,
-    then computes the per-tier weekly limit using the same defaults
-    `get_global_rate_limits` falls back to (LaunchDarkly overrides aren't
-    materialised here — finance pulls the **steady-state** allowance, which
-    is what they need to size limits against).
+    then computes the per-tier weekly limit from `get_tier_multipliers()` so
+    `percent_used` reflects what's actually enforced (LD overrides included).
+
+    Caveats:
+    - Tier is the user's **current** tier — `PlatformCostLog` has no historical
+      tier snapshot, so a recent upgrade/downgrade will retroactively reweight
+      old weeks' `percent_used`. Filter by `week_start` and join with billing
+      events outside this CSV if you need historically-correct attribution.
+    - `NO_TIER` users have no enforced rate limit; their `percent_used` will
+      report `0.0` (no denominator) — interpret these rows as "unmetered".
     """
     if end < start:
         raise ValueError("end must be >= start")
