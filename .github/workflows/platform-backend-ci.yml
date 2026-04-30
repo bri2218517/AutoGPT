@@ -349,8 +349,8 @@ jobs:
           SUPABASE_URL: ${{ steps.supabase.outputs.API_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ steps.supabase.outputs.SERVICE_ROLE_KEY }}
           JWT_VERIFY_KEY: ${{ steps.supabase.outputs.JWT_SECRET }}
-          REDIS_HOST: "localhost"
-          REDIS_PORT: "17000"
+          REDIS_CLUSTER_HOST: "localhost"
+          REDIS_CLUSTER_PORT: "17000"
           ENCRYPTION_KEY: "dvziYgz0KSK8FENhju0ZYi8-fRTfAdlz6YLhdB_jhNw=" # DO NOT USE IN PRODUCTION!!
           # Opt-in: lets backend/data/e2e_redis_restart_test.py spin up its
           # own isolated 3-shard cluster (ports 27110–27112) and exercise

@@ -16,14 +16,14 @@ x-backend-env:
   NOTIFICATIONMANAGER_HOST: notification_server
   CLAMAV_SERVICE_HOST: clamav
   DB_HOST: db
-  REDIS_HOST: redis-0
-  REDIS_PORT: "17000"
+  REDIS_CLUSTER_HOST: redis-0
+  REDIS_CLUSTER_PORT: "17000"
   # The 3-container local cluster announces distinct compose hostnames per
   # shard (redis-0/1/2), each resolvable via Docker DNS inside the compose
   # network. Bypass the HOST-pinning address_remap so CLUSTER SLOTS uses the
   # announced addresses directly — see ``backend.data.redis_client``.
   REDIS_USE_ANNOUNCED_ADDRESS: "true"
-  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_CLUSTER_HOST: rabbitmq
   GRAPHITI_FALKORDB_HOST: falkordb
   GRAPHITI_FALKORDB_PORT: "6379"
   # Override Supabase URL for Docker network

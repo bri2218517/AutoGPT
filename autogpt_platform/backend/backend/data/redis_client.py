@@ -14,10 +14,8 @@ from backend.util.retry import conn_retry
 
 load_dotenv()
 
-# Prefer the cluster env vars so the cluster-only image can co-exist with
-# old-image pods still reading REDIS_HOST during a rollout.
-HOST = os.getenv("REDIS_CLUSTER_HOST") or os.getenv("REDIS_HOST", "localhost")
-PORT = int(os.getenv("REDIS_CLUSTER_PORT") or os.getenv("REDIS_PORT", "6379"))
+HOST = os.getenv("REDIS_CLUSTER_HOST", "localhost")
+PORT = int(os.getenv("REDIS_CLUSTER_PORT", "6379"))
 PASSWORD = os.getenv("REDIS_PASSWORD", None)
 
 # Fail-fast on a wedged endpoint instead of blocking on no-response TCP.

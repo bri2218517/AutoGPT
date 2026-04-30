@@ -20,7 +20,7 @@ See `backend/.env.default` for the full list with documentation. Minimum setup:
 |----------|---------|
 | `AUTOPILOT_BOT_DISCORD_TOKEN` | Discord bot token — enables the Discord adapter |
 | `FRONTEND_BASE_URL` | Frontend base URL for link confirmation pages (shared with the rest of the backend) |
-| `REDIS_HOST` / `REDIS_PORT` | Session + thread subscription state + copilot stream subscription (inherited from the shared backend config) |
+| `REDIS_CLUSTER_HOST` / `REDIS_CLUSTER_PORT` | Session + thread subscription state + copilot stream subscription (inherited from the shared backend config) |
 | `PLATFORMLINKINGMANAGER_HOST` | DNS name of the `PlatformLinkingManager` service pod (cluster-internal RPC) |
 
 ## Architecture

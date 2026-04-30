@@ -190,10 +190,8 @@ async def test_subscriber_survives_shard_restart(isolated_cluster, monkeypatch) 
     """Subscriber must receive a post-`docker restart` SPUBLISH after
     reopening the sharded-pubsub client (the broker drops the socket on
     restart; production's `with_pubsub` loop reconnects the same way)."""
-    # Must override REDIS_CLUSTER_HOST/PORT too — those take precedence
-    # over REDIS_HOST/PORT and a stray .env would point us at the dev cluster.
-    monkeypatch.setenv("REDIS_HOST", "127.0.0.1")
-    monkeypatch.setenv("REDIS_PORT", str(ISOLATED_PORTS[0]))
+    # Override REDIS_CLUSTER_HOST/PORT — a stray .env would otherwise point
+    # us at the dev cluster.
     monkeypatch.setenv("REDIS_CLUSTER_HOST", "127.0.0.1")
     monkeypatch.setenv("REDIS_CLUSTER_PORT", str(ISOLATED_PORTS[0]))
     monkeypatch.setenv("REDIS_USE_ANNOUNCED_ADDRESS", "false")
@@ -306,7 +304,7 @@ async def test_subscriber_survives_shard_restart(isolated_cluster, monkeypatch) 
             pass
         await rc.disconnect_async()
         # Undo monkeypatched env BEFORE reloading so subsequent tests see the
-        # original REDIS_HOST/PORT — otherwise the module captures the
+        # original REDIS_CLUSTER_HOST/PORT — otherwise the module captures the
         # isolated cluster's port (27110) which is torn down right after this
         # test, and any later test that touches redis hangs on conn_retry.
         monkeypatch.undo()
