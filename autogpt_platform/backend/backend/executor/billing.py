@@ -64,9 +64,12 @@ async def clear_insufficient_funds_notifications(user_id: str) -> int:
         redis_client = await redis.get_redis_async()
         pattern = f"{INSUFFICIENT_FUNDS_NOTIFIED_PREFIX}:{user_id}:*"
         keys = [key async for key in redis_client.scan_iter(match=pattern)]
-        if keys:
-            return await redis_client.delete(*keys)
-        return 0
+        # Keys here span multiple graph IDs and therefore multiple cluster
+        # slots — a bulk DELETE would raise CROSSSLOT, so delete per key.
+        deleted = 0
+        for key in keys:
+            deleted += await redis_client.delete(key)
+        return deleted
     except Exception as e:
         logger.warning(
             f"Failed to clear insufficient funds notification flags for user "
@@ -417,7 +420,7 @@ def handle_insufficient_funds_notif(
             type=NotificationType.ZERO_BALANCE,
             data=ZeroBalanceData(
                 current_balance=e.balance,
-                billing_page_link=f"{base_url}/profile/credits",
+                billing_page_link=f"{base_url}/settings/billing",
                 shortfall=shortfall,
                 agent_name=metadata.name if metadata else "Unknown Agent",
             ),
@@ -469,7 +472,7 @@ def handle_low_balance(
                 type=NotificationType.LOW_BALANCE,
                 data=LowBalanceData(
                     current_balance=current_balance,
-                    billing_page_link=f"{base_url}/profile/credits",
+                    billing_page_link=f"{base_url}/settings/billing",
                 ),
             )
         )
