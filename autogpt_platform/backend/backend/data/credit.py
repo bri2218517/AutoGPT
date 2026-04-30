@@ -3,7 +3,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 import stripe
@@ -2600,10 +2600,12 @@ async def admin_export_user_history(
     """
     if end < start:
         raise ValueError("end must be >= start")
-    if (end - start).days > CREDIT_EXPORT_MAX_DAYS:
+    # Compare timedeltas directly so 90d + any sub-day remainder still trips
+    # the cap (.days truncates fractional days and was letting ~91d through).
+    if (end - start) > timedelta(days=CREDIT_EXPORT_MAX_DAYS):
         raise ValueError(
             f"Export window must be <= {CREDIT_EXPORT_MAX_DAYS} days "
-            f"(got {(end - start).days} days)"
+            f"(got {(end - start).total_seconds() / 86400:.2f} days)"
         )
 
     where: CreditTransactionWhereInput = {

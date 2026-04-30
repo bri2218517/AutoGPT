@@ -751,10 +751,12 @@ async def get_copilot_weekly_usage_for_export(
     """
     if end < start:
         raise ValueError("end must be >= start")
-    if (end - start).days > COPILOT_USAGE_EXPORT_MAX_DAYS:
+    # Compare timedeltas directly so 90d + any sub-day remainder still trips
+    # the cap (.days truncates fractional days and was letting ~91d through).
+    if (end - start) > timedelta(days=COPILOT_USAGE_EXPORT_MAX_DAYS):
         raise ValueError(
             f"Export window must be <= {COPILOT_USAGE_EXPORT_MAX_DAYS} days "
-            f"(got {(end - start).days} days)"
+            f"(got {(end - start).total_seconds() / 86400:.2f} days)"
         )
 
     rows = await query_raw_with_schema(
