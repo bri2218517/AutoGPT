@@ -4,13 +4,7 @@ import re
 from enum import Enum
 from typing import Any, Dict, Generic, List, Set, Tuple, Type, TypeVar
 
-from pydantic import (
-    BaseModel,
-    Field,
-    PrivateAttr,
-    ValidationInfo,
-    field_validator,
-)
+from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from pydantic_settings import (
     BaseSettings,
     JsonConfigSettingsSource,
