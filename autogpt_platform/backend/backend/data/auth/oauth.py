@@ -12,7 +12,6 @@ Hashing strategy:
 import hashlib
 import logging
 import secrets
-import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
@@ -24,6 +23,8 @@ from prisma.models import OAuthAuthorizationCode as PrismaOAuthAuthorizationCode
 from prisma.models import OAuthRefreshToken as PrismaOAuthRefreshToken
 from prisma.types import OAuthApplicationUpdateInput
 from pydantic import BaseModel, Field, SecretStr
+
+from backend.util.ids import new_uuid
 
 from .base import APIAuthorizationInfo
 
@@ -360,7 +361,7 @@ async def create_authorization_code(
 
     saved_code = await PrismaOAuthAuthorizationCode.prisma().create(
         data={
-            "id": str(uuid.uuid4()),
+            "id": new_uuid(),
             "code": code,
             "expiresAt": expires_at,
             "applicationId": application_id,
@@ -491,7 +492,7 @@ async def create_access_token(
 
     saved_token = await PrismaOAuthAccessToken.prisma().create(
         data={
-            "id": str(uuid.uuid4()),
+            "id": new_uuid(),
             "token": token_hash,  # SHA256 hash for direct lookup
             "expiresAt": expires_at,
             "applicationId": application_id,
@@ -608,7 +609,7 @@ async def create_refresh_token(
 
     saved_token = await PrismaOAuthRefreshToken.prisma().create(
         data={
-            "id": str(uuid.uuid4()),
+            "id": new_uuid(),
             "token": token_hash,  # SHA256 hash for direct lookup
             "expiresAt": expires_at,
             "applicationId": application_id,

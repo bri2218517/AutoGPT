@@ -1,5 +1,4 @@
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
@@ -11,6 +10,7 @@ from pydantic import Field
 
 from backend.data.includes import MAX_USER_API_KEYS_FETCH
 from backend.util.exceptions import NotAuthorizedError, NotFoundError
+from backend.util.ids import new_uuid
 
 from .base import APIAuthorizationInfo
 
@@ -83,7 +83,7 @@ async def create_api_key(
 
     saved_key_obj = await PrismaAPIKey.prisma().create(
         data={
-            "id": str(uuid.uuid4()),
+            "id": new_uuid(),
             "name": name,
             "head": generated_key.head,
             "tail": generated_key.tail,

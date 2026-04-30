@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional, Self, cast
@@ -31,6 +30,7 @@ from backend.blocks.llm import LlmModel
 from backend.integrations.providers import ProviderName
 from backend.util import type as type_utils
 from backend.util.exceptions import GraphNotAccessibleError, GraphNotInLibraryError
+from backend.util.ids import new_uuid
 from backend.util.json import SafeJson
 from backend.util.models import Pagination
 from backend.util.request import parse_url
@@ -646,8 +646,8 @@ class GraphModel(Graph, GraphMeta):
         """
         if reassign_graph_id:
             graph_id_map = {
-                self.id: str(uuid.uuid4()),
-                **{sub_graph.id: str(uuid.uuid4()) for sub_graph in self.sub_graphs},
+                self.id: new_uuid(),
+                **{sub_graph.id: new_uuid() for sub_graph in self.sub_graphs},
             }
         else:
             graph_id_map = {}
@@ -667,7 +667,7 @@ class GraphModel(Graph, GraphMeta):
             graph.id = graph_id_map[graph.id]
 
         # Reassign Node IDs
-        id_map = {node.id: str(uuid.uuid4()) for node in graph.nodes}
+        id_map = {node.id: new_uuid() for node in graph.nodes}
         for node in graph.nodes:
             node.id = id_map[node.id]
 
@@ -1708,7 +1708,7 @@ async def __create_graph(tx, graph: Graph, user_id: str):
     await AgentNodeLink.prisma(tx).create_many(
         data=[
             AgentNodeLinkCreateInput(
-                id=str(uuid.uuid4()),
+                id=new_uuid(),
                 sourceName=link.source_name,
                 sinkName=link.sink_name,
                 agentNodeSourceId=link.source_id,
