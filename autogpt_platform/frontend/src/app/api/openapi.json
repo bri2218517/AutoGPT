@@ -3065,6 +3065,163 @@
         "security": [{ "HTTPBearerJWT": [] }]
       }
     },
+    "/api/credits/admin/copilot-usage/export": {
+      "get": {
+        "tags": ["v2", "admin", "credits", "admin"],
+        "summary": "Export Copilot Weekly Usage vs Rate Limit",
+        "description": "Export per-(user, ISO week) copilot spend with the user's tier limit.\n\nUses the same 90-day window cap and 100k row cap as the credit export.",
+        "operationId": "getV2Export copilot weekly usage vs rate limit",
+        "security": [{ "HTTPBearerJWT": [] }],
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                { "type": "string", "format": "date-time" },
+                { "type": "null" }
+              ],
+              "description": "ISO timestamp (inclusive)",
+              "title": "Start"
+            },
+            "description": "ISO timestamp (inclusive)"
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                { "type": "string", "format": "date-time" },
+                { "type": "null" }
+              ],
+              "description": "ISO timestamp (inclusive)",
+              "title": "End"
+            },
+            "description": "ISO timestamp (inclusive)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CopilotUsageExportResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/HTTP401NotAuthenticatedError"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HTTPValidationError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/credits/admin/transactions/export": {
+      "get": {
+        "tags": ["v2", "admin", "credits", "admin"],
+        "summary": "Export Credit Transactions",
+        "description": "Export CreditTransaction rows in [start, end] for finance reporting.\n\nCapped at CREDIT_EXPORT_MAX_DAYS days and CREDIT_EXPORT_MAX_ROWS rows;\nover-cap requests fail fast with 400 so callers narrow the window\ninstead of receiving silently truncated data.",
+        "operationId": "getV2Export credit transactions",
+        "security": [{ "HTTPBearerJWT": [] }],
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                { "type": "string", "format": "date-time" },
+                { "type": "null" }
+              ],
+              "description": "ISO timestamp (inclusive)",
+              "title": "Start"
+            },
+            "description": "ISO timestamp (inclusive)"
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                { "type": "string", "format": "date-time" },
+                { "type": "null" }
+              ],
+              "description": "ISO timestamp (inclusive)",
+              "title": "End"
+            },
+            "description": "ISO timestamp (inclusive)"
+          },
+          {
+            "name": "transaction_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                { "$ref": "#/components/schemas/CreditTransactionType" },
+                { "type": "null" }
+              ],
+              "title": "Transaction Type"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [{ "type": "string" }, { "type": "null" }],
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "include_inactive",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include inactive rows (e.g. abandoned Stripe checkouts). Off by default so phantom rows aren't surfaced in normal exports.",
+              "default": false,
+              "title": "Include Inactive"
+            },
+            "description": "Include inactive rows (e.g. abandoned Stripe checkouts). Off by default so phantom rows aren't surfaced in normal exports."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditTransactionsExportResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/HTTP401NotAuthenticatedError"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HTTPValidationError" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/credits/admin/users_history": {
       "get": {
         "tags": ["v2", "admin", "credits", "admin"],
@@ -3103,6 +3260,16 @@
                 { "type": "null" }
               ],
               "title": "Transaction Filter"
+            }
+          },
+          {
+            "name": "include_inactive",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Inactive"
             }
           }
         ],
@@ -10622,6 +10789,61 @@
         ],
         "title": "ContentType"
       },
+      "CopilotUsageExportResponse": {
+        "properties": {
+          "rows": {
+            "items": { "$ref": "#/components/schemas/CopilotWeeklyUsageRow" },
+            "type": "array",
+            "title": "Rows"
+          },
+          "total_rows": { "type": "integer", "title": "Total Rows" },
+          "window_days": { "type": "integer", "title": "Window Days" },
+          "max_window_days": { "type": "integer", "title": "Max Window Days" }
+        },
+        "type": "object",
+        "required": ["rows", "total_rows", "window_days", "max_window_days"],
+        "title": "CopilotUsageExportResponse"
+      },
+      "CopilotWeeklyUsageRow": {
+        "properties": {
+          "user_id": { "type": "string", "title": "User Id" },
+          "user_email": {
+            "anyOf": [{ "type": "string" }, { "type": "null" }],
+            "title": "User Email"
+          },
+          "week_start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Week Start"
+          },
+          "week_end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Week End"
+          },
+          "copilot_cost_microdollars": {
+            "type": "integer",
+            "title": "Copilot Cost Microdollars"
+          },
+          "tier": { "type": "string", "title": "Tier" },
+          "weekly_limit_microdollars": {
+            "type": "integer",
+            "title": "Weekly Limit Microdollars"
+          },
+          "percent_used": { "type": "number", "title": "Percent Used" }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "week_start",
+          "week_end",
+          "copilot_cost_microdollars",
+          "tier",
+          "weekly_limit_microdollars",
+          "percent_used"
+        ],
+        "title": "CopilotWeeklyUsageRow"
+      },
       "CostBucket": {
         "properties": {
           "bucket": { "type": "string", "title": "Bucket" },
@@ -10963,6 +11185,26 @@
           "SUBSCRIPTION"
         ],
         "title": "CreditTransactionType"
+      },
+      "CreditTransactionsExportResponse": {
+        "properties": {
+          "transactions": {
+            "items": { "$ref": "#/components/schemas/UserTransaction" },
+            "type": "array",
+            "title": "Transactions"
+          },
+          "total_rows": { "type": "integer", "title": "Total Rows" },
+          "window_days": { "type": "integer", "title": "Window Days" },
+          "max_window_days": { "type": "integer", "title": "Max Window Days" }
+        },
+        "type": "object",
+        "required": [
+          "transactions",
+          "total_rows",
+          "window_days",
+          "max_window_days"
+        ],
+        "title": "CreditTransactionsExportResponse"
       },
       "DeleteFileResponse": {
         "properties": { "deleted": { "type": "boolean", "title": "Deleted" } },
@@ -16308,6 +16550,14 @@
             ],
             "title": "Model",
             "description": "Model tier: 'standard' for the default model, 'advanced' for the highest-capability model. If None, the server applies per-user LD targeting then falls back to config."
+          },
+          "message_id": {
+            "anyOf": [
+              { "type": "string", "maxLength": 64 },
+              { "type": "null" }
+            ],
+            "title": "Message Id",
+            "description": "Optional per-click UUID generated by the frontend.  Becomes the persisted ``ChatMessage.id`` (PK).  Frontend / network / RMQ-redelivery retransmits of the same logical send reuse the id, so the Postgres unique-constraint on the PK is the atomic dedup primitive: a duplicate INSERT returns a subscribe-only response without creating a parallel turn.  Distinct user clicks (even with identical text) MUST send different ids — the frontend's per-click ``crypto.randomUUID()`` guarantees that."
           }
         },
         "type": "object",
