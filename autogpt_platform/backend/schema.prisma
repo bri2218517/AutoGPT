@@ -13,6 +13,11 @@ generator client {
   partial_type_generator = "backend/data/partial_types.py"
 }
 
+// IMPORTANT: For new String id columns, use
+//   @default(dbgenerated("uuid_generate_v7()"))
+// (not @default(uuid())) so ids stay sortable. The function is defined
+// in migrations/20260430120000_use_uuidv7_for_id_defaults.
+
 // User model to mirror Auth provider users
 model User {
   id               String   @id // This should match the Supabase user ID

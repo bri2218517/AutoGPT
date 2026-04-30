@@ -22,7 +22,8 @@ BEGIN
 END
 $$
 LANGUAGE plpgsql
-VOLATILE;
+VOLATILE
+PARALLEL SAFE;
 
 -- Repoint existing id defaults from Prisma-client uuid()/gen_random_uuid() to uuid_generate_v7().
 ALTER TABLE "UserOnboarding" ALTER COLUMN "id" SET DEFAULT uuid_generate_v7();

@@ -6,9 +6,10 @@ from uuid_utils import uuid7
 def new_uuid() -> str:
     """Return a fresh sortable UUIDv7 as a lower-case canonical string.
 
-    Use this for any application-level ID generation that lands in a Prisma
-    column. Schema-level ``@default(dbgenerated("uuid_generate_v7()"))``
-    covers the path where Prisma populates the id; this helper is the
-    Python-side counterpart for code that needs the id before insert.
+    Most create-paths can simply omit ``id`` — the schema default
+    ``@default(dbgenerated("uuid_generate_v7()"))`` lets Postgres mint
+    the value. Reach for this helper only when the id is needed *before*
+    the insert (FK construction, return-then-insert, ID echoed back to
+    a caller before the row is committed).
     """
     return str(uuid7())
