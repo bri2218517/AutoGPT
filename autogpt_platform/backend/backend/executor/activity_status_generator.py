@@ -181,6 +181,7 @@ def _truncate_uuid(uuid_str: str) -> str:
 _CREDIT_EXHAUSTION_MESSAGES = (
     "you have no credits left to run an agent.",
     "insufficient balance of",
+    "insufficient balance to run",
 )
 
 

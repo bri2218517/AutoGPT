@@ -816,11 +816,16 @@ class TestObviousFailureDetection:
         assert _is_credit_exhaustion(
             "Insufficient balance of $0, where this will cost $1"
         )
+        assert _is_credit_exhaustion(
+            "Insufficient balance to run ReplicateModelBlock: "
+            "dynamic-cost blocks require a positive balance."
+        )
 
     def test_credit_exhaustion_case_insensitive(self):
         """Detection should be case-insensitive."""
         assert _is_credit_exhaustion("YOU HAVE NO CREDITS LEFT TO RUN AN AGENT.")
         assert _is_credit_exhaustion("INSUFFICIENT BALANCE OF $0")
+        assert _is_credit_exhaustion("INSUFFICIENT BALANCE TO RUN SOME BLOCK")
 
     def test_non_credit_errors_not_matched(self):
         """Non-credit errors should not match."""
