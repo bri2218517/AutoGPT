@@ -1,6 +1,5 @@
 import { CredentialsMetaResponse } from "@/app/api/__generated__/models/credentialsMetaResponse";
 import { BlockIOCredentialsSubSchema } from "@/lib/autogpt-server-api";
-import { hasRequiredCredentialScopes } from "@/lib/credentials/hasRequiredCredentialScopes";
 import { getHostFromUrl } from "@/lib/utils/url";
 import {
   GoogleLogoIcon,
@@ -33,9 +32,10 @@ export const filterCredentialsByProvider = (
 
       // Filter OAuth credentials that have sufficient scopes for this block
       if (credential.type === "oauth2" && schema?.credentials_scopes) {
-        const hasAllScopes = hasRequiredCredentialScopes(
-          credential.scopes,
-          schema.credentials_scopes,
+        const credentialScopes = new Set(credential.scopes || []);
+        const requiredScopes = new Set(schema.credentials_scopes);
+        const hasAllScopes = [...requiredScopes].every((scope) =>
+          credentialScopes.has(scope),
         );
         if (!hasAllScopes) {
           return false;

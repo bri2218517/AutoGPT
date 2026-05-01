@@ -31,7 +31,7 @@ def _creds(scopes: list[str] | None = None) -> OAuth2Credentials:
     )
 
 
-def test_get_login_url_uses_least_privilege_default_scopes():
+def test_get_login_url_uses_default_scopes_including_moderation():
     url = _handler().get_login_url([], "state-token", None)
 
     query = parse_qs(urlparse(url).query)
@@ -45,12 +45,15 @@ def test_get_login_url_uses_least_privilege_default_scopes():
         "history",
         "privatemessages",
         "flair",
+        "modposts",
+        "modcontributors",
+        "modmail",
+        "modlog",
     }
-    assert scopes.isdisjoint({"modposts", "modcontributors", "modmail", "modlog"})
 
 
 @pytest.mark.asyncio
-async def test_exchange_code_for_tokens_uses_granted_scopes(
+async def test_exchange_code_for_tokens_keeps_requested_scopes(
     mocker: MockerFixture,
 ):
     mock_response = MagicMock()
@@ -80,46 +83,11 @@ async def test_exchange_code_for_tokens_uses_granted_scopes(
         code_verifier=None,
     )
 
-    assert creds.scopes == ["identity", "read"]
+    assert creds.scopes == ["identity", "read", "modposts"]
 
 
 @pytest.mark.asyncio
-async def test_exchange_code_for_tokens_uses_requested_scopes_for_wildcard(
-    mocker: MockerFixture,
-):
-    requested_scopes = ["identity", "read", "modposts"]
-    mock_response = MagicMock()
-    mock_response.ok = True
-    mock_response.json.return_value = {
-        "access_token": "access-token-value",
-        "refresh_token": "refresh-token-value",
-        "expires_in": 3600,
-        "scope": "*",
-    }
-    mock_post = AsyncMock(return_value=mock_response)
-    mocker.patch(
-        "backend.integrations.oauth.reddit.Requests",
-        return_value=MagicMock(post=mock_post),
-    )
-
-    handler = _handler()
-    mocker.patch.object(
-        handler,
-        "_get_username",
-        AsyncMock(return_value="reddit-user"),
-    )
-
-    creds = await handler.exchange_code_for_tokens(
-        code="auth-code",
-        scopes=requested_scopes,
-        code_verifier=None,
-    )
-
-    assert creds.scopes == requested_scopes
-
-
-@pytest.mark.asyncio
-async def test_refresh_tokens_uses_returned_scope_string(mocker: MockerFixture):
+async def test_refresh_tokens_keeps_existing_scopes(mocker: MockerFixture):
     mock_response = MagicMock()
     mock_response.ok = True
     mock_response.json.return_value = {
@@ -142,36 +110,5 @@ async def test_refresh_tokens_uses_returned_scope_string(mocker: MockerFixture):
 
     refreshed = await handler._refresh_tokens(_creds())
 
-    assert refreshed.scopes == ["identity", "read"]
-    assert refreshed.refresh_token == SecretStr("refresh-token-value")
-
-
-@pytest.mark.asyncio
-async def test_refresh_tokens_uses_existing_scopes_for_wildcard(
-    mocker: MockerFixture,
-):
-    existing_scopes = ["identity", "read", "modposts"]
-    mock_response = MagicMock()
-    mock_response.ok = True
-    mock_response.json.return_value = {
-        "access_token": "new-access-token",
-        "expires_in": 3600,
-        "scope": "*",
-    }
-    mock_post = AsyncMock(return_value=mock_response)
-    mocker.patch(
-        "backend.integrations.oauth.reddit.Requests",
-        return_value=MagicMock(post=mock_post),
-    )
-
-    handler = _handler()
-    mocker.patch.object(
-        handler,
-        "_get_username",
-        AsyncMock(return_value="reddit-user"),
-    )
-
-    refreshed = await handler._refresh_tokens(_creds(existing_scopes))
-
-    assert refreshed.scopes == existing_scopes
+    assert refreshed.scopes == ["identity", "read", "modposts"]
     assert refreshed.refresh_token == SecretStr("refresh-token-value")

@@ -462,10 +462,7 @@ def _credential_has_required_scopes(
     # If no scopes are required, any credential matches
     if not requirements.required_scopes:
         return True
-    granted_scopes = set(credential.scopes or [])
-    return "*" in granted_scopes or granted_scopes.issuperset(
-        requirements.required_scopes
-    )
+    return set(credential.scopes).issuperset(requirements.required_scopes)
 
 
 def _credential_is_for_host(

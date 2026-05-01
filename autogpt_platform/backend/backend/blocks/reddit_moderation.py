@@ -21,9 +21,6 @@ from backend.blocks.reddit import (
 )
 from backend.data.model import SchemaField
 
-MOD_POSTS_SCOPE = {"modposts"}
-MOD_CONTRIBUTORS_SCOPE = {"modcontributors"}
-MODMAIL_SCOPE = {"modmail"}
 REMOVE_MOD_NOTE_MAX_LENGTH = 250
 BAN_REASON_MAX_LENGTH = 100
 BAN_MOD_NOTE_MAX_LENGTH = 300
@@ -56,9 +53,7 @@ def _get_thing_type(item: Comment | Submission) -> Literal["comment", "submissio
 
 class ModQueueBlock(Block):
     class Input(BlockSchemaInput):
-        credentials: RedditCredentialsInput = RedditCredentialsField(
-            required_scopes=MOD_POSTS_SCOPE
-        )
+        credentials: RedditCredentialsInput = RedditCredentialsField()
         subreddit: str = SchemaField(
             description="Subreddit name, excluding the /r/ prefix",
         )
@@ -183,9 +178,7 @@ class ModQueueBlock(Block):
 
 class RemoveRedditPostBlock(Block):
     class Input(BlockSchemaInput):
-        credentials: RedditCredentialsInput = RedditCredentialsField(
-            required_scopes=MOD_POSTS_SCOPE
-        )
+        credentials: RedditCredentialsInput = RedditCredentialsField()
         post_id: str = SchemaField(
             description="ID or fullname of the post/comment to remove, such as 't3_abc123', 't1_xyz789', or bare submission ID 'abc123'",
         )
@@ -257,9 +250,7 @@ class RemoveRedditPostBlock(Block):
 
 class ApproveRedditPostBlock(Block):
     class Input(BlockSchemaInput):
-        credentials: RedditCredentialsInput = RedditCredentialsField(
-            required_scopes=MOD_POSTS_SCOPE
-        )
+        credentials: RedditCredentialsInput = RedditCredentialsField()
         post_id: str = SchemaField(
             description="ID or fullname of the post/comment to approve, such as 't3_abc123', 't1_xyz789', or bare submission ID 'abc123'",
         )
@@ -308,9 +299,7 @@ class ApproveRedditPostBlock(Block):
 
 class LockRedditPostBlock(Block):
     class Input(BlockSchemaInput):
-        credentials: RedditCredentialsInput = RedditCredentialsField(
-            required_scopes=MOD_POSTS_SCOPE
-        )
+        credentials: RedditCredentialsInput = RedditCredentialsField()
         post_id: str = SchemaField(
             description="ID or fullname of the post/comment to lock or unlock",
         )
@@ -371,9 +360,7 @@ class LockRedditPostBlock(Block):
 
 class BanSubredditUserBlock(Block):
     class Input(BlockSchemaInput):
-        credentials: RedditCredentialsInput = RedditCredentialsField(
-            required_scopes=MOD_CONTRIBUTORS_SCOPE
-        )
+        credentials: RedditCredentialsInput = RedditCredentialsField()
         subreddit: str = SchemaField(
             description="Subreddit to ban the user from, excluding the /r/ prefix",
         )
@@ -482,9 +469,7 @@ class BanSubredditUserBlock(Block):
 
 class UnbanSubredditUserBlock(Block):
     class Input(BlockSchemaInput):
-        credentials: RedditCredentialsInput = RedditCredentialsField(
-            required_scopes=MOD_CONTRIBUTORS_SCOPE
-        )
+        credentials: RedditCredentialsInput = RedditCredentialsField()
         subreddit: str = SchemaField(
             description="Subreddit to unban the user from, excluding the /r/ prefix",
         )
@@ -545,9 +530,7 @@ class UnbanSubredditUserBlock(Block):
 
 class SendModMailBlock(Block):
     class Input(BlockSchemaInput):
-        credentials: RedditCredentialsInput = RedditCredentialsField(
-            required_scopes=MODMAIL_SCOPE
-        )
+        credentials: RedditCredentialsInput = RedditCredentialsField()
         subreddit: str = SchemaField(
             description="Subreddit to send modmail from, excluding the /r/ prefix",
         )

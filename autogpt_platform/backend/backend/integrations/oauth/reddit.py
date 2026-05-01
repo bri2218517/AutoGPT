@@ -36,6 +36,10 @@ class RedditOAuthHandler(BaseOAuthHandler):
         "history",  # Access user's post history
         "privatemessages",  # Access inbox and send private messages
         "flair",  # Access and set flair on posts/subreddits
+        "modposts",  # Moderate posts and comments
+        "modcontributors",  # Manage subreddit bans and contributors
+        "modmail",  # Send modmail conversations
+        "modlog",  # Read moderation log entries
     ]
 
     AUTHORIZE_URL = "https://www.reddit.com/api/v1/authorize"
@@ -64,23 +68,6 @@ class RedditOAuthHandler(BaseOAuthHandler):
         }
 
         return f"{self.AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
-
-    @staticmethod
-    def _get_granted_scopes(
-        tokens: dict, fallback_scopes: list[str] | None = None
-    ) -> list[str]:
-        raw_scopes = tokens.get("scope", "")
-        if isinstance(raw_scopes, str):
-            granted_scopes = raw_scopes.split()
-        elif isinstance(raw_scopes, list):
-            granted_scopes = [scope for scope in raw_scopes if isinstance(scope, str)]
-        else:
-            granted_scopes = []
-
-        if not granted_scopes or "*" in granted_scopes:
-            return list(fallback_scopes or [])
-
-        return granted_scopes
 
     async def exchange_code_for_tokens(
         self, code: str, scopes: list[str], code_verifier: Optional[str]
@@ -118,7 +105,6 @@ class RedditOAuthHandler(BaseOAuthHandler):
             raise ValueError(f"Reddit OAuth error: {tokens.get('error')}")
 
         username = await self._get_username(tokens["access_token"])
-        granted_scopes = self._get_granted_scopes(tokens, scopes)
 
         return OAuth2Credentials(
             provider=self.PROVIDER_NAME,
@@ -128,7 +114,7 @@ class RedditOAuthHandler(BaseOAuthHandler):
             refresh_token=tokens.get("refresh_token"),
             access_token_expires_at=int(time.time()) + tokens.get("expires_in", 3600),
             refresh_token_expires_at=None,  # Reddit refresh tokens don't expire
-            scopes=granted_scopes,
+            scopes=scopes,
         )
 
     async def _get_username(self, access_token: str) -> str:
@@ -182,8 +168,6 @@ class RedditOAuthHandler(BaseOAuthHandler):
 
         username = await self._get_username(tokens["access_token"])
 
-        granted_scopes = self._get_granted_scopes(tokens, credentials.scopes)
-
         # Reddit may or may not return a new refresh token
         new_refresh_token = tokens.get("refresh_token")
         if new_refresh_token:
@@ -203,7 +187,7 @@ class RedditOAuthHandler(BaseOAuthHandler):
             refresh_token=refresh_token,
             access_token_expires_at=int(time.time()) + tokens.get("expires_in", 3600),
             refresh_token_expires_at=None,
-            scopes=granted_scopes,
+            scopes=credentials.scopes,
         )
 
     async def revoke_tokens(self, credentials: OAuth2Credentials) -> bool:

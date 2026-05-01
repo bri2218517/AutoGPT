@@ -1,6 +1,5 @@
 import useCredentials from "@/hooks/useCredentials";
 import { useBackendAPI } from "@/lib/autogpt-server-api/context";
-import { hasRequiredCredentialScopes } from "@/lib/credentials/hasRequiredCredentialScopes";
 import {
   BlockIOCredentialsSubSchema,
   CredentialsMetaInput,
@@ -220,9 +219,9 @@ export function useCredentialsInput({
       if (!isMCP) {
         const requiredScopes = schema.credentials_scopes;
         if (requiredScopes && requiredScopes.length > 0) {
-          const hasAllRequiredScopes = hasRequiredCredentialScopes(
-            credentialResult.scopes,
-            requiredScopes,
+          const grantedScopes = new Set(credentialResult.scopes || []);
+          const hasAllRequiredScopes = new Set(requiredScopes).isSubsetOf(
+            grantedScopes,
           );
 
           if (!hasAllRequiredScopes) {

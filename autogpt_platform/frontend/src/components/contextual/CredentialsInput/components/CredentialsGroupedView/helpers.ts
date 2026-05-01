@@ -1,5 +1,4 @@
 import { CredentialsProvidersContextType } from "@/providers/agent-credentials/credentials-provider";
-import { hasRequiredCredentialScopes } from "@/lib/credentials/hasRequiredCredentialScopes";
 import { filterSystemCredentials, getSystemCredentials } from "../../helpers";
 
 export type CredentialField = [string, any];
@@ -16,7 +15,12 @@ function hasRequiredScopes(
   requiredScopes?: string[],
 ) {
   if (credential.type !== "oauth2") return true;
-  return hasRequiredCredentialScopes(credential.scopes, requiredScopes);
+  if (!requiredScopes || requiredScopes.length === 0) return true;
+  const grantedScopes = new Set(credential.scopes || []);
+  for (const scope of requiredScopes) {
+    if (!grantedScopes.has(scope)) return false;
+  }
+  return true;
 }
 
 /** Check if a credential matches the discriminator values (e.g. MCP server URL). */

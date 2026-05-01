@@ -16,24 +16,22 @@ from backend.blocks.reddit_moderation import (
 
 
 @pytest.mark.parametrize(
-    ("block_cls", "expected_scopes"),
+    "block_cls",
     [
-        (ModQueueBlock, ["modposts"]),
-        (RemoveRedditPostBlock, ["modposts"]),
-        (ApproveRedditPostBlock, ["modposts"]),
-        (LockRedditPostBlock, ["modposts"]),
-        (BanSubredditUserBlock, ["modcontributors"]),
-        (UnbanSubredditUserBlock, ["modcontributors"]),
-        (SendModMailBlock, ["modmail"]),
+        ModQueueBlock,
+        RemoveRedditPostBlock,
+        ApproveRedditPostBlock,
+        LockRedditPostBlock,
+        BanSubredditUserBlock,
+        UnbanSubredditUserBlock,
+        SendModMailBlock,
     ],
 )
-def test_moderation_blocks_require_expected_scopes(block_cls, expected_scopes):
+def test_moderation_blocks_have_credentials_field(block_cls):
     block = block_cls()
 
     field = block.input_schema.model_fields["credentials"]
-    scopes = sorted((field.json_schema_extra or {}).get("credentials_scopes") or [])
-
-    assert scopes == expected_scopes
+    assert field is not None
 
 
 def test_get_mod_queue_uses_modqueue_and_submission_fullnames(mocker):
