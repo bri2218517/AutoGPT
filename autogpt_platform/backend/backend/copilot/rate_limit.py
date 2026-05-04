@@ -489,7 +489,7 @@ async def get_usage_status(
         )
         daily_used = int(daily_raw or 0)
         weekly_used = int(weekly_raw or 0)
-    except (RedisError, ConnectionError, OSError):
+    except (RedisError, RedisClusterException, ConnectionError, OSError):
         logger.warning("Redis unavailable for usage status, returning zeros")
 
     return CoPilotUsageStatus(
@@ -598,7 +598,7 @@ async def reset_daily_usage(user_id: str, daily_cost_limit: int = 0) -> bool:
 
         logger.info("Reset daily usage for user %s", user_id[:8])
         return True
-    except (RedisError, ConnectionError, OSError):
+    except (RedisError, RedisClusterException, ConnectionError, OSError):
         logger.warning("Redis unavailable for resetting daily usage")
         return False
 
@@ -613,7 +613,7 @@ async def acquire_reset_lock(user_id: str, ttl_seconds: int = 10) -> bool:
         redis = await get_redis_async()
         key = f"{_RESET_LOCK_PREFIX}:{user_id}"
         return bool(await redis.set(key, "1", nx=True, ex=ttl_seconds))
-    except (RedisError, ConnectionError, OSError) as exc:
+    except (RedisError, RedisClusterException, ConnectionError, OSError) as exc:
         logger.warning("Redis unavailable for reset lock, rejecting reset: %s", exc)
         return False
 
@@ -623,7 +623,7 @@ async def release_reset_lock(user_id: str) -> None:
     try:
         redis = await get_redis_async()
         await redis.delete(f"{_RESET_LOCK_PREFIX}:{user_id}")
-    except (RedisError, ConnectionError, OSError):
+    except (RedisError, RedisClusterException, ConnectionError, OSError):
         pass  # Lock will expire via TTL
 
 
@@ -640,7 +640,7 @@ async def get_daily_reset_count(user_id: str) -> int | None:
         key = f"{_RESET_COUNT_PREFIX}:{user_id}:{now.strftime('%Y-%m-%d')}"
         val = await redis.get(key)
         return int(val or 0)
-    except (RedisError, ConnectionError, OSError):
+    except (RedisError, RedisClusterException, ConnectionError, OSError):
         logger.warning("Redis unavailable for reading daily reset count")
         return None
 
@@ -656,7 +656,7 @@ async def increment_daily_reset_count(user_id: str) -> None:
         seconds_until_reset = int((_daily_reset_time(now=now) - now).total_seconds())
         pipe.expire(key, max(seconds_until_reset, 1))
         await pipe.execute()
-    except (RedisError, ConnectionError, OSError):
+    except (RedisError, RedisClusterException, ConnectionError, OSError):
         logger.warning("Redis unavailable for tracking reset count")
 
 
@@ -696,7 +696,7 @@ async def record_cost_usage(
         # invariant that matters; the two counters are independent budgets.
         await _incr_counter_atomic(redis, d_key, cost_microdollars, daily_ttl)
         await _incr_counter_atomic(redis, w_key, cost_microdollars, weekly_ttl)
-    except (RedisError, ConnectionError, OSError):
+    except (RedisError, RedisClusterException, ConnectionError, OSError):
         logger.warning(
             "Redis unavailable for recording cost usage (microdollars=%d)",
             cost_microdollars,
@@ -981,7 +981,7 @@ async def reset_user_usage(user_id: str, *, reset_weekly: bool = False) -> None:
         await redis.delete(d_key)
         if w_key is not None:
             await redis.delete(w_key)
-    except (RedisError, ConnectionError, OSError):
+    except (RedisError, RedisClusterException, ConnectionError, OSError):
         logger.warning("Redis unavailable for resetting user usage")
         raise
 
