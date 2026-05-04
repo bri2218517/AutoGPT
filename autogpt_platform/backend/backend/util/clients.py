@@ -187,14 +187,44 @@ def get_openai_client(*, prefer_openrouter: bool = False) -> "AsyncOpenAI | None
     """
     Get a process-cached async OpenAI client.
 
-    By default prefers openai_internal_api_key (direct OpenAI) and falls back
-    to open_router_api_key via OpenRouter.
+    Resolution order:
 
-    When ``prefer_openrouter=True``, returns an OpenRouter client or None —
-    does **not** fall back to direct OpenAI (which can't route non-OpenAI
-    models like ``google/gemini-2.5-flash``).
+    1. **Local transport** (``CHAT_USE_LOCAL=true``) wins unconditionally.
+       Operators who opted into self-hosted shouldn't have platform helpers
+       (dry-run simulator, prompt compression, marketplace embeddings, …)
+       silently route to the cloud just because legacy cloud-key fallbacks
+       happen to be present. Returns a client pointed at the same
+       OpenAI-compatible endpoint AutoPilot uses, with the same generous
+       request timeout — those helpers fire under the same hardware
+       constraints (CPU-only Ollama is slow).
+    2. ``prefer_openrouter=True`` → returns an OpenRouter client or None.
+       Does **not** fall back to direct OpenAI (which can't route non-OpenAI
+       models like ``google/gemini-2.5-flash``).
+    3. Default → prefers ``openai_internal_api_key`` (direct OpenAI), falls
+       back to ``open_router_api_key`` via OpenRouter.
+
+    Returns ``None`` only when none of the above resolve — callers must
+    handle that branch (see e.g. ``executor/simulator._run_simulation_llm``).
     """
     from openai import AsyncOpenAI
+
+    # Local transport takes precedence so a stray ``OPENAI_API_KEY`` set
+    # for some other reason can't override an explicit ``CHAT_USE_LOCAL=true``.
+    # Reuse the module-level ``ChatConfig`` singleton from
+    # ``copilot.sdk.env`` rather than constructing a fresh one — that
+    # config object already exists for the SDK env builder, runs the full
+    # validator chain once at import time, and avoids the ``.env``-reread
+    # cost on every cache miss here. Lazy-imported because
+    # ``backend.copilot.config`` imports ``OPENROUTER_BASE_URL`` from this
+    # module — a top-level import would create a cycle.
+    from backend.copilot.sdk.env import config as chat_cfg
+
+    if chat_cfg.transport.name == "local":
+        return AsyncOpenAI(
+            api_key=chat_cfg.api_key,
+            base_url=chat_cfg.base_url,
+            timeout=chat_cfg.local_request_timeout_s,
+        )
 
     openai_key = settings.secrets.openai_internal_api_key
     openrouter_key = settings.secrets.open_router_api_key

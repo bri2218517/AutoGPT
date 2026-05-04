@@ -6,15 +6,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from openai import AsyncOpenAI
-
 from backend.data.redis_client import get_redis_async
 from backend.data.understanding import (
     BusinessUnderstandingInput,
     get_business_understanding,
     upsert_business_understanding,
 )
-from backend.util.clients import OPENROUTER_BASE_URL
+from backend.util.clients import get_openai_client
 from backend.util.request import Requests
 from backend.util.settings import Settings
 
@@ -353,15 +351,35 @@ async def extract_business_understanding(
     """Use an LLM to extract structured business understanding from form text.
 
     Raises on timeout or unparseable response so the caller can handle it.
+    Routes through ``get_openai_client(prefer_openrouter=True)`` so a
+    self-hosted ``CHAT_USE_LOCAL=true`` deployment hits the operator's
+    Ollama / vLLM / LiteLLM endpoint instead of unauthenticated OpenRouter
+    (the previous direct ``AsyncOpenAI(api_key=settings.secrets.open_router_api_key,
+    base_url=OPENROUTER_BASE_URL)`` returned a 401 on the very first signup
+    of any no-API-key install).
+
+    Model picks ``ChatConfig.title_model`` so that under ``use_local`` the
+    auto-derivation from ``fast_standard_model`` flows through here too —
+    one less env to remember. Reuses the module-level ``ChatConfig``
+    singleton from ``copilot.sdk.env`` to avoid a fresh ``.env``-parse
+    on every Tally submission.
     """
-    settings = Settings()
-    api_key = settings.secrets.open_router_api_key
-    client = AsyncOpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL)
+    from backend.copilot.sdk.env import config as chat_cfg
+
+    client = get_openai_client(prefer_openrouter=True)
+    if client is None:
+        raise RuntimeError(
+            "Tally extraction needs an LLM client but none is configured. "
+            "Set OPEN_ROUTER_API_KEY (cloud) or CHAT_USE_LOCAL=true with "
+            "CHAT_BASE_URL + CHAT_API_KEY (local). See "
+            "docs/platform/copilot-local-llm.md."
+        )
+    model = chat_cfg.title_model
 
     try:
         response = await asyncio.wait_for(
             client.chat.completions.create(
-                model="openai/gpt-4o-mini",
+                model=model,
                 messages=[
                     {
                         "role": "user",

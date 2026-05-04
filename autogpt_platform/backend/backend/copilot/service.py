@@ -65,7 +65,15 @@ _langfuse = None
 def _get_openai_client() -> LangfuseAsyncOpenAI:
     global _client
     if _client is None:
-        _client = LangfuseAsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
+        # Local-LLM backends (Ollama et al.) on CPU-only hosts can take
+        # many minutes for a single turn against AutoPilot's heavy system
+        # prompt. The OpenAI client default (600 s) is too short for that
+        # case — extend it under the local transport. Cloud transports
+        # keep the SDK default so genuine hangs still surface promptly.
+        kwargs: dict = {"api_key": config.api_key, "base_url": config.base_url}
+        if config.transport.name == "local":
+            kwargs["timeout"] = config.local_request_timeout_s
+        _client = LangfuseAsyncOpenAI(**kwargs)
     return _client
 
 

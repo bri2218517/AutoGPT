@@ -60,9 +60,13 @@ _OPENROUTER_INCLUDE_USAGE_COST: dict[str, Any] = {"usage": {"include": True}}
 
 def _simulator_model() -> str:
     try:
-        from backend.copilot.config import ChatConfig  # noqa: PLC0415
+        # Reuse the module-level ChatConfig singleton from copilot.sdk.env
+        # rather than constructing a fresh one — the validator chain runs
+        # at import time, so a per-call ``ChatConfig()`` re-reads ``.env``
+        # and re-runs every model_validator on every dry-run turn.
+        from backend.copilot.sdk.env import config as chat_cfg  # noqa: PLC0415
 
-        return ChatConfig().simulation_model or _DEFAULT_SIMULATOR_MODEL
+        return chat_cfg.simulation_model or _DEFAULT_SIMULATOR_MODEL
     except Exception:
         return _DEFAULT_SIMULATOR_MODEL
 
@@ -132,24 +136,40 @@ async def _call_llm_for_simulation(
     client = get_openai_client(prefer_openrouter=True)
     if client is None:
         raise RuntimeError(
-            "[SIMULATOR ERROR — NOT A BLOCK FAILURE] No LLM client available "
-            "(missing OpenAI/OpenRouter API key)."
+            "[SIMULATOR ERROR — NOT A BLOCK FAILURE] No LLM client available. "
+            "Set OPEN_ROUTER_API_KEY (cloud) or CHAT_USE_LOCAL=true with "
+            "CHAT_BASE_URL + CHAT_API_KEY (local). See "
+            "docs/platform/copilot-local-llm.md."
         )
+
+    # ``_OPENROUTER_INCLUDE_USAGE_COST`` is OpenRouter-specific
+    # (``{"usage": {"include": True}}``). Cloud OpenAI ignores unknown
+    # body keys; stricter local OpenAI-compat backends (LiteLLM proxy
+    # with strict mode, some vLLM configs) reject them. Mirror the
+    # ``baseline/service.py`` policy: only send when actually routing
+    # through OpenRouter.
+    from backend.copilot.sdk.env import config as chat_cfg
+
+    extra_body = (
+        _OPENROUTER_INCLUDE_USAGE_COST if chat_cfg.transport.name != "local" else None
+    )
 
     model = _simulator_model()
     last_error: Exception | None = None
     for attempt in range(_MAX_JSON_RETRIES):
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                temperature=_TEMPERATURE,
-                response_format={"type": "json_object"},
-                messages=[
+            create_kwargs: dict[str, Any] = {
+                "model": model,
+                "temperature": _TEMPERATURE,
+                "response_format": {"type": "json_object"},
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                extra_body=_OPENROUTER_INCLUDE_USAGE_COST,
-            )
+            }
+            if extra_body is not None:
+                create_kwargs["extra_body"] = extra_body
+            response = await client.chat.completions.create(**create_kwargs)
             if not response.choices:
                 raise ValueError("LLM returned empty choices array")
             raw = response.choices[0].message.content or ""

@@ -671,12 +671,32 @@ async def _baseline_llm_caller(
             final_messages = messages
             extra_headers = None
         typed_messages = cast(list[ChatCompletionMessageParam], final_messages)
-        extra_body: dict[str, Any] = dict(_OPENROUTER_INCLUDE_USAGE_COST)
+        # ``_OPENROUTER_INCLUDE_USAGE_COST`` injects an OpenRouter-specific
+        # ``usage.include`` extension. Most local OpenAI-compat backends
+        # (Ollama, vLLM, LiteLLM proxy) silently ignore unknown body keys,
+        # but stricter implementations reject them outright — so we only
+        # send it when the active transport actually goes through OpenRouter.
+        extra_body: dict[str, Any] = (
+            dict(_OPENROUTER_INCLUDE_USAGE_COST)
+            if config.transport.name != "local"
+            else {}
+        )
         reasoning_param = reasoning_extra_body(
             state.model, config.claude_agent_max_thinking_tokens
         )
         if reasoning_param:
             extra_body.update(reasoning_param)
+        # Ollama's OpenAI shim defaults to ``num_ctx=4096`` regardless of
+        # the model's advertised window — silently truncating AutoPilot's
+        # ~8 k system prompt and producing nonsense responses on the very
+        # first turn (ollama/ollama#2714). Pass an explicit ctx large
+        # enough to hold our system prompt + a real conversation when the
+        # operator is on the local transport. The OpenRouter / Anthropic
+        # paths ignore unknown ``options`` so this is a no-op there.
+        if config.transport.name == "local":
+            extra_body.setdefault("options", {}).setdefault(
+                "num_ctx", config.local_num_ctx
+            )
         create_kwargs: dict[str, Any] = {
             "model": state.model,
             "messages": typed_messages,

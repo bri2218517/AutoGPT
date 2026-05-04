@@ -3,10 +3,98 @@
 import os
 from typing import Literal
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings
 
 from backend.util.clients import OPENROUTER_BASE_URL
+
+# Default values for the cloud-routed auxiliary models. The local transport
+# auto-overrides them when left at default — see ``_apply_local_aux_models``
+# below. Kept as module constants so the validator and the field defaults
+# can't drift.
+_DEFAULT_TITLE_MODEL = "openai/gpt-4o-mini"
+_DEFAULT_SIMULATION_MODEL = "google/gemini-2.5-flash-lite"
+
+TransportName = Literal["subscription", "openrouter", "direct_anthropic", "local"]
+
+
+class TransportProfile(BaseModel):
+    """Per-transport behaviour table.
+
+    Each row collapses what *was* a scattered set of ``if config.use_X``
+    checks (model-vendor validation, SDK availability, api_key fallback
+    chain, auxiliary-model derivation) into named capabilities the
+    config can read once. Adding a new transport (vLLM, llama.cpp,
+    LocalAI, …) becomes "add a row to ``_TRANSPORT_PROFILES``" instead
+    of "find every transport branch and extend the if/else."
+
+    Read at call sites via ``ChatConfig.transport`` — never instantiate
+    directly. Frozen so the ``_TRANSPORT_PROFILES`` constants table is
+    immutable at runtime.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: TransportName
+    # Whether the Claude Agent SDK CLI can be invoked under this transport.
+    # The CLI speaks Anthropic's wire protocol, so only Anthropic-compatible
+    # transports qualify. ``local`` (Ollama et al.) → False, downgraded to
+    # baseline at request time.
+    supports_sdk: bool
+    # If set, the SDK model slug must come from this provider — otherwise
+    # ``_validate_sdk_model_vendor_compatibility`` raises at config load.
+    # ``None`` means "no vendor constraint" (OpenRouter accepts any slug;
+    # subscription resolves to None and bypasses the check; local skips
+    # the SDK entirely).
+    sdk_model_vendor_constraint: str | None
+    # Env vars consulted in order when ``CHAT_API_KEY`` is unset. Empty
+    # tuple = no fallback — the transport requires CHAT_API_KEY explicitly
+    # (local) or doesn't use api_key at all (subscription).
+    api_key_fallback_envs: tuple[str, ...]
+    # When True, ``title_model`` / ``simulation_model`` left at their cloud
+    # defaults are overridden to ``fast_standard_model`` so operators don't
+    # have to set every CHAT_*_MODEL slug. Cloud transports leave them
+    # alone — operators can mix providers per field if they want.
+    inherit_fast_model_for_aux: bool
+
+
+_TRANSPORT_PROFILES: dict[TransportName, TransportProfile] = {
+    "subscription": TransportProfile(
+        name="subscription",
+        supports_sdk=True,
+        sdk_model_vendor_constraint=None,
+        api_key_fallback_envs=(),
+        inherit_fast_model_for_aux=False,
+    ),
+    "openrouter": TransportProfile(
+        name="openrouter",
+        supports_sdk=True,
+        sdk_model_vendor_constraint=None,
+        api_key_fallback_envs=("OPEN_ROUTER_API_KEY", "OPENAI_API_KEY"),
+        inherit_fast_model_for_aux=False,
+    ),
+    "direct_anthropic": TransportProfile(
+        name="direct_anthropic",
+        supports_sdk=True,
+        sdk_model_vendor_constraint="anthropic",
+        api_key_fallback_envs=("OPEN_ROUTER_API_KEY", "OPENAI_API_KEY"),
+        inherit_fast_model_for_aux=False,
+    ),
+    "local": TransportProfile(
+        name="local",
+        supports_sdk=False,
+        sdk_model_vendor_constraint=None,
+        api_key_fallback_envs=(),
+        inherit_fast_model_for_aux=True,
+    ),
+}
 
 # Per-request routing mode for a single chat turn.
 # - 'fast': route to the baseline OpenAI-compatible path with the cheaper model.
@@ -77,14 +165,18 @@ class ChatConfig(BaseSettings):
         "override: ``copilot-model-routing[thinking][advanced]``.",
     )
     title_model: str = Field(
-        default="openai/gpt-4o-mini",
-        description="Model to use for generating session titles (should be fast/cheap)",
+        default=_DEFAULT_TITLE_MODEL,
+        description="Model to use for generating session titles (should be fast/cheap). "
+        "Auto-overridden to match ``fast_standard_model`` under ``use_local`` "
+        "when left at the cloud default — see ``_apply_local_model_defaults``.",
     )
     simulation_model: str = Field(
-        default="google/gemini-2.5-flash-lite",
+        default=_DEFAULT_SIMULATION_MODEL,
         description="Model for dry-run block simulation (should be fast/cheap with good JSON output). "
         "Gemini 2.5 Flash-Lite is ~3x cheaper than Flash ($0.10/$0.40 vs $0.30/$1.20 per MTok) "
-        "with JSON-mode reliability adequate for shape-matching block outputs.",
+        "with JSON-mode reliability adequate for shape-matching block outputs. "
+        "Auto-overridden to match ``fast_standard_model`` under ``use_local`` "
+        "when left at the cloud default.",
     )
     api_key: str | None = Field(default=None, description="OpenAI API key")
     base_url: str | None = Field(
@@ -360,6 +452,54 @@ class ChatConfig(BaseSettings):
         default=False,
         description="For personal/dev use: use Claude Code CLI subscription auth instead of API keys. Requires `claude login` on the host. Only works with SDK mode.",
     )
+    local_num_ctx: int = Field(
+        default=32768,
+        ge=2048,
+        description="Context window (in tokens) requested from the local "
+        "backend for every chat call when ``use_local`` is True. Ollama's "
+        "OpenAI shim ignores the model's advertised window and defaults to "
+        "``num_ctx=4096`` — small enough to silently truncate AutoPilot's "
+        "~8 k-token system prompt and produce a corrupted first turn "
+        "(ollama/ollama#2714). 32 768 leaves room for the system prompt + a "
+        "few turns of conversation while staying well inside what an 8 GB "
+        "Q4 model can hold on consumer hardware. Adjust for very small "
+        "(set to model's actual window) or very large (only with GPU) "
+        "deployments. NOTE: Ollama's ``/v1/chat/completions`` endpoint does "
+        "NOT honor ``options.num_ctx`` in the request body — set the server "
+        "via ``OLLAMA_CONTEXT_LENGTH=32768`` env var on the systemd unit. "
+        "This config field is forwarded for OpenAI-compatible backends that "
+        "DO honor it in the request (vLLM, LM Studio, LiteLLM proxy, …). "
+        "Ignored under cloud transports.",
+    )
+    local_request_timeout_s: float = Field(
+        default=1800.0,
+        ge=60.0,
+        description="HTTP request timeout (seconds) for the OpenAI-compatible "
+        "client when ``use_local`` is True. The OpenAI Python client defaults "
+        "to 600 s — tighter than what an 8 B model running on a CPU-only host "
+        "needs for a single AutoPilot turn (system prompt ≈ 8 k tokens; the "
+        "tool-call loop multiplies that across iterations). Set to the longest "
+        "single-call wait an operator is willing to tolerate before bailing. "
+        "30 minutes accommodates CPU-only setups; drop it to ≤120 s if you "
+        "have a GPU and want fast-fail on hangs. Ignored under cloud "
+        "transports — those keep the OpenAI client default.",
+    )
+    use_local: bool = Field(
+        default=False,
+        description="Route chat through a self-hosted, OpenAI-compatible LLM "
+        "endpoint (typically Ollama at ``http://host:11434/v1``). When True: "
+        "(a) ``effective_transport`` is ``'local'`` regardless of OpenRouter "
+        "or subscription credentials; (b) ``thinking_available`` is False — "
+        "the Claude Agent SDK CLI speaks Anthropic's wire protocol and cannot "
+        "route to Ollama, so requests with ``mode='extended_thinking'`` are "
+        "downgraded to ``'fast'`` with a logged warning; (c) the "
+        "``CHAT_*_MODEL`` fields should be set to bare names served by the "
+        "local backend (e.g. ``llama3.2:3b``) — OpenRouter-style "
+        "``provider/model`` slugs are passed through verbatim and will not "
+        "resolve. ``CHAT_BASE_URL`` and ``CHAT_API_KEY`` must still be set "
+        "(api_key can be any non-empty string for Ollama). Override via "
+        "``CHAT_USE_LOCAL``.",
+    )
     test_mode: bool = Field(
         default=False,
         description="Use dummy service instead of real LLM calls. "
@@ -415,32 +555,57 @@ class ChatConfig(BaseSettings):
         return bool(self.api_key and base and base.startswith("http"))
 
     @property
-    def effective_transport(
-        self,
-    ) -> Literal["subscription", "openrouter", "direct_anthropic"]:
-        """The transport the SDK CLI subprocess actually uses for this turn.
+    def effective_transport(self) -> TransportName:
+        """The transport the chat path actually uses for this turn.
 
         Detection order:
 
-        1. ``subscription`` — when ``use_claude_code_subscription`` is True
-           the CLI uses OAuth from the keychain or
-           ``CLAUDE_CODE_OAUTH_TOKEN`` and ignores ``CHAT_BASE_URL`` /
-           ``CHAT_API_KEY`` entirely (see ``build_sdk_env`` mode 1).
-        2. ``openrouter`` — when ``openrouter_active`` (use_openrouter +
+        1. ``local`` — ``use_local`` is True. Wins over every other mode
+           because operators opting into ``CHAT_USE_LOCAL`` have explicitly
+           chosen self-hosted; we don't silently route to OpenRouter just
+           because credentials happen to be in the env.
+        2. ``subscription`` — ``use_claude_code_subscription`` is True;
+           the CLI uses OAuth from the keychain or ``CLAUDE_CODE_OAUTH_TOKEN``
+           and ignores ``CHAT_BASE_URL`` / ``CHAT_API_KEY`` entirely
+           (``build_sdk_env`` mode 1).
+        3. ``openrouter`` — ``openrouter_active`` (use_openrouter +
            api_key + a valid base_url).
-        3. ``direct_anthropic`` — fallback (CLI talks to api.anthropic.com
-           with ``ANTHROPIC_API_KEY`` from parent env).
+        4. ``direct_anthropic`` — fallback (CLI talks to api.anthropic.com
+           with ``ANTHROPIC_API_KEY`` from the parent env).
 
-        Use this when the question is "which model-name format will the
-        CLI accept?" — the OpenRouter slug ``anthropic/claude-opus-4.7``
-        works through the proxy but is rejected by the subscription /
-        direct-Anthropic transports.
+        For per-transport *behaviour* (vendor constraints, SDK availability,
+        api_key fallback chain, …) read ``self.transport`` instead of
+        branching on this string at every call site.
         """
+        if self.use_local:
+            return "local"
         if self.use_claude_code_subscription:
             return "subscription"
         if self.openrouter_active:
             return "openrouter"
         return "direct_anthropic"
+
+    @property
+    def transport(self) -> TransportProfile:
+        """The active transport's behaviour descriptor.
+
+        Single source of truth for "what does this transport allow / require"
+        — replaces the scattered ``if config.use_X`` checks that used to
+        live in the validators, the SDK env builder, the request-path mode
+        resolver, and the api_key fallback. See ``TransportProfile`` and
+        ``_TRANSPORT_PROFILES``.
+        """
+        return _TRANSPORT_PROFILES[self.effective_transport]
+
+    @property
+    def thinking_available(self) -> bool:
+        """Backwards-compatible alias for ``self.transport.supports_sdk``.
+
+        Existing call sites in ``executor.processor`` consume this as a
+        named kwarg; keeping the property avoids a churning rename across
+        the request path.
+        """
+        return self.transport.supports_sdk
 
     @property
     def e2b_active(self) -> bool:
@@ -475,20 +640,18 @@ class ChatConfig(BaseSettings):
     @field_validator("api_key", mode="before")
     @classmethod
     def get_api_key(cls, v):
-        """Get API key from environment if not provided."""
+        """Pick up ``CHAT_API_KEY`` from env if the field is unset.
+
+        The transport-specific cross-key fallback (e.g. ``OPEN_ROUTER_API_KEY``,
+        ``OPENAI_API_KEY``) runs in the model_validator so it can consult
+        the resolved transport via ``self.transport.api_key_fallback_envs``
+        — see ``_apply_transport_api_key_fallback``. Note: ``ANTHROPIC_API_KEY``
+        is intentionally *never* in any fallback chain, because the SDK CLI
+        reads it directly from the parent env — pairing it with an OpenRouter
+        base_url at the chat layer would cause auth failures.
+        """
         if not v:
-            # Try to get from environment variables
-            # First check for CHAT_API_KEY (Pydantic prefix)
             v = os.getenv("CHAT_API_KEY")
-            if not v:
-                # Fall back to OPEN_ROUTER_API_KEY
-                v = os.getenv("OPEN_ROUTER_API_KEY")
-            if not v:
-                # Fall back to OPENAI_API_KEY
-                v = os.getenv("OPENAI_API_KEY")
-            # Note: ANTHROPIC_API_KEY is intentionally NOT included here.
-            # The SDK CLI picks it up from the env directly. Including it
-            # would pair it with the OpenRouter base_url, causing auth failures.
         return v
 
     @field_validator("base_url", mode="before")
@@ -541,42 +704,135 @@ class ChatConfig(BaseSettings):
         return v
 
     @model_validator(mode="after")
+    def _validate_local_transport_requirements(self) -> "ChatConfig":
+        """Fail fast at config load when ``use_local`` lacks an explicit
+        endpoint or auth token.
+
+        Without this guard, ``CHAT_USE_LOCAL=true`` silently inherits the
+        ``OPENROUTER_BASE_URL`` default from the ``base_url`` field
+        validator and AutoPilot routes local-intended traffic at
+        OpenRouter — usually with the operator's `OPENAI_API_KEY` as the
+        bearer (since the api_key fallback chain ran in OpenRouter's
+        order before the model_validator phase). The user gets an opaque
+        401 on the first turn instead of a clear "you turned on local
+        but didn't tell me where" error at boot.
+
+        Runs before ``_apply_transport_api_key_fallback`` (model_validators
+        execute in definition order under pydantic 2) so we see
+        ``api_key`` exactly as the operator set it (or didn't), not after
+        a fallback has masked the omission.
+        """
+        if self.transport.name != "local":
+            return self
+        if not self.base_url or self.base_url.rstrip("/") == OPENROUTER_BASE_URL.rstrip(
+            "/"
+        ):
+            raise ValueError(
+                "CHAT_USE_LOCAL=true requires an explicit CHAT_BASE_URL "
+                "(an OpenAI-compatible /v1 endpoint, e.g. "
+                "http://host.docker.internal:11434/v1 for Ollama). "
+                "The OpenRouter default isn't valid here — see "
+                "docs/platform/copilot-local-llm.md."
+            )
+        if not self.api_key:
+            raise ValueError(
+                "CHAT_USE_LOCAL=true requires an explicit CHAT_API_KEY. "
+                "Ollama doesn't validate it — any non-empty placeholder "
+                "(e.g. 'ollama') is fine. See "
+                "docs/platform/copilot-local-llm.md."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _apply_transport_api_key_fallback(self) -> "ChatConfig":
+        """Fill ``api_key`` from the active transport's env fallback chain.
+
+        Field validators see env vars before the model exists, so the
+        per-transport policy ("openrouter falls back to OPEN_ROUTER_API_KEY,
+        local does not fall back at all") cannot live in
+        ``get_api_key``. Running it here keeps a single source of truth
+        — ``self.transport.api_key_fallback_envs`` — and prevents the
+        biggest local-transport footgun: a stray ``OPENAI_API_KEY`` set
+        for graphiti / embedders silently overriding ``CHAT_API_KEY=ollama``.
+        """
+        if self.api_key:
+            return self
+        for env_name in self.transport.api_key_fallback_envs:
+            if v := os.getenv(env_name):
+                # Pydantic doesn't re-trigger field validators on object_setattr
+                # — that's fine, we already have the value we want.
+                object.__setattr__(self, "api_key", v)
+                break
+        return self
+
+    @model_validator(mode="after")
+    def _apply_local_aux_models(self) -> "ChatConfig":
+        """Inherit ``fast_standard_model`` for ``title_model`` /
+        ``simulation_model`` when the transport asks for it.
+
+        The cloud defaults are ``openai/gpt-4o-mini`` / ``google/gemini-...``
+        — fine on OpenRouter, instant 404 on a local backend. Operators
+        on the local transport otherwise have to repeat the same Ollama
+        slug across half a dozen ``CHAT_*_MODEL`` envs. Only fires when
+        the field is still at the cloud default — explicit overrides win.
+        """
+        if not self.transport.inherit_fast_model_for_aux:
+            return self
+        if self.title_model == _DEFAULT_TITLE_MODEL:
+            object.__setattr__(self, "title_model", self.fast_standard_model)
+        if self.simulation_model == _DEFAULT_SIMULATION_MODEL:
+            object.__setattr__(self, "simulation_model", self.fast_standard_model)
+        return self
+
+    @model_validator(mode="after")
     def _validate_sdk_model_vendor_compatibility(self) -> "ChatConfig":
         """Fail at config load when an SDK model slug is incompatible with
-        explicit direct-Anthropic mode.
+        the operator's *explicit* opt-out from OpenRouter.
 
         The SDK path's ``_normalize_model_name`` raises ``ValueError`` when
         a non-Anthropic vendor slug (e.g. ``moonshotai/kimi-k2.6``) is paired
         with direct-Anthropic mode — but that fires inside the request loop,
         so a misconfigured deployment would surface a 500 to every user
-        instead of failing visibly at boot.
+        instead of failing visibly at boot. Catching it at config load
+        makes the misconfig obvious.
 
-        Only the **explicit** opt-out (``use_openrouter=False``) is checked
-        here, not the credential-missing path.  Build environments and
+        Gated on **explicit operator intent flags**, NOT on the resolved
+        ``effective_transport``. The credential-missing case (default
+        ``use_openrouter=True`` but no ``api_key`` in env) makes
+        ``effective_transport`` fall through to ``direct_anthropic`` —
+        which would falsely trip a vendor-constraint check on configs
+        that are merely "not yet wired up". Build environments and
         OpenAPI-schema export jobs construct ``ChatConfig()`` without any
-        OpenRouter credentials in the env — that's not a misconfiguration,
-        it's "config loads ok, but no SDK turn will succeed until creds are
-        wired".  The runtime guard in ``_normalize_model_name`` still
+        OpenRouter credentials in the env; that's not a misconfiguration,
+        it's "config loads ok, but no SDK turn will succeed until creds
+        are wired". The runtime guard in ``_normalize_model_name`` still
         catches the credential-missing path on the first SDK turn.
 
-        Covers all three SDK fields that flow through
-        ``_normalize_model_name``: primary tier
-        (``thinking_standard_model``), advanced tier
-        (``thinking_advanced_model``), and fallback model
-        (``claude_agent_fallback_model`` via ``_resolve_fallback_model``).
+        Skipped when:
+        - ``use_local=True`` — SDK never invoked under local transport.
+        - ``use_claude_code_subscription=True`` — subscription resolves
+          the static config to ``None`` (CLI default) and bypasses
+          ``_normalize_model_name``. An LD-served override under
+          subscription does flow through; the runtime guard handles it.
+        - ``use_openrouter=True`` — operator hasn't opted out; the
+          credential-missing case is OK at boot.
 
-        Skipped when ``use_claude_code_subscription=True`` because the
-        subscription path normally resolves the static config to ``None``
-        (CLI default). An LD-served override under subscription does
-        flow through ``_normalize_model_name``; the runtime guard first
-        falls back to the tier default, and only avoids a request error
-        when that default is itself valid (otherwise the original LD
-        ValueError is re-raised — see ``_resolve_sdk_model_for_request``).
         Empty fallback strings are also skipped (no fallback configured).
+
+        Covers all three SDK fields that flow through
+        ``_normalize_model_name``: ``thinking_standard_model``,
+        ``thinking_advanced_model``, and ``claude_agent_fallback_model``.
         """
+        if self.use_local:
+            return self
         if self.use_claude_code_subscription:
             return self
         if self.use_openrouter:
+            return self
+        # Explicit direct-Anthropic mode — read the constraint from the
+        # profile so the value is single-sourced (still ``"anthropic"``).
+        constraint = _TRANSPORT_PROFILES["direct_anthropic"].sdk_model_vendor_constraint
+        if constraint is None:
             return self
         for field_name in (
             "thinking_standard_model",
@@ -586,14 +842,14 @@ class ChatConfig(BaseSettings):
             value: str = getattr(self, field_name)
             if not value or "/" not in value:
                 continue
-            if value.split("/", 1)[0] != "anthropic":
+            if value.split("/", 1)[0] != constraint:
                 raise ValueError(
                     f"Direct-Anthropic mode (use_openrouter=False) "
-                    f"requires an Anthropic model for {field_name}, got "
-                    f"{value!r}. Set CHAT_THINKING_STANDARD_MODEL / "
-                    f"CHAT_THINKING_ADVANCED_MODEL / "
-                    f"CHAT_CLAUDE_AGENT_FALLBACK_MODEL to an anthropic/* "
-                    f"slug, or set CHAT_USE_OPENROUTER=true."
+                    f"requires a {constraint}/* model for {field_name}, "
+                    f"got {value!r}. Set CHAT_THINKING_STANDARD_MODEL / "
+                    "CHAT_THINKING_ADVANCED_MODEL / "
+                    "CHAT_CLAUDE_AGENT_FALLBACK_MODEL to a "
+                    f"{constraint}/* slug, or set CHAT_USE_OPENROUTER=true."
                 )
         return self
 

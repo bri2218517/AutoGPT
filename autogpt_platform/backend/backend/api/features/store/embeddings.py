@@ -7,6 +7,7 @@ Handles generation and storage of OpenAI embeddings for all content types
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any
 
@@ -22,11 +23,18 @@ from backend.util.json import dumps
 
 logger = logging.getLogger(__name__)
 
-# OpenAI embedding model configuration
-EMBEDDING_MODEL = "text-embedding-3-small"
+# Embedding model — overridable so deployments with a compatible backend
+# (vLLM, LiteLLM proxy, an Ollama install with an embedding model pulled,
+# Azure OpenAI, …) can swap models without a code change. Default keeps
+# the historical OpenAI ``text-embedding-3-small`` so existing pgvector
+# columns (sized for 1536 dims) still match.
+EMBEDDING_MODEL = os.getenv("STORE_EMBEDDING_MODEL", "text-embedding-3-small")
 # Embedding dimension for the model above
 # text-embedding-3-small: 1536, text-embedding-3-large: 3072
-EMBEDDING_DIM = 1536
+# IMPORTANT: this MUST match the dimensions emitted by EMBEDDING_MODEL — the
+# pgvector column is created at this size; a mismatch raises at insert time.
+# Override via STORE_EMBEDDING_DIM if you change the model.
+EMBEDDING_DIM = int(os.getenv("STORE_EMBEDDING_DIM", "1536"))
 # OpenAI embedding token limit (8,191 with 1 token buffer for safety)
 EMBEDDING_MAX_TOKENS = 8191
 
@@ -71,11 +79,30 @@ async def generate_embedding(text: str) -> list[float]:
     """
     client = get_openai_client()
     if not client:
-        raise RuntimeError("openai_internal_api_key not set, cannot generate embedding")
+        # ``get_openai_client`` already honors ``CHAT_USE_LOCAL`` first, so
+        # reaching None here means *no* embedding backend is configured at
+        # all. Hybrid search wraps this in try/except and degrades to
+        # lexical-only — the raise is still useful so direct callers
+        # (uploads, reindex jobs) get a clear "wire something up" signal
+        # instead of a silent `None` cascade.
+        raise RuntimeError(
+            "No embedding-capable LLM client configured. Set ONE of: "
+            "OPENAI_INTERNAL_API_KEY, OPEN_ROUTER_API_KEY, or "
+            "CHAT_USE_LOCAL=true with a CHAT_BASE_URL that exposes "
+            "/v1/embeddings (vLLM / LiteLLM proxy / Azure OpenAI / "
+            "Ollama with an embedding model pulled). Override the model "
+            "via STORE_EMBEDDING_MODEL + STORE_EMBEDDING_DIM."
+        )
 
-    # Truncate text to token limit using tiktoken
-    # Character-based truncation is insufficient because token ratios vary by content type
-    enc = encoding_for_model(EMBEDDING_MODEL)
+    # Truncate text to token limit using tiktoken. tiktoken only ships the
+    # encoders it knows about — fall back to ``cl100k_base`` (the OpenAI
+    # ada/embedding-3 tokenizer) for unknown model names like Ollama tags.
+    try:
+        enc = encoding_for_model(EMBEDDING_MODEL)
+    except KeyError:
+        from tiktoken import get_encoding
+
+        enc = get_encoding("cl100k_base")
     tokens = enc.encode(text)
     if len(tokens) > EMBEDDING_MAX_TOKENS:
         tokens = tokens[:EMBEDDING_MAX_TOKENS]
