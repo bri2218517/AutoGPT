@@ -2493,7 +2493,10 @@
               }
             }
           },
-          "429": { "description": "Call-frequency cap exceeded" }
+          "429": { "description": "Call-frequency cap exceeded" },
+          "503": {
+            "description": "Chat service degraded (Redis unavailable); client should honour the Retry-After header before retrying."
+          }
         }
       }
     },
@@ -2600,6 +2603,9 @@
           },
           "429": {
             "description": "Cost rate-limit or call-frequency cap exceeded"
+          },
+          "503": {
+            "description": "Chat service degraded (Redis unavailable for rate limit or stream registry); client should honour the Retry-After header before retrying."
           }
         }
       }
@@ -7185,7 +7191,6 @@
                 "AGENT_INPUT",
                 "CONGRATS",
                 "VISIT_COPILOT",
-                "MARKETPLACE_VISIT",
                 "BUILDER_OPEN"
               ],
               "type": "string",
@@ -16496,10 +16501,11 @@
             "type": "array",
             "title": "Submissions"
           },
-          "pagination": { "$ref": "#/components/schemas/Pagination" }
+          "pagination": { "$ref": "#/components/schemas/Pagination" },
+          "stats": { "$ref": "#/components/schemas/SubmissionStats" }
         },
         "type": "object",
-        "required": ["submissions", "pagination"],
+        "required": ["submissions", "pagination", "stats"],
         "title": "StoreSubmissionsResponse"
       },
       "StreamChatRequest": {
@@ -16564,6 +16570,28 @@
         "required": ["message"],
         "title": "StreamChatRequest",
         "description": "Request model for streaming chat with optional context."
+      },
+      "SubmissionStats": {
+        "properties": {
+          "total": { "type": "integer", "title": "Total" },
+          "approved": { "type": "integer", "title": "Approved" },
+          "pending": { "type": "integer", "title": "Pending" },
+          "total_runs": { "type": "integer", "title": "Total Runs" },
+          "average_rating": {
+            "anyOf": [{ "type": "number" }, { "type": "null" }],
+            "title": "Average Rating"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "approved",
+          "pending",
+          "total_runs",
+          "average_rating"
+        ],
+        "title": "SubmissionStats",
+        "description": "Creator-wide aggregates over a user's non-deleted submissions.\n\nComputed server-side so values stay accurate regardless of pagination —\nsumming client-side over the current page silently undercounts once the\ncreator has more submissions than fit on one page."
       },
       "SubmissionStatus": {
         "type": "string",

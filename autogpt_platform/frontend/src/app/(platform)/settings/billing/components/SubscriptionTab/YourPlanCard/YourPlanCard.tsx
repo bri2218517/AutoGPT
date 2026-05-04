@@ -8,10 +8,12 @@ import { Button } from "@/components/atoms/Button/Button";
 import { Skeleton } from "@/components/atoms/Skeleton/Skeleton";
 import { Text } from "@/components/atoms/Text/Text";
 
-import { EASE_OUT, formatCents, formatShortDate } from "../../../helpers";
+import {
+  formatCents,
+  formatShortDate,
+  getSectionMotionProps,
+} from "../../../helpers";
 import { useYourPlanCard } from "./useYourPlanCard";
-
-const PRICING_PAGE_URL = "https://agpt.co/pricing";
 
 interface Props {
   index?: number;
@@ -33,37 +35,22 @@ export function YourPlanCard({ index = 0 }: Props) {
     onManage,
   } = useYourPlanCard();
 
+  const sectionMotion = getSectionMotionProps(index, Boolean(reduceMotion));
+
   if (isLoading || !plan) {
-    return <Skeleton className="h-[100px] rounded-[18px]" />;
+    return (
+      <motion.div {...sectionMotion}>
+        <Skeleton className="h-[100px] rounded-[18px]" />
+      </motion.div>
+    );
   }
 
   return (
-    <motion.section
-      initial={reduceMotion ? false : { opacity: 0, y: 12 }}
-      animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
-      transition={
-        reduceMotion
-          ? undefined
-          : { duration: 0.32, ease: EASE_OUT, delay: 0.04 + index * 0.05 }
-      }
-      className="flex w-full flex-col gap-2"
-    >
+    <motion.section {...sectionMotion} className="flex w-full flex-col gap-2">
       <div className="flex items-center gap-2 px-4">
         <Text variant="body-medium" as="span" className="text-textBlack">
           Your plan
         </Text>
-        <a
-          href={PRICING_PAGE_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="Compare plans on the AutoGPT pricing page"
-          className="inline-flex items-center gap-1 text-zinc-500 hover:text-violet-700"
-        >
-          <Text variant="small" as="span">
-            Compare plans
-          </Text>
-          <ArrowSquareOutIcon size={14} aria-hidden="true" />
-        </a>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-[18px] border border-zinc-200 bg-white p-5 shadow-[0_1px_2px_rgba(15,15,20,0.04)]">
