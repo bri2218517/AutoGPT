@@ -606,6 +606,62 @@ def test_result_success_thinking_only_two_rounds_with_driver_reset_emits_fallbac
     assert isinstance(round2[-1], StreamFinish)
 
 
+def test_tool_result_clears_stale_thinking_so_fallback_does_not_leak_pre_tool_thinking():
+    """Stale ``ThinkingBlock`` content from before a tool call must not be
+    promoted as fallback text once the tool result has landed.  Without
+    this reset, a turn that thinks → tool_use → tool_result → silent
+    finish would surface the *pre-tool* reasoning to the user, which
+    pre-dates the actual answer the user is waiting for."""
+    adapter = _adapter()
+
+    # Pre-tool thinking — should be discarded when the tool_result lands.
+    adapter.convert_message(
+        AssistantMessage(
+            content=[ThinkingBlock(thinking="Stale pre-tool reasoning.", signature="")],
+            model="test",
+        )
+    )
+    adapter.convert_message(
+        AssistantMessage(
+            content=[
+                ToolUseBlock(id="t1", name=f"{MCP_TOOL_PREFIX}find_block", input={}),
+            ],
+            model="test",
+        )
+    )
+    adapter.convert_message(
+        UserMessage(
+            content=[
+                ToolResultBlock(tool_use_id="t1", content="result", is_error=False)
+            ],
+            parent_tool_use_id=None,
+        )
+    )
+    # Tool_result must wipe ``_last_thinking_content`` — otherwise
+    # ``Stale pre-tool reasoning.`` would be the fallback below.
+    assert adapter._last_thinking_content == ""
+
+    # Simulate a thinking-only finish that emits NO new ThinkingBlock at all
+    # (so ``_last_thinking_content`` stays empty), and a re-prompt round that
+    # also produces nothing.  The fallback must be the placeholder, not the
+    # stale pre-tool reasoning.
+    adapter.thinking_only_reprompted = True
+    msg = ResultMessage(
+        subtype="success",
+        duration_ms=100,
+        duration_api_ms=50,
+        is_error=False,
+        num_turns=4,
+        session_id="s1",
+        result="",
+    )
+    results = adapter.convert_message(msg)
+    text_deltas = [r for r in results if isinstance(r, StreamTextDelta)]
+    assert len(text_deltas) == 1
+    assert text_deltas[0].delta == "(Done — no further commentary.)"
+    assert "Stale pre-tool" not in text_deltas[0].delta
+
+
 def test_result_success_thinking_only_after_reprompt_falls_back_to_placeholder():
     """After re-prompt with no thinking content captured either, the
     adapter emits the placeholder so the turn still visibly completes."""

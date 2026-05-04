@@ -200,6 +200,61 @@ _THINKING_ONLY_REPROMPT = (
 )
 
 
+def _strip_synthetic_reprompt_from_cli_jsonl(content: bytes) -> bytes:
+    """Drop any user-message line whose text equals ``_THINKING_ONLY_REPROMPT``.
+
+    The CLI persists every ``client.query(...)`` call to its session file,
+    including the synthetic re-prompt we send when a turn ends thinking-only.
+    Leaving it in the uploaded JSONL pollutes ``--resume`` history on the next
+    turn — the model would see a phantom user message asking it to summarise.
+    Strip those lines here so the persisted transcript reflects only what the
+    end user actually said.
+    """
+    if not content:
+        return content
+    out: list[bytes] = []
+    for line in content.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped:
+            out.append(line)
+            continue
+        try:
+            entry = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            out.append(line)
+            continue
+        if (
+            isinstance(entry, dict)
+            and entry.get("type") == "user"
+            and isinstance(entry.get("message"), dict)
+            and entry["message"].get("role") == "user"
+        ):
+            text = _extract_user_message_text(entry["message"].get("content"))
+            if text == _THINKING_ONLY_REPROMPT:
+                continue
+        out.append(line)
+    return b"".join(out)
+
+
+def _extract_user_message_text(content: object) -> str | None:
+    """Return the plain-text payload of a user message, or None if not text-only."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                return None
+            if block.get("type") != "text":
+                return None
+            text = block.get("text")
+            if not isinstance(text, str):
+                return None
+            texts.append(text)
+        return "".join(texts) if texts else None
+    return None
+
+
 def _idle_timeout_threshold(adapter: SDKResponseAdapter) -> int:
     """Pick the idle-timeout threshold for the current heartbeat.
 
@@ -400,6 +455,12 @@ class _RetryState:
     # ``detect_gap`` picks them up as gap-fill entries instead of assuming the
     # JSONL already covers them.
     midturn_user_rows: int = 0
+    # Tracks whether the thinking-only-final-turn re-prompt has already
+    # fired for this user turn.  Lives on ``_RetryState`` (not on
+    # ``adapter``) so a transient retry that rebuilds the adapter does
+    # not reset the per-turn cap to zero — otherwise multiple retries
+    # could each fire their own re-prompt round.
+    thinking_only_reprompted: bool = False
     # OpenRouter generation IDs collected across all attempts of this turn.
     # Populated from ``AssistantMessage.message_id`` when routed via
     # OpenRouter (``gen-...`` prefix).  Consumed by the finally block to
@@ -3077,9 +3138,10 @@ async def _run_stream_attempt(
                     break
             if (
                 state.adapter.pending_thinking_only_reprompt
-                and not state.adapter.thinking_only_reprompted
+                and not state.thinking_only_reprompted
             ):
                 state.adapter.pending_thinking_only_reprompt = False
+                state.thinking_only_reprompted = True
                 state.adapter.thinking_only_reprompted = True
                 # Keep ``_any_tool_results_seen`` True — the guard at
                 # ``ResultMessage`` time still needs it to fire on the
@@ -4195,6 +4257,9 @@ async def stream_chat_completion_sdk(  # pyright: ignore[reportGeneralTypeIssues
                     session_id=session_id,
                     render_reasoning_in_ui=config.render_reasoning_in_ui,
                 )
+                # Carry the per-turn re-prompt cap forward so a transient
+                # retry mid-turn does not unlock another re-prompt round.
+                state.adapter.thinking_only_reprompted = state.thinking_only_reprompted
                 # Reset token accumulators so a failed attempt's partial
                 # usage is not double-counted in the successful attempt.
                 state.usage.reset()
@@ -4764,6 +4829,9 @@ async def stream_chat_completion_sdk(  # pyright: ignore[reportGeneralTypeIssues
                     sdk_cwd, session_id, log_prefix
                 )
                 if _cli_content:
+                    _cli_content = _strip_synthetic_reprompt_from_cli_jsonl(
+                        _cli_content
+                    )
                     # Watermark = number of DB messages this transcript covers.
                     # len(session.messages) is accurate: the CLI session file
                     # was just written after the turn completed, so it covers

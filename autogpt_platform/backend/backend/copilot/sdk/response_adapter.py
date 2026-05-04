@@ -382,6 +382,11 @@ class SDKResponseAdapter:
                 # ``ResultMessage`` time stays accurate.
                 self._text_since_last_tool_result = False
                 self._any_tool_results_seen = True
+                # Stale thinking from before this tool call must not
+                # contaminate the post-tool fallback — only the model's
+                # NEXT thinking block (after seeing the tool result)
+                # carries the actual answer.
+                self._last_thinking_content = ""
 
             # Close the current step after tool results — the next
             # AssistantMessage will open a new step for the continuation.

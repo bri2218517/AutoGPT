@@ -14,6 +14,7 @@ from backend.copilot import config as cfg_mod
 from .service import (
     _HUNG_TOOL_CAP_SECONDS,
     _IDLE_TIMEOUT_SECONDS,
+    _THINKING_ONLY_REPROMPT,
     _build_system_prompt_value,
     _humanise_tool_list,
     _idle_timeout_threshold,
@@ -23,6 +24,7 @@ from .service import (
     _resolve_sdk_model,
     _resolve_sdk_model_for_request,
     _safe_close_sdk_client,
+    _strip_synthetic_reprompt_from_cli_jsonl,
 )
 
 
@@ -1229,3 +1231,58 @@ class TestIdleTimeoutThreshold:
         # The whole point of the two-regime design: pending tools get more
         # patience than pure idle.
         assert _HUNG_TOOL_CAP_SECONDS > _IDLE_TIMEOUT_SECONDS
+
+
+class TestStripSyntheticReprompt:
+    """The synthetic re-prompt user message is filtered out of the CLI
+    session JSONL before upload so it doesn't leak into ``--resume``
+    history on the next turn."""
+
+    def test_drops_matching_user_line(self):
+        real_user = (
+            b'{"type":"user","message":{"role":"user","content":'
+            b'[{"type":"text","text":"What did you find?"}]}}\n'
+        )
+        synth = (
+            b'{"type":"user","message":{"role":"user","content":'
+            b'[{"type":"text","text":"' + _THINKING_ONLY_REPROMPT.encode() + b'"}]}}\n'
+        )
+        assistant = (
+            b'{"type":"assistant","message":{"role":"assistant","content":'
+            b'[{"type":"text","text":"Here you go."}]}}\n'
+        )
+        result = _strip_synthetic_reprompt_from_cli_jsonl(real_user + synth + assistant)
+        assert result == real_user + assistant
+
+    def test_string_content_user_message_also_filtered(self):
+        synth = (
+            b'{"type":"user","message":{"role":"user","content":"'
+            + _THINKING_ONLY_REPROMPT.encode()
+            + b'"}}\n'
+        )
+        result = _strip_synthetic_reprompt_from_cli_jsonl(synth)
+        assert result == b""
+
+    def test_preserves_unrelated_user_messages(self):
+        real = (
+            b'{"type":"user","message":{"role":"user","content":'
+            b'[{"type":"text","text":"hi"}]}}\n'
+        )
+        result = _strip_synthetic_reprompt_from_cli_jsonl(real)
+        assert result == real
+
+    def test_preserves_non_text_user_blocks(self):
+        # Image / tool_result blocks must never be stripped.
+        image_user = (
+            b'{"type":"user","message":{"role":"user","content":'
+            b'[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAA"}}]}}\n'
+        )
+        result = _strip_synthetic_reprompt_from_cli_jsonl(image_user)
+        assert result == image_user
+
+    def test_handles_empty_input(self):
+        assert _strip_synthetic_reprompt_from_cli_jsonl(b"") == b""
+
+    def test_skips_malformed_lines_intact(self):
+        garbage = b"not-json\n"
+        assert _strip_synthetic_reprompt_from_cli_jsonl(garbage) == garbage
