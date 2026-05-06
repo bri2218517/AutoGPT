@@ -29,9 +29,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT_PATH = resolve(__dirname, "../src/components/changelog/manifest.ts");
 
 const MONTHS: Record<string, number> = {
-  january: 1, february: 2, march: 3, april: 4,
-  may: 5, june: 6, july: 7, august: 8,
-  september: 9, october: 10, november: 11, december: 12,
+  january: 1,
+  february: 2,
+  march: 3,
+  april: 4,
+  may: 5,
+  june: 6,
+  july: 7,
+  august: 8,
+  september: 9,
+  october: 10,
+  november: 11,
+  december: 12,
 };
 
 interface RawEntry {
@@ -42,8 +51,8 @@ interface RawEntry {
 }
 
 interface EnrichedEntry extends RawEntry {
-  id: string;          // YYYY-MM-DD of the end of the range
-  title: string;       // canonical title from the entry's own H1
+  id: string; // YYYY-MM-DD of the end of the range
+  title: string; // canonical title from the entry's own H1
   versions: string[];
   isHighlighted?: boolean;
 }
@@ -55,7 +64,9 @@ async function main() {
   const indexMd = await fetchText(DOCS_INDEX_URL);
   const raw = parseIndex(indexMd);
   if (raw.length === 0) {
-    throw new Error("No entries parsed from index — has the docs format changed?");
+    throw new Error(
+      "No entries parsed from index — has the docs format changed?",
+    );
   }
   console.log(`   ${raw.length} entries found`);
 
@@ -114,7 +125,8 @@ function parseIndex(md: string): RawEntry[] {
 
   for (let i = 0; i < yearMatches.length; i++) {
     const { year, offset } = yearMatches[i];
-    const end = i + 1 < yearMatches.length ? yearMatches[i + 1].offset : md.length;
+    const end =
+      i + 1 < yearMatches.length ? yearMatches[i + 1].offset : md.length;
     const section = md.slice(offset, end);
 
     // Match: | [date label](slug-url) | highlights |
@@ -166,7 +178,8 @@ function computeId(entry: RawEntry): string {
   const startStr = (parts[0] ?? "").trim();
   const endStr = (parts[1] ?? startStr).trim();
 
-  const startMonth = MONTHS[startStr.match(/^([A-Za-z]+)/)?.[1].toLowerCase() ?? ""] ?? null;
+  const startMonth =
+    MONTHS[startStr.match(/^([A-Za-z]+)/)?.[1].toLowerCase() ?? ""] ?? null;
 
   let endMonth: number | null = startMonth;
   let endDay = 1;

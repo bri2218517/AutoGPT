@@ -31,14 +31,14 @@ export function ChangelogModal({
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-black/60" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/60 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
         <DialogPrimitive.Content
           className={cn(
-            "fixed top-[50%] left-[50%] z-50 translate-x-[-50%] translate-y-[-50%]",
+            "fixed left-[50%] top-[50%] z-50 translate-x-[-50%] translate-y-[-50%]",
             "gap-0 overflow-hidden p-0",
             "h-[78vh] max-h-[820px] w-[92vw] max-w-[1080px]",
             "flex flex-row",
-            "bg-background border-border rounded-lg border shadow-xl",
+            "rounded-lg border border-border bg-background shadow-xl",
             "data-[state=open]:animate-in data-[state=closed]:animate-out",
             "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
             "data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
@@ -53,8 +53,8 @@ export function ChangelogModal({
           </span>
 
           {/* Sidebar */}
-          <aside className="border-border bg-muted/30 flex w-[280px] shrink-0 flex-col border-r">
-            <div className="px-6 pt-6 pb-4">
+          <aside className="flex w-[280px] shrink-0 flex-col border-r border-border bg-muted/30">
+            <div className="px-6 pb-4 pt-6">
               <div className="mb-1 flex items-center gap-2">
                 <div
                   className="h-2 w-2 rounded-full"
@@ -62,7 +62,7 @@ export function ChangelogModal({
                     background: "linear-gradient(135deg, #f59e0b, #ef4444)",
                   }}
                 />
-                <span className="text-muted-foreground text-[11px] font-semibold tracking-[0.18em] uppercase">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   AutoGPT
                 </span>
               </div>
@@ -90,14 +90,14 @@ export function ChangelogModal({
                     className={cn(
                       "group relative mb-0.5 w-full rounded-lg border px-3 py-2.5 text-left transition-all",
                       isActive
-                        ? "bg-background border-border/80 shadow-sm"
-                        : "hover:bg-background/60 border-transparent",
+                        ? "border-border/80 bg-background shadow-sm"
+                        : "border-transparent hover:bg-background/60",
                     )}
                     aria-current={isActive ? "page" : undefined}
                   >
                     {isActive && entry.isHighlighted && (
                       <span
-                        className="absolute top-2 bottom-2 left-0 w-[2px] rounded-full"
+                        className="absolute bottom-2 left-0 top-2 w-[2px] rounded-full"
                         style={{
                           background:
                             "linear-gradient(to bottom, #f59e0b, #ef4444)",
@@ -106,11 +106,11 @@ export function ChangelogModal({
                       />
                     )}
                     <div className="mb-1 flex items-center gap-1.5">
-                      <span className="text-muted-foreground font-serif text-[10px] italic">
+                      <span className="font-serif text-[10px] italic text-muted-foreground">
                         {entry.dateLabel}
                       </span>
                       {entry.isHighlighted && (
-                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold tracking-wider text-emerald-700 uppercase">
+                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-emerald-700">
                           New
                         </span>
                       )}
@@ -119,7 +119,7 @@ export function ChangelogModal({
                       className={cn(
                         "line-clamp-2 text-[13px] leading-snug transition-colors",
                         isActive
-                          ? "text-foreground font-medium"
+                          ? "font-medium text-foreground"
                           : "text-muted-foreground group-hover:text-foreground",
                       )}
                     >
@@ -130,9 +130,9 @@ export function ChangelogModal({
               })}
             </nav>
 
-            <div className="border-border text-muted-foreground border-t px-6 py-4 text-[11px]">
+            <div className="border-t border-border px-6 py-4 text-[11px] text-muted-foreground">
               Press{" "}
-              <kbd className="bg-muted text-foreground/80 rounded px-1.5 py-0.5 font-mono text-[10px]">
+              <kbd className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground/80">
                 esc
               </kbd>{" "}
               to close

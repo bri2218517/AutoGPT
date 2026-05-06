@@ -42,22 +42,22 @@ export function ChangelogContent({ entry }: Props) {
 
   return (
     <article>
-      <header className="border-border border-b pb-8">
+      <header className="border-b border-border pb-8">
         <div className="mb-3 flex items-center gap-2">
           {entry.isHighlighted && (
             <>
-              <span className="text-xs font-medium tracking-[0.18em] text-emerald-700 uppercase">
+              <span className="text-xs font-medium uppercase tracking-[0.18em] text-emerald-700">
                 Latest
               </span>
               <span className="text-muted-foreground/50">·</span>
             </>
           )}
-          <span className="text-muted-foreground font-serif text-sm italic">
+          <span className="font-serif text-sm italic text-muted-foreground">
             {entry.dateLabel}
           </span>
         </div>
         <h1
-          className="mb-4 text-[42px] leading-[1.05] font-medium tracking-tight"
+          className="mb-4 text-[42px] font-medium leading-[1.05] tracking-tight"
           style={{
             fontFamily:
               "var(--font-changelog-display, ui-serif, Georgia, serif)",
@@ -69,7 +69,7 @@ export function ChangelogContent({ entry }: Props) {
           {entry.versions.map((v) => (
             <span
               key={v}
-              className="bg-muted text-muted-foreground rounded px-2 py-0.5 font-mono text-[12px]"
+              className="rounded bg-muted px-2 py-0.5 font-mono text-[12px] text-muted-foreground"
             >
               {v}
             </span>
@@ -79,20 +79,20 @@ export function ChangelogContent({ entry }: Props) {
 
       <div>
         {markdown === null && error === null && (
-          <div className="text-muted-foreground flex items-center gap-2 py-12">
+          <div className="flex items-center gap-2 py-12 text-muted-foreground">
             <SpinnerGap className="h-4 w-4 animate-spin" />
             <span className="text-sm">Loading…</span>
           </div>
         )}
 
         {error && (
-          <div className="text-muted-foreground py-12 text-sm">
+          <div className="py-12 text-sm text-muted-foreground">
             <p className="mb-2">Couldn&apos;t load this entry.</p>
             <a
               href={`${DOCS_ORIGIN}/docs/platform/changelog/changelog/${entry.slug}.md`}
               target="_blank"
               rel="noreferrer"
-              className="text-foreground inline-flex items-center gap-1 hover:underline"
+              className="inline-flex items-center gap-1 text-foreground hover:underline"
             >
               Read it on agpt.co <ArrowSquareOut className="h-3 w-3" />
             </a>
@@ -115,15 +115,15 @@ export function ChangelogContent({ entry }: Props) {
 
 const markdownComponents: import("react-markdown").Components = {
   h2: ({ children }) => (
-    <h2 className="mt-12 mb-4 text-2xl font-medium tracking-tight">
+    <h2 className="mb-4 mt-12 text-2xl font-medium tracking-tight">
       {children}
     </h2>
   ),
   h3: ({ children }) => (
-    <h3 className="mt-8 mb-3 text-lg font-medium">{children}</h3>
+    <h3 className="mb-3 mt-8 text-lg font-medium">{children}</h3>
   ),
   p: ({ children }) => (
-    <p className="text-muted-foreground mb-4 text-[15px] leading-[1.7]">
+    <p className="mb-4 text-[15px] leading-[1.7] text-muted-foreground">
       {children}
     </p>
   ),
@@ -132,7 +132,7 @@ const markdownComponents: import("react-markdown").Components = {
       href={resolveLink(href)}
       target="_blank"
       rel="noreferrer"
-      className="text-foreground decoration-border hover:decoration-foreground underline underline-offset-2 transition-colors"
+      className="text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground"
     >
       {children}
     </a>
@@ -141,23 +141,23 @@ const markdownComponents: import("react-markdown").Components = {
     <ul className="my-4 list-none space-y-2 pl-0">{children}</ul>
   ),
   li: ({ children }) => (
-    <li className="text-muted-foreground relative pl-4 text-[14px] leading-relaxed">
-      <span className="bg-muted-foreground/40 absolute top-2.5 left-0 h-1 w-1 rounded-full" />
+    <li className="relative pl-4 text-[14px] leading-relaxed text-muted-foreground">
+      <span className="absolute left-0 top-2.5 h-1 w-1 rounded-full bg-muted-foreground/40" />
       {children}
     </li>
   ),
   strong: ({ children }) => (
-    <strong className="text-foreground font-medium">{children}</strong>
+    <strong className="font-medium text-foreground">{children}</strong>
   ),
   code: ({ children }) => (
-    <code className="bg-muted text-foreground rounded px-1.5 py-0.5 font-mono text-[12px]">
+    <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px] text-foreground">
       {children}
     </code>
   ),
-  hr: () => <hr className="border-border my-10" />,
+  hr: () => <hr className="my-10 border-border" />,
   figure: ({ children }) => <figure className="my-8">{children}</figure>,
   figcaption: ({ children }) => (
-    <figcaption className="text-muted-foreground mt-3 font-serif text-sm italic">
+    <figcaption className="mt-3 font-serif text-sm italic text-muted-foreground">
       {children}
     </figcaption>
   ),
@@ -166,15 +166,15 @@ const markdownComponents: import("react-markdown").Components = {
     <img
       src={resolveImageSrc(src)}
       alt={alt ?? ""}
-      className="border-border w-full rounded-xl border shadow-sm"
+      className="w-full rounded-xl border border-border shadow-sm"
       loading="lazy"
     />
   ),
   details: ({ children }) => (
     <details
       className={cn(
-        "group border-border border-t py-4",
-        "[&>*:not(summary)]:mt-3 [&>*:not(summary)]:ml-6",
+        "group border-t border-border py-4",
+        "[&>*:not(summary)]:ml-6 [&>*:not(summary)]:mt-3",
       )}
     >
       {children}
@@ -183,16 +183,16 @@ const markdownComponents: import("react-markdown").Components = {
   summary: ({ children }) => (
     <summary
       className={cn(
-        "flex cursor-pointer items-center gap-2 select-none",
+        "flex cursor-pointer select-none items-center gap-2",
         "list-none [&::-webkit-details-marker]:hidden [&::marker]:hidden",
         "transition-opacity hover:opacity-80",
       )}
     >
       <CaretRight
-        className="text-muted-foreground h-4 w-4 shrink-0 transition-transform group-open:rotate-90"
+        className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90"
         aria-hidden
       />
-      <span className="text-foreground text-[15px] font-medium">
+      <span className="text-[15px] font-medium text-foreground">
         {children}
       </span>
     </summary>

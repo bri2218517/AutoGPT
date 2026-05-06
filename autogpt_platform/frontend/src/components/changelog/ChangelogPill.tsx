@@ -26,10 +26,10 @@ export function ChangelogPill({ onClick, onDismiss, visible }: Props) {
       <button
         onClick={onClick}
         className={cn(
-          "group flex w-[320px] items-center gap-3 rounded-xl py-3 pr-4 pl-3 text-left",
-          "bg-background border-border/80 border",
-          "hover:border-border transition-all hover:shadow-lg",
-          "focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",
+          "group flex w-[320px] items-center gap-3 rounded-xl py-3 pl-3 pr-4 text-left",
+          "border border-border/80 bg-background",
+          "transition-all hover:border-border hover:shadow-lg",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         )}
         style={{
           boxShadow:
@@ -46,23 +46,23 @@ export function ChangelogPill({ onClick, onDismiss, visible }: Props) {
         >
           <Sparkle className="h-4 w-4 text-stone-800/70" weight="fill" />
           <span
-            className="absolute top-1 right-1 h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500"
+            className="absolute right-1 top-1 h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500"
             aria-hidden
           />
         </div>
 
         <div className="min-w-0 flex-1">
           <div className="mb-0.5 flex items-center gap-1.5">
-            <span className="text-[10px] font-semibold tracking-[0.12em] text-emerald-600 uppercase">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-600">
               New
             </span>
-            <span className="text-muted-foreground text-[11px]">·</span>
-            <span className="text-muted-foreground font-serif text-[11px] italic">
+            <span className="text-[11px] text-muted-foreground">·</span>
+            <span className="font-serif text-[11px] italic text-muted-foreground">
               {LATEST_ENTRY.dateLabel.split("–")[1]?.trim() ??
                 LATEST_ENTRY.dateLabel}
             </span>
           </div>
-          <div className="text-foreground truncate text-[13px] leading-tight font-medium">
+          <div className="truncate text-[13px] font-medium leading-tight text-foreground">
             {LATEST_ENTRY.title}
           </div>
         </div>
@@ -71,7 +71,7 @@ export function ChangelogPill({ onClick, onDismiss, visible }: Props) {
           role="button"
           tabIndex={0}
           aria-label="Dismiss"
-          className="hover:bg-muted -m-1 shrink-0 cursor-pointer rounded p-1 opacity-0 transition-opacity group-hover:opacity-100"
+          className="-m-1 shrink-0 cursor-pointer rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-muted"
           onClick={(e) => {
             e.stopPropagation();
             onDismiss();
@@ -83,7 +83,7 @@ export function ChangelogPill({ onClick, onDismiss, visible }: Props) {
             }
           }}
         >
-          <X className="text-muted-foreground h-3.5 w-3.5" />
+          <X className="h-3.5 w-3.5 text-muted-foreground" />
         </span>
       </button>
     </div>

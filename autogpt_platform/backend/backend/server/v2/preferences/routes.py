@@ -45,7 +45,7 @@ async def get_changelog_prefs(
             }
         }
     )
-    return ChangelogPrefs(last_seen_id=pref.value if pref else None)
+    return ChangelogPrefs.model_validate({"lastSeenId": pref.value if pref else None})
 
 
 @router.put(
