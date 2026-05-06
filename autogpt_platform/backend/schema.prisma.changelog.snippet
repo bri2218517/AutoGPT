@@ -1,0 +1,31 @@
+// Add to autogpt_platform/backend/schema.prisma
+//
+// Generic per-user preferences table. One row per (user, key) tuple.
+// The changelog feature uses key="changelog.lastSeenId", but the same
+// table can absorb future preferences without further migrations.
+
+model UserPreference {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  key       String
+  value     String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, key], name: "userId_key")
+  @@index([userId])
+}
+
+// Then on the existing User model, add the back-relation:
+//
+//   model User {
+//     ...
+//     preferences UserPreference[]
+//   }
+//
+// And run:
+//
+//   pnpm prisma migrate dev --name add_user_preferences
