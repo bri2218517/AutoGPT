@@ -122,6 +122,7 @@ def test_image_generation_failure_message_uses_default_for_blank_input():
 
 def test_video_generation_failure_message_uses_default_for_blank_input():
     assert video_generation_failure_message("") == "Video generation failed."
+    assert video_generation_failure_message("   ") == "Video generation failed."
 
 
 def test_no_fallback_marker_wins_over_fallback_status():

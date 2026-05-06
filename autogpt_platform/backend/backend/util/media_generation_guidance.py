@@ -29,7 +29,6 @@ VIDEO_GENERATION_FALLBACK_GUIDANCE = (
 
 _FALLBACK_ERROR_MARKERS = (
     "unavailable",
-    "temporarily unavailable",
     "timed out",
     "timeout",
     "rate limit",
