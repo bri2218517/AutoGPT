@@ -617,6 +617,77 @@ class TestResolveSdkModelForRequestTransportAware:
 
 
 # ---------------------------------------------------------------------------
+# Analytics fallback model — cost-log ``model`` column under subscription
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyticsFallbackModelNormalisation:
+    """Regression for the standard-tier subscription fallback recorded in
+    ``PlatformCostLog.model``.
+
+    When ``_resolve_sdk_model_for_request`` returns ``None`` (subscription
+    mode + standard tier + LD value matches the config default — the
+    common production hit after the LD-flag consolidation in #12917), the
+    finally-block fallback ``effective_model = sdk_model or
+    config.thinking_standard_model`` previously leaked the raw
+    ``anthropic/claude-sonnet-4-6`` slug into the cost-analytics row,
+    breaking historical admin filters keyed on the CLI-form name
+    (``model=claude-sonnet-4-6``).
+
+    The fix routes the fallback through ``_normalize_model_name`` so the
+    recorded value matches the transport-appropriate form
+    (``claude-sonnet-4-6`` under subscription / direct-Anthropic, prefix
+    preserved under OpenRouter).  These tests pin the helper's behaviour
+    on the three transports the fallback runs under.
+    """
+
+    def test_subscription_strips_prefix_for_analytics(
+        self, monkeypatch: pytest.MonkeyPatch, _clean_config_env: None
+    ):
+        cfg = ChatConfig(
+            thinking_standard_model="anthropic/claude-sonnet-4-6",
+            use_openrouter=True,
+            api_key="or-key",
+            base_url="https://openrouter.ai/api/v1",
+            use_claude_code_subscription=True,
+        )
+        monkeypatch.setattr("backend.copilot.sdk.service.config", cfg)
+
+        assert _normalize_model_name(cfg.thinking_standard_model) == "claude-sonnet-4-6"
+
+    def test_direct_anthropic_strips_prefix_for_analytics(
+        self, monkeypatch: pytest.MonkeyPatch, _clean_config_env: None
+    ):
+        cfg = ChatConfig(
+            thinking_standard_model="anthropic/claude-sonnet-4-6",
+            use_openrouter=False,
+            api_key=None,
+            base_url=None,
+            use_claude_code_subscription=False,
+        )
+        monkeypatch.setattr("backend.copilot.sdk.service.config", cfg)
+
+        assert _normalize_model_name(cfg.thinking_standard_model) == "claude-sonnet-4-6"
+
+    def test_openrouter_keeps_prefix_for_analytics(
+        self, monkeypatch: pytest.MonkeyPatch, _clean_config_env: None
+    ):
+        cfg = ChatConfig(
+            thinking_standard_model="anthropic/claude-sonnet-4-6",
+            use_openrouter=True,
+            api_key="or-key",
+            base_url="https://openrouter.ai/api/v1",
+            use_claude_code_subscription=False,
+        )
+        monkeypatch.setattr("backend.copilot.sdk.service.config", cfg)
+
+        assert (
+            _normalize_model_name(cfg.thinking_standard_model)
+            == "anthropic/claude-sonnet-4-6"
+        )
+
+
+# ---------------------------------------------------------------------------
 # _TokenUsage — null-safe accumulation (OpenRouter initial-stream-event bug)
 # ---------------------------------------------------------------------------
 

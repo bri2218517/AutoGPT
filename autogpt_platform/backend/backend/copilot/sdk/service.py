@@ -4431,7 +4431,20 @@ async def stream_chat_completion_sdk(  # pyright: ignore[reportGeneralTypeIssues
         # --- Persist token usage to session + rate-limit counters ---
         # Both must live in finally so they stay consistent even when an
         # exception interrupts the try block after StreamUsage was yielded.
-        effective_model = sdk_model or config.thinking_standard_model
+        # Normalise the fallback so the cost-log ``model`` column carries
+        # the CLI-form name (unprefixed in subscription / direct-Anthropic
+        # transports) regardless of whether ``sdk_model`` was resolved via
+        # an LD override or the subscription-default early-return — without
+        # this the standard-tier subscription path leaks the raw
+        # ``anthropic/claude-sonnet-4-6`` config string into analytics,
+        # breaking historical ``model=claude-sonnet-4-6`` admin filters.
+        try:
+            fallback_model = _normalize_model_name(config.thinking_standard_model)
+        except ValueError:
+            # Vendor-rejection: keep the raw value so the row still
+            # records, matching the resolver's soft-fail semantics.
+            fallback_model = config.thinking_standard_model
+        effective_model = sdk_model or fallback_model
         # ``state`` is populated lazily inside the retry loop; when the
         # turn exits before the first attempt runs (e.g. very early
         # validation error) it's still None, so ``generation_ids`` is
