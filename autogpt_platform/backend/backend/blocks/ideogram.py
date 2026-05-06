@@ -17,6 +17,11 @@ from backend.data.model import (
     SchemaField,
 )
 from backend.integrations.providers import ProviderName
+from backend.util.exceptions import ModerationError
+from backend.util.media_generation_guidance import (
+    IMAGE_GENERATION_MODEL_SELECTION_GUIDANCE,
+    image_generation_failure_message,
+)
 from backend.util.request import Requests
 
 TEST_CREDENTIALS = APIKeyCredentials(
@@ -165,7 +170,11 @@ class IdeogramModelBlock(Block):
     def __init__(self):
         super().__init__(
             id="6ab085e2-20b3-4055-bc3e-08036e01eca6",
-            description="This block runs Ideogram models with both simple and advanced settings.",
+            description=(
+                "This block runs Ideogram image generation models with both simple "
+                "and advanced settings. "
+                f"{IMAGE_GENERATION_MODEL_SELECTION_GUIDANCE}"
+            ),
             categories={BlockCategory.AI, BlockCategory.MULTIMEDIA},
             input_schema=IdeogramModelBlock.Input,
             output_schema=IdeogramModelBlock.Output,
@@ -204,30 +213,35 @@ class IdeogramModelBlock(Block):
     async def run(
         self, input_data: Input, *, credentials: APIKeyCredentials, **kwargs
     ) -> BlockOutput:
-        seed = input_data.seed
+        try:
+            seed = input_data.seed
 
-        # Step 1: Generate the image
-        result = await self.run_model(
-            api_key=credentials.api_key,
-            model_name=input_data.ideogram_model_name.value,
-            prompt=input_data.prompt,
-            seed=seed,
-            aspect_ratio=input_data.aspect_ratio.value,
-            magic_prompt_option=input_data.magic_prompt_option.value,
-            style_type=input_data.style_type.value,
-            negative_prompt=input_data.negative_prompt,
-            color_palette_name=input_data.color_palette_name.value,
-            custom_colors=input_data.custom_color_palette,
-        )
-
-        # Step 2: Upscale the image if requested
-        if input_data.upscale == UpscaleOption.AI_UPSCALE:
-            result = await self.upscale_image(
+            # Step 1: Generate the image
+            result = await self.run_model(
                 api_key=credentials.api_key,
-                image_url=result,
+                model_name=input_data.ideogram_model_name.value,
+                prompt=input_data.prompt,
+                seed=seed,
+                aspect_ratio=input_data.aspect_ratio.value,
+                magic_prompt_option=input_data.magic_prompt_option.value,
+                style_type=input_data.style_type.value,
+                negative_prompt=input_data.negative_prompt,
+                color_palette_name=input_data.color_palette_name.value,
+                custom_colors=input_data.custom_color_palette,
             )
 
-        yield "result", result
+            # Step 2: Upscale the image if requested
+            if input_data.upscale == UpscaleOption.AI_UPSCALE:
+                result = await self.upscale_image(
+                    api_key=credentials.api_key,
+                    image_url=result,
+                )
+
+            yield "result", result
+        except ModerationError:
+            raise
+        except Exception as e:
+            yield "error", image_generation_failure_message(str(e))
 
     async def run_model(
         self,
