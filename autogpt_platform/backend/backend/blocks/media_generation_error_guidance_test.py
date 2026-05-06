@@ -1,5 +1,12 @@
 import pytest
 
+from backend.blocks.ai_image_customizer import (
+    TEST_CREDENTIALS as REPLICATE_TEST_CREDENTIALS,
+)
+from backend.blocks.ai_image_customizer import (
+    TEST_CREDENTIALS_INPUT as REPLICATE_TEST_CREDENTIALS_INPUT,
+)
+from backend.blocks.ai_image_customizer import AIImageCustomizerBlock, GeminiImageModel
 from backend.blocks.ai_image_generator_block import (
     TEST_CREDENTIALS,
     TEST_CREDENTIALS_INPUT,
@@ -9,6 +16,33 @@ from backend.blocks.ai_image_generator_block import (
     ImageStyle,
 )
 from backend.blocks.ai_shortform_video_block import _missing_project_id_message
+from backend.blocks.fal._auth import TEST_CREDENTIALS as FAL_TEST_CREDENTIALS
+from backend.blocks.fal._auth import (
+    TEST_CREDENTIALS_INPUT as FAL_TEST_CREDENTIALS_INPUT,
+)
+from backend.blocks.fal.ai_video_generator import AIVideoGeneratorBlock, FalModel
+from backend.blocks.flux_kontext import TEST_CREDENTIALS as FLUX_TEST_CREDENTIALS
+from backend.blocks.flux_kontext import (
+    TEST_CREDENTIALS_INPUT as FLUX_TEST_CREDENTIALS_INPUT,
+)
+from backend.blocks.flux_kontext import (
+    AIImageEditorBlock,
+    AspectRatio,
+    ImageEditorModel,
+)
+from backend.blocks.ideogram import TEST_CREDENTIALS as IDEOGRAM_TEST_CREDENTIALS
+from backend.blocks.ideogram import (
+    TEST_CREDENTIALS_INPUT as IDEOGRAM_TEST_CREDENTIALS_INPUT,
+)
+from backend.blocks.ideogram import AspectRatio as IdeogramAspectRatio
+from backend.blocks.ideogram import (
+    ColorPalettePreset,
+    IdeogramModelBlock,
+    IdeogramModelName,
+    MagicPromptOption,
+    StyleType,
+    UpscaleOption,
+)
 from backend.blocks.talking_head import _missing_clip_id_message
 from backend.data.execution import ExecutionContext
 
@@ -66,6 +100,109 @@ async def _run_image_generator():
         outputs.append(output)
 
     return outputs
+
+
+async def test_image_customizer_provider_error_suggests_model_fallback(monkeypatch):
+    async def run_model(*args, **kwargs):
+        raise RuntimeError("Provider rate limit exceeded")
+
+    monkeypatch.setattr(AIImageCustomizerBlock, "run_model", run_model)
+
+    block = AIImageCustomizerBlock()
+    outputs = []
+    async for output in block.run(
+        AIImageCustomizerBlock.Input(
+            credentials=REPLICATE_TEST_CREDENTIALS_INPUT,
+            prompt="Make it pop",
+            model=GeminiImageModel.NANO_BANANA,
+            images=[],
+        ),
+        credentials=REPLICATE_TEST_CREDENTIALS,
+        execution_context=ExecutionContext(user_id="user", graph_exec_id="exec"),
+    ):
+        outputs.append(output)
+
+    assert outputs[0][0] == "error"
+    assert "try another image generation model" in outputs[0][1]
+
+
+async def test_ideogram_provider_error_suggests_model_fallback(monkeypatch):
+    async def run_model(*args, **kwargs):
+        raise RuntimeError("503 Service Unavailable")
+
+    monkeypatch.setattr(IdeogramModelBlock, "run_model", run_model)
+
+    block = IdeogramModelBlock()
+    outputs = []
+    async for output in block.run(
+        IdeogramModelBlock.Input(
+            credentials=IDEOGRAM_TEST_CREDENTIALS_INPUT,
+            ideogram_model_name=IdeogramModelName.V2,
+            prompt="A futuristic city",
+            aspect_ratio=IdeogramAspectRatio.ASPECT_1_1,
+            upscale=UpscaleOption.NO_UPSCALE,
+            magic_prompt_option=MagicPromptOption.AUTO,
+            seed=None,
+            style_type=StyleType.AUTO,
+            negative_prompt=None,
+            color_palette_name=ColorPalettePreset.NONE,
+            custom_color_palette=None,
+        ),
+        credentials=IDEOGRAM_TEST_CREDENTIALS,
+    ):
+        outputs.append(output)
+
+    assert outputs[0][0] == "error"
+    assert "try another image generation model" in outputs[0][1]
+
+
+async def test_fal_video_generator_provider_error_suggests_model_fallback(monkeypatch):
+    async def generate_video(*args, **kwargs):
+        raise RuntimeError("API request failed: gateway timeout")
+
+    monkeypatch.setattr(AIVideoGeneratorBlock, "generate_video", generate_video)
+
+    block = AIVideoGeneratorBlock()
+    outputs = []
+    async for output in block.run(
+        AIVideoGeneratorBlock.Input(
+            credentials=FAL_TEST_CREDENTIALS_INPUT,
+            prompt="A dog running",
+            model=FalModel.MOCHI,
+        ),
+        credentials=FAL_TEST_CREDENTIALS,
+        execution_context=ExecutionContext(user_id="user", graph_exec_id="exec"),
+    ):
+        outputs.append(output)
+
+    assert outputs[0][0] == "error"
+    assert "try another video generation model or block" in outputs[0][1]
+
+
+async def test_flux_kontext_provider_error_suggests_model_fallback(monkeypatch):
+    async def run_model(*args, **kwargs):
+        raise RuntimeError("Replicate model overloaded")
+
+    monkeypatch.setattr(AIImageEditorBlock, "run_model", run_model)
+
+    block = AIImageEditorBlock()
+    outputs = []
+    async for output in block.run(
+        AIImageEditorBlock.Input(
+            credentials=FLUX_TEST_CREDENTIALS_INPUT,
+            prompt="Add a hat",
+            model=ImageEditorModel.FLUX_KONTEXT_PRO,
+            input_image=None,
+            aspect_ratio=AspectRatio.MATCH_INPUT_IMAGE,
+            seed=None,
+        ),
+        credentials=FLUX_TEST_CREDENTIALS,
+        execution_context=ExecutionContext(user_id="user", graph_exec_id="exec"),
+    ):
+        outputs.append(output)
+
+    assert outputs[0][0] == "error"
+    assert "try another image generation model" in outputs[0][1]
 
 
 def test_revid_missing_project_id_preserves_provider_response_detail():
