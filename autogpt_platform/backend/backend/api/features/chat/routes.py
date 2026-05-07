@@ -496,12 +496,7 @@ async def disconnect_session_stream(
     backend releases XREAD listeners immediately rather than waiting for
     the 5-10 s timeout.
     """
-    session = await get_chat_session_metadata(session_id, user_id)
-    if not session:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Session {session_id} not found or access denied",
-        )
+    await _validate_and_get_session(session_id, user_id)
     await stream_registry.disconnect_all_listeners(session_id)
     return Response(status_code=204)
 
