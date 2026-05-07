@@ -11,9 +11,7 @@ the ``model_copy`` metadata threading, and the ``cost <= 0`` short-circuit
 are exercised end-to-end.
 """
 
-# type: ignore
-
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from prisma.enums import CreditTransactionType
@@ -21,6 +19,14 @@ from prisma.models import CreditTransaction, UserBalance
 
 from backend.data.credit import UsageTransactionMetadata, UserCredit
 from backend.data.user import DEFAULT_USER_ID
+
+
+def _refund_metadata(row: CreditTransaction) -> dict[str, Any]:
+    """Cast the prisma ``Json`` metadata column into a typed dict so test
+    assertions don't need ``# type: ignore``. The serializer always writes
+    a JSON object (see ``UserCredit.refund_credits`` → ``SafeJson``), so a
+    plain dict cast is safe."""
+    return cast(dict[str, Any], row.metadata)
 
 
 @pytest.fixture
@@ -76,7 +82,7 @@ async def test_refund_credits_writes_paired_refund_row(setup_test_user):
     assert refund_row is not None
     assert refund_row.amount == 42
 
-    refund_metadata: dict[str, Any] = dict(refund_row.metadata)  # type: ignore
+    refund_metadata = _refund_metadata(refund_row)
     assert refund_metadata["block_id"] == "paid-block"
     assert refund_metadata["block"] == "PaidBlock"
     assert refund_metadata["input"] == {"model": "gpt-4"}
@@ -131,5 +137,5 @@ async def test_refund_credits_falls_back_to_plain_refund_when_no_reason(
         order={"createdAt": "desc"},
     )
     assert refund_row is not None
-    refund_metadata: dict[str, Any] = dict(refund_row.metadata)  # type: ignore
+    refund_metadata = _refund_metadata(refund_row)
     assert refund_metadata["reason"] == "Refund"
