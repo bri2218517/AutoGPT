@@ -137,6 +137,32 @@ def test_cost_usd_zero_when_no_stats(tmp_block_costs_override):
     assert cost == 0
 
 
+def test_preflight_estimate_disabled_for_no_reconciliation_callers(
+    tmp_block_costs_override, monkeypatch
+):
+    """The direct block-execute API endpoints bypass the executor manager
+    and have no post-flight reconciliation. They MUST pass
+    `use_preflight_estimate=False` so dynamic-cost blocks return 0 instead
+    of locking in an unreconciled estimate as the final charge.
+    """
+    from backend.executor import utils as executor_utils
+
+    tmp_block_costs_override(
+        [BlockCost(cost_amount=1, cost_type=BlockCostType.SECOND, cost_divisor=10)]
+    )
+    block = SearchTheWebBlock()
+
+    # Even with a registered estimate, the flag wins.
+    monkeypatch.setattr(executor_utils, "get_preflight_estimate", lambda _bid: 999)
+
+    cost, _ = block_usage_cost(block, {}, use_preflight_estimate=False)
+    assert cost == 0
+
+    # Sanity: with the flag default-True, the same call returns the estimate.
+    cost_with_estimate, _ = block_usage_cost(block, {})
+    assert cost_with_estimate == 999
+
+
 def test_preflight_uses_historical_estimate_for_dynamic_cost_types(
     tmp_block_costs_override, monkeypatch
 ):

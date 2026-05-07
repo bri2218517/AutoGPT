@@ -125,6 +125,7 @@ def block_usage_cost(
     data_size: float = 0,
     run_time: float = 0,
     stats: NodeExecutionStats | None = None,
+    use_preflight_estimate: bool = True,
 ) -> tuple[int, BlockInput]:
     """Calculate the credit charge for a block invocation.
 
@@ -138,12 +139,20 @@ def block_usage_cost(
     For SECOND/ITEMS/TOKENS cost entries, ``cost_amount`` is interpreted as
     "credits per ``cost_divisor`` units" — e.g. ``cost_amount=1,
     cost_divisor=10`` under SECOND means "1 credit per 10 seconds".
+
+    ``use_preflight_estimate`` (default True) enables the historical-average
+    pre-flight charge for SECOND/ITEMS/COST_USD types. Callers that have NO
+    post-flight reconciliation step (e.g. the direct block-execute API
+    endpoints, which bypass the executor manager) MUST pass False — otherwise
+    the estimate becomes the final charge and users are over- or undercharged
+    relative to their actual run cost. The executor pre-flight path keeps the
+    default since reconciliation always follows there.
     """
     block_costs = BLOCK_COSTS.get(type(block))
     if not block_costs:
         return 0, {}
 
-    is_preflight = stats is None and run_time == 0
+    is_preflight = stats is None and run_time == 0 and use_preflight_estimate
 
     for block_cost in block_costs:
         if not _is_cost_filter_match(block_cost.cost_filter, input_data):
@@ -218,13 +227,17 @@ async def charge_for_direct_block_execution(
     ``reason`` so transactions remain attributable to the originating
     surface.
 
-    Dynamic-cost blocks (TOKENS / COST_USD / SECOND / ITEMS) return 0
-    from ``block_usage_cost`` pre-flight and are NOT charged on this
-    code path — the post-flight reconciliation only runs inside
-    ``executor/manager.py``, which the direct block-execute API
-    endpoints bypass entirely.
+    Dynamic-cost blocks (TOKENS / COST_USD / SECOND / ITEMS) are NOT charged
+    on this code path — they return 0 from ``block_usage_cost`` because we
+    pass ``use_preflight_estimate=False``. The estimate path is only safe
+    when post-flight reconciliation follows (executor/manager.py); the
+    direct block-execute API endpoints bypass the manager and have no
+    reconciliation step, so charging the estimate would lock in an
+    incorrect amount with no chance to settle the delta.
     """
-    cost, cost_filter = block_usage_cost(block, input_data)
+    cost, cost_filter = block_usage_cost(
+        block, input_data, use_preflight_estimate=False
+    )
     if cost <= 0:
         return
     credit_model = await get_user_credit_model(user_id)
