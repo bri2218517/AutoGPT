@@ -810,15 +810,21 @@ class ChatConfig(BaseSettings):
             return self
         if "/" in title and title.split("/", 1)[0] == "anthropic":
             return self
-        if "/" not in title:
-            return self  # Bare slug like ``claude-haiku-4-5`` — assume Anthropic.
+        # Bare slug must start with ``claude-`` to be valid for direct
+        # Anthropic — bare ``gpt-4o-mini`` would otherwise pass the
+        # ``"/" not in title`` short-circuit and fail later at request
+        # time.  Mirrors the runtime guard in
+        # ``normalize_model_for_transport``.
+        if "/" not in title and title.startswith("claude-"):
+            return self
         raise ValueError(
             f"Direct-Anthropic main mode (use_openrouter=False) "
             f"with non-Anthropic title_model={title!r} requires "
             f"explicit OpenRouter credentials for the aux client. "
             f"Set CHAT_AUX_API_KEY (or OPEN_ROUTER_API_KEY) so "
             f"title generation keeps routing through OpenRouter, or "
-            f"override the title model to an anthropic/* slug."
+            f"override the title model to an ``anthropic/`` or "
+            f"``claude-`` slug."
         )
 
     # Prompt paths for different contexts

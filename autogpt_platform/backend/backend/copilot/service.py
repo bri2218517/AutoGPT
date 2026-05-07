@@ -607,8 +607,21 @@ async def _generate_session_title(
                 "environment": settings.config.app_env.value,
             }
 
+        # Normalize the title model for the aux client's transport: OR
+        # routes by full ``vendor/model`` slug, but Anthropic's
+        # OpenAI-compat endpoint rejects the ``anthropic/`` prefix and
+        # dot-separated versions.  Single-key direct-Anthropic
+        # deployments inherit the Anthropic-pointed aux client (see
+        # ``aux_client_credentials`` fallback) so the title model
+        # ``anthropic/claude-haiku-4-5`` would 400 without this strip.
+        title_model = config.title_model
+        if config.aux_provider_label == "anthropic":
+            if "/" in title_model:
+                title_model = title_model.split("/", 1)[1]
+            title_model = title_model.replace(".", "-")
+
         response = await _get_aux_client().chat.completions.create(
-            model=config.title_model,
+            model=title_model,
             messages=[
                 {
                     "role": "system",
