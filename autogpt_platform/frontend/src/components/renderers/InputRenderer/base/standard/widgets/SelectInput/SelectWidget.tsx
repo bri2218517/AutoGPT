@@ -24,7 +24,7 @@ export const SelectWidget = (props: WidgetProps) => {
     id,
     formContext,
   } = props;
-  const enumOptions = (options.enumOptions || []).filter(
+  const enumOptions = (options.enumOptions ?? []).filter(
     (option: any) => option.value !== "",
   );
   const type = mapJsonSchemaTypeToInputType(props.schema);
@@ -65,12 +65,10 @@ export const SelectWidget = (props: WidgetProps) => {
         size={selectSize as any}
         value={value === "" || value == null ? undefined : value}
         onValueChange={onChange}
-        options={
-          enumOptions?.map((option: any) => ({
-            value: option.value,
-            label: option.label,
-          })) || []
-        }
+        options={enumOptions.map((option: any) => ({
+          value: option.value,
+          label: option.label,
+        }))}
         wrapperClassName="!mb-0 "
         className={className}
       />

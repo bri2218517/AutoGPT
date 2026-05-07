@@ -116,6 +116,21 @@ describe("SelectWidget", () => {
     });
   });
 
+  it("falls back to an empty option list when enumOptions are missing", () => {
+    render(
+      <SelectWidget
+        {...createProps({
+          options: {} as WidgetProps["options"],
+        })}
+      />,
+    );
+
+    expect(selectSpy).toHaveBeenCalledOnce();
+    expect(selectSpy.mock.calls[0][0]).toMatchObject({
+      options: [],
+    });
+  });
+
   it("filters empty-string enum options for the multi-select path", () => {
     render(
       <SelectWidget
