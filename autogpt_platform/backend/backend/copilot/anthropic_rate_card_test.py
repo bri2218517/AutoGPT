@@ -39,7 +39,29 @@ class TestComputeAnthropicCostUsd:
             completion_tokens=0,
             cache_creation_tokens=1_000_000,
         )
-        # 1M tokens × $3 × 2.0 = $6
+        # Default cache_ttl="1h": 1M tokens × $3 × 2.0 = $6
+        assert cost == 6.0
+
+    def test_cache_write_5m_ttl_uses_smaller_multiplier(self):
+        cost = compute_anthropic_cost_usd(
+            model="claude-sonnet-4-6",
+            prompt_tokens=0,
+            completion_tokens=0,
+            cache_creation_tokens=1_000_000,
+            cache_ttl="5m",
+        )
+        # 5m TTL: 1M tokens × $3 × 1.25 = $3.75
+        assert cost == 3.75
+
+    def test_cache_write_unknown_ttl_falls_back_to_1h(self):
+        cost = compute_anthropic_cost_usd(
+            model="claude-sonnet-4-6",
+            prompt_tokens=0,
+            completion_tokens=0,
+            cache_creation_tokens=1_000_000,
+            cache_ttl="24h",
+        )
+        # Unknown TTL → 1h multiplier (over-bills rather than mis-bills).
         assert cost == 6.0
 
     def test_unknown_model_returns_none(self):

@@ -716,7 +716,8 @@ async def _baseline_llm_caller(
                             _extract_cache_creation_tokens(ptd)
                         )
                     cost = _extract_usage_cost(chunk.usage)
-                    if cost is None and not config.openrouter_active:
+                    direct_mode = not config.openrouter_active
+                    if cost is None and direct_mode:
                         # Direct-Anthropic / subscription mode — the
                         # OpenAI-compat endpoint at api.anthropic.com
                         # does not return ``usage.cost`` (OpenRouter
@@ -731,18 +732,38 @@ async def _baseline_llm_caller(
                             cache_creation_tokens=(
                                 _extract_cache_creation_tokens(ptd) if ptd else 0
                             ),
+                            cache_ttl=config.baseline_prompt_cache_ttl,
                         )
+                        if cost is None and not state.cost_missing_logged:
+                            # Rate-card lookup whiffed on this model —
+                            # warn once per stream so a new model slug
+                            # introduced via env var doesn't silently
+                            # lose cost tracking.  The OR-extension
+                            # branch below is suppressed because
+                            # ``model_extra`` legitimately lacks ``cost``
+                            # in direct mode, so this is the only place
+                            # the operator gets a signal.
+                            logger.warning(
+                                "[Baseline] direct-mode rate card has no "
+                                "entry for model=%s — add it to "
+                                "anthropic_rate_card.py or this turn's "
+                                "cost is dropped",
+                                state.model,
+                            )
+                            state.cost_missing_logged = True
                     if cost is not None:
                         state.cost_usd = (state.cost_usd or 0.0) + cost
                     elif (
-                        "cost" not in (chunk.usage.model_extra or {})
+                        not direct_mode
+                        and "cost" not in (chunk.usage.model_extra or {})
                         and not state.cost_missing_logged
                     ):
-                        # Field absent and not a known direct-mode model
-                        # — warn once per stream so error monitoring
-                        # picks up persistent misses without flooding.
-                        # Invalid values already logged inside
-                        # _extract_usage_cost, so no duplicate warning here.
+                        # OpenRouter route with the field absent — warn
+                        # once per stream so error monitoring picks up
+                        # persistent misses without flooding.  Invalid
+                        # values already logged inside
+                        # _extract_usage_cost, so no duplicate warning
+                        # here.  Direct-mode lookups are handled above.
                         logger.warning(
                             "[Baseline] usage chunk missing cost (model=%s, "
                             "prompt=%s, completion=%s) — rate-limit will "

@@ -32,12 +32,15 @@ _OUTPUT_USD_PER_MTOK: dict[str, float] = {
     "claude-haiku-4-5": 5.0,
 }
 
-# Cache-write surcharge multipliers (applied to the input rate).  We
-# default to the 1h TTL multiplier because ``baseline_prompt_cache_ttl``
-# defaults to ``"1h"`` and the system prompt + tools array (the only
-# cached prefix) is identical across users in our workspace, so 1h
-# cross-user reads amortise the higher write cost.
-_CACHE_WRITE_MULTIPLIER = 2.0  # 1h TTL; 5m TTL would be 1.25
+# Cache-write surcharge multipliers (applied to the input rate) keyed
+# by TTL.  Anthropic publishes only two TTLs: 5m (1.25× input) and 1h
+# (2× input) — see prompt-caching docs.  The active TTL is the
+# ``baseline_prompt_cache_ttl`` config value, threaded in by the caller
+# rather than read here so this module stays config-free for testing.
+_CACHE_WRITE_MULTIPLIER_BY_TTL: dict[str, float] = {
+    "5m": 1.25,
+    "1h": 2.0,
+}
 _CACHE_READ_MULTIPLIER = 0.1
 
 
@@ -48,6 +51,7 @@ def compute_anthropic_cost_usd(
     completion_tokens: int,
     cache_read_tokens: int = 0,
     cache_creation_tokens: int = 0,
+    cache_ttl: str = "1h",
 ) -> float | None:
     """Return the USD cost for an Anthropic-direct chat completion.
 
@@ -57,6 +61,12 @@ def compute_anthropic_cost_usd(
     formula sums them as separate buckets at their own rates rather
     than double-counting against ``prompt_tokens``.
 
+    *cache_ttl* selects the cache-write surcharge multiplier — must
+    match the ``cache_control: ttl`` set on the cached blocks (today
+    that's ``baseline_prompt_cache_ttl`` config; 1h default).  Unknown
+    TTLs fall back to 1h with no error since over-billing is preferable
+    to mis-billing in the cache write column.
+
     Returns ``None`` for unknown models so the caller can decide
     between recording 0 (under-bills) or skipping the row (silent
     miss).  We pick None to surface the misconfiguration upstream.
@@ -65,12 +75,13 @@ def compute_anthropic_cost_usd(
     output_rate = _OUTPUT_USD_PER_MTOK.get(model)
     if input_rate is None or output_rate is None:
         return None
+    cache_write_multiplier = _CACHE_WRITE_MULTIPLIER_BY_TTL.get(cache_ttl, 2.0)
     fresh_input_cost = prompt_tokens * input_rate / 1_000_000
     output_cost = completion_tokens * output_rate / 1_000_000
     cache_read_cost = (
         cache_read_tokens * input_rate * _CACHE_READ_MULTIPLIER / 1_000_000
     )
     cache_write_cost = (
-        cache_creation_tokens * input_rate * _CACHE_WRITE_MULTIPLIER / 1_000_000
+        cache_creation_tokens * input_rate * cache_write_multiplier / 1_000_000
     )
     return fresh_input_cost + output_cost + cache_read_cost + cache_write_cost

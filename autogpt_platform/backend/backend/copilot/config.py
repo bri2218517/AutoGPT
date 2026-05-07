@@ -711,6 +711,54 @@ class ChatConfig(BaseSettings):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _validate_aux_client_for_direct_main(self) -> "ChatConfig":
+        """Fail at boot when direct-Anthropic main mode + non-Anthropic aux
+        models would land on a credential-less aux client.
+
+        Trip wire: ``use_openrouter=False`` (main routes to Anthropic),
+        ``aux_api_key`` unresolved (no ``CHAT_AUX_API_KEY`` /
+        ``OPEN_ROUTER_API_KEY`` env), and ``title_model`` /
+        ``simulation_model`` are non-Anthropic slugs.  Without explicit
+        OR creds the aux client would silently get
+        ``(None, https://openrouter.ai/api/v1)`` and 401 every title
+        call — a regression that's invisible until the first chat.
+
+        Skipped for subscription mode (the SDK CLI uses OAuth and the
+        aux flow is unaffected).  Skipped when an aux key resolves
+        from any of the supported envs.  Skipped when the aux models
+        are themselves Anthropic (then the fallback to direct creds is
+        fine — Anthropic serves its own models).
+        """
+        if self.use_claude_code_subscription:
+            return self
+        if self.use_openrouter:
+            return self
+        # Aux client falls back to ``api_key`` / ``base_url`` when the
+        # aux env vars are unset.  A populated ``api_key`` is enough to
+        # serve OR-routed aux calls — the original single-key flow.
+        if self.aux_api_key or self.api_key:
+            return self
+        for field_name in ("title_model", "simulation_model"):
+            value: str = getattr(self, field_name)
+            if not value:
+                continue
+            if "/" in value and value.split("/", 1)[0] == "anthropic":
+                continue
+            if "/" not in value:
+                # Bare slug like ``claude-haiku-4-5`` — assume Anthropic.
+                continue
+            raise ValueError(
+                f"Direct-Anthropic main mode (use_openrouter=False) "
+                f"with non-Anthropic {field_name}={value!r} requires "
+                f"explicit OpenRouter credentials for the aux client. "
+                f"Set CHAT_AUX_API_KEY (or OPEN_ROUTER_API_KEY) so "
+                f"title/simulation calls keep routing through "
+                f"OpenRouter, or override the model to an anthropic/* "
+                f"slug."
+            )
+        return self
+
     # Prompt paths for different contexts
     PROMPT_PATHS: dict[str, str] = {
         "default": "prompts/chat_system.md",

@@ -49,11 +49,16 @@ def _make_direct_safe_config(**kwargs) -> ChatConfig:
 
     Pins ``thinking_standard_model``/``thinking_advanced_model`` to anthropic/*
     so the construction passes ``_validate_sdk_model_vendor_compatibility``
-    without each test having to repeat the override.
+    without each test having to repeat the override.  Also sets
+    ``aux_api_key`` so the new aux-credentials validator passes by
+    default — tests that target that specific check should pass
+    ``aux_api_key=None`` (and clear ``api_key``/``base_url``) to opt
+    in to its trip.
     """
     defaults: dict = {
         "thinking_standard_model": "anthropic/claude-sonnet-4-6",
         "thinking_advanced_model": "anthropic/claude-opus-4-7",
+        "aux_api_key": "or-aux-key",
     }
     defaults.update(kwargs)
     return ChatConfig(**defaults)
@@ -223,6 +228,11 @@ class TestSdkModelVendorCompatibility:
             api_key=None,
             base_url=None,
             use_claude_code_subscription=False,
+            # Aux key satisfies the aux-credential validator (this test
+            # focuses on the SDK-vendor validator); without it the
+            # default ``openai/gpt-4o-mini`` title model trips the new
+            # aux check.
+            aux_api_key="or-aux-key",
         )
         assert cfg.thinking_standard_model == "anthropic/claude-sonnet-4-6"
 
@@ -288,6 +298,7 @@ class TestSdkModelVendorCompatibility:
             thinking_standard_model="anthropic/claude-sonnet-4-6",
             thinking_advanced_model="anthropic/claude-opus-4-7",
             claude_agent_fallback_model="",
+            aux_api_key="or-aux-key",
         )
         assert cfg.claude_agent_fallback_model == ""
 
@@ -400,3 +411,58 @@ class TestAuxClientCredentials:
             aux_api_key="anthropic-key",
         )
         assert cfg.aux_uses_openrouter is False
+
+
+class TestAuxClientForDirectMainValidator:
+    """``_validate_aux_client_for_direct_main`` fails fast at boot when
+    direct-main mode + non-Anthropic aux model would land on a
+    credential-less aux client."""
+
+    def test_direct_main_with_non_anthropic_title_and_no_aux_key_raises(self):
+        # OpenRouter off, no aux key, no fallback ``api_key`` → aux
+        # client would 401 on every title call.  Validator must reject
+        # at boot.
+        with pytest.raises(ValueError, match="non-Anthropic title_model"):
+            _make_direct_safe_config(
+                use_openrouter=False,
+                direct_anthropic_api_key="anthropic-key",
+                api_key=None,
+                base_url=None,
+                aux_api_key=None,
+                title_model="openai/gpt-4o-mini",
+            )
+
+    def test_direct_main_with_anthropic_aux_models_passes(self):
+        # Anthropic title + simulation models — aux can fall back to
+        # direct creds (Anthropic serves its own models).
+        cfg = _make_direct_safe_config(
+            use_openrouter=False,
+            direct_anthropic_api_key="anthropic-key",
+            api_key=None,
+            base_url=None,
+            aux_api_key=None,
+            title_model="anthropic/claude-haiku-4-5",
+            simulation_model="anthropic/claude-haiku-4-5",
+        )
+        assert cfg.title_model == "anthropic/claude-haiku-4-5"
+
+    def test_direct_main_with_explicit_aux_key_passes(self):
+        # Non-Anthropic title is fine when aux has its own creds.
+        cfg = _make_direct_safe_config(
+            use_openrouter=False,
+            direct_anthropic_api_key="anthropic-key",
+            aux_api_key="or-key",
+            title_model="openai/gpt-4o-mini",
+        )
+        assert cfg.aux_api_key == "or-key"
+
+    def test_openrouter_main_skips_validator(self):
+        # OR main mode — aux follows main, no special check needed.
+        cfg = ChatConfig(
+            use_openrouter=True,
+            api_key="or-key",
+            base_url="https://openrouter.ai/api/v1",
+            aux_api_key=None,
+            title_model="openai/gpt-4o-mini",
+        )
+        assert cfg.title_model == "openai/gpt-4o-mini"
