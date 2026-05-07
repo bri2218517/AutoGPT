@@ -452,6 +452,8 @@ class TestAuxClientCredentials:
         assert cfg.aux_uses_openrouter is True
 
     def test_aux_uses_openrouter_false_for_other_url(self):
+        # Anthropic-pointed aux + Anthropic title — valid pure-Anthropic
+        # deployment.  Title must be Anthropic per the new validator.
         cfg = _make_direct_safe_config(
             use_openrouter=False,
             direct_anthropic_api_key="anthropic-key",
@@ -459,6 +461,7 @@ class TestAuxClientCredentials:
             base_url="https://api.anthropic.com/v1/",
             aux_base_url="https://api.anthropic.com/v1/",
             aux_api_key="anthropic-key",
+            title_model="anthropic/claude-haiku-4-5",
         )
         assert cfg.aux_uses_openrouter is False
 
