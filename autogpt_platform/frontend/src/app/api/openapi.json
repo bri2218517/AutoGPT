@@ -11,7 +11,7 @@
       "get": {
         "tags": ["v2", "admin", "admin", "blocks"],
         "summary": "Export Block Cost Estimates",
-        "description": "Aggregate per-block average credits-per-execution over [start, end].\n\nCapped at ANALYTICS_MAX_DAYS days. Returns only blocks whose current cost\ntype is dynamic (SECOND/ITEMS/COST_USD/TOKENS) — static-cost blocks already\ncharge correctly pre-flight and don't need an estimate override.",
+        "description": "Aggregate per-block average credits-per-execution over [start, end].\n\nCapped at ANALYTICS_MAX_DAYS days. Returns only blocks whose current cost\ntype is dynamic (SECOND/ITEMS/COST_USD) — static-cost blocks already\ncharge correctly pre-flight and don't need an estimate override. TOKENS\nis excluded because `compute_token_credits` already supplies a per-model\nfloor at pre-flight; a per-block historical mean would lose that\ngranularity.",
         "operationId": "getV2Export block cost estimates",
         "security": [{ "HTTPBearerJWT": [] }],
         "parameters": [
