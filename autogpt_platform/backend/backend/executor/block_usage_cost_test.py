@@ -123,6 +123,30 @@ def test_cost_usd_zero_when_no_stats(tmp_block_costs_override):
     assert cost == 0
 
 
+def test_preflight_uses_historical_estimate_for_dynamic_cost_types(
+    tmp_block_costs_override, monkeypatch
+):
+    """When stats is None and run_time=0, dynamic-cost branches return the
+    registered historical-average estimate instead of 0 — so the post-flight
+    reconciliation only settles a small delta and a billing leak is bounded
+    by that delta rather than the full execution cost."""
+    from backend.executor import utils as executor_utils
+
+    tmp_block_costs_override(
+        [BlockCost(cost_amount=1, cost_type=BlockCostType.SECOND, cost_divisor=10)]
+    )
+    block = SearchTheWebBlock()
+
+    monkeypatch.setattr(
+        executor_utils,
+        "get_preflight_estimate",
+        lambda block_id: 5 if block_id == block.id else 0,
+    )
+
+    cost, _ = block_usage_cost(block, {})
+    assert cost == 5
+
+
 def test_cost_usd_ignores_non_usd_provider_cost(tmp_block_costs_override):
     """provider_cost_type='items' should not be mistaken for dollars."""
     tmp_block_costs_override(

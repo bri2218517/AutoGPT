@@ -1,0 +1,125 @@
+"""Aggregate historical block-execution credit costs from CreditTransaction.
+
+Used by the admin export endpoint to seed `block_preflight_estimates.json`,
+giving dynamic-cost blocks a non-zero pre-flight charge so post-flight
+reconciliation only settles a small delta.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel
+
+from backend.blocks import get_block
+from backend.data.block_cost_config import BLOCK_COSTS
+from backend.data.db import query_raw_with_schema
+
+DYNAMIC_COST_TYPES = {"SECOND", "ITEMS", "COST_USD", "TOKENS"}
+
+ANALYTICS_MAX_DAYS = 90
+ANALYTICS_MIN_SAMPLES_DEFAULT = 10
+
+
+class BlockCostEstimateRow(BaseModel):
+    block_id: str
+    block_name: str
+    cost_type: str
+    samples: int
+    mean_credits: int
+    p50_credits: int
+    p95_credits: int
+
+
+def _resolve_cost_type(block_id: str) -> str | None:
+    """Return the first dynamic cost type registered for this block, if any.
+
+    A block can declare multiple BlockCost entries with different cost_filters.
+    We collapse them to a single representative type for the export so the
+    admin view stays compact; reconciliation continues to use the per-filter
+    entry at runtime.
+    """
+    block = get_block(block_id)
+    if not block:
+        return None
+    costs = BLOCK_COSTS.get(type(block), [])
+    for c in costs:
+        if c.cost_type.value in DYNAMIC_COST_TYPES:
+            return c.cost_type.value
+    return None
+
+
+async def compute_block_cost_estimates(
+    *,
+    start: datetime,
+    end: datetime,
+    min_samples: int = ANALYTICS_MIN_SAMPLES_DEFAULT,
+) -> list[BlockCostEstimateRow]:
+    """Aggregate per-(block_id, node_exec_id) credit cost over [start, end].
+
+    Sums all USAGE rows per node-execution (capturing pre-flight + reconciliation
+    deltas as one cost), then averages across executions per block. Filters to
+    blocks whose current cost type is dynamic — static-cost blocks already
+    charge correctly pre-flight and don't need an estimate.
+    """
+    if (end - start).days > ANALYTICS_MAX_DAYS:
+        raise ValueError(
+            f"window {(end - start).days}d exceeds max {ANALYTICS_MAX_DAYS}d"
+        )
+    if start >= end:
+        raise ValueError("start must be before end")
+
+    query = """
+    WITH per_exec AS (
+      SELECT
+        metadata->>'block_id' AS block_id,
+        MAX(metadata->>'block') AS block_name,
+        metadata->>'node_exec_id' AS node_exec_id,
+        SUM(-amount) AS exec_cost
+      FROM {schema_prefix}"CreditTransaction"
+      WHERE type = 'USAGE'
+        AND "createdAt" >= $1
+        AND "createdAt" <= $2
+        AND "isActive" = true
+        AND metadata->>'block_id' IS NOT NULL
+        AND metadata->>'node_exec_id' IS NOT NULL
+      GROUP BY metadata->>'block_id', metadata->>'node_exec_id'
+    )
+    SELECT
+      block_id,
+      MAX(block_name) AS block_name,
+      COUNT(*)::int AS samples,
+      ROUND(AVG(exec_cost))::int AS mean_credits,
+      ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY exec_cost))::int AS p50_credits,
+      ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY exec_cost))::int AS p95_credits
+    FROM per_exec
+    WHERE exec_cost > 0
+    GROUP BY block_id
+    HAVING COUNT(*) >= $3
+    ORDER BY samples DESC
+    """
+    rows: list[dict[str, Any]] = await query_raw_with_schema(
+        query, start, end, min_samples
+    )
+
+    out: list[BlockCostEstimateRow] = []
+    for r in rows:
+        block_id = r["block_id"]
+        cost_type = _resolve_cost_type(block_id)
+        if not cost_type:
+            # Skip blocks that don't have a dynamic cost type — their pre-flight
+            # is already correct and shouldn't be overridden by a historical mean.
+            continue
+        out.append(
+            BlockCostEstimateRow(
+                block_id=block_id,
+                block_name=r.get("block_name") or block_id,
+                cost_type=cost_type,
+                samples=int(r["samples"]),
+                mean_credits=int(r["mean_credits"]),
+                p50_credits=int(r["p50_credits"]),
+                p95_credits=int(r["p95_credits"]),
+            )
+        )
+    return out
