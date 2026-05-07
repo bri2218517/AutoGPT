@@ -1,0 +1,6 @@
+      createdAt      |  provider   | trackingType | trackingAmount | costMicrodollars | inputTokens | outputTokens |         blockName         |            model             |          source           
+---------------------+-------------+--------------+----------------+------------------+-------------+--------------+---------------------------+------------------------------+---------------------------
+ 2026-05-07 15:17:39 | openai      | cost_usd     |      5.925e-05 |               59 |         215 |           45 | activity_status_generator | gpt-4o-mini                  | activity_status_generator
+ 2026-05-07 15:17:38 | open_router | cost_usd     |       4.72e-05 |               47 |         416 |           14 | copilot:simulator         | google/gemini-2.5-flash-lite | copilot
+(2 rows)
+
