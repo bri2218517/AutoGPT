@@ -58,6 +58,11 @@ from backend.util.type import coerce_inputs_to_schema
 
 config = Config()
 logger = TruncatedLogger(logging.getLogger(__name__), prefix="[GraphExecutorUtil]")
+# Plain stdlib logger for the billing-leak observability call site.
+# TruncatedLogger.warning() doesn't do %-formatting and accepts only
+# (msg, **extra) — the leak-log path needs the stdlib (msg, *args, extra=)
+# signature so %s placeholders + json_fields both flow through.
+_leak_logger = logging.getLogger(__name__)
 
 # ============ Resource Helpers ============ #
 
@@ -284,12 +289,14 @@ def log_direct_block_execution_billing_leak(
     if cost <= 0:
         return
     leak_type = (
-        "EXECUTE_FAILED"
-        if isinstance(error, Exception)
-        and not isinstance(error, asyncio.CancelledError)
-        else "EXECUTE_CANCELLED"
+        "EXECUTE_CANCELLED"
+        if isinstance(error, asyncio.CancelledError)
+        else "EXECUTE_FAILED"
     )
-    logger.warning(
+    # Use stdlib logger (not module-level TruncatedLogger) so %-formatting
+    # and `extra={"json_fields": ...}` flow through unchanged. Mirrors
+    # backend/copilot/tools/helpers.py:_charge_block_credits.
+    _leak_logger.warning(
         "BILLING_LEAK[%s]: direct %s block execution charged but execute() raised — "
         "user_id=%s, block_id=%s, cost=%s: %s",
         leak_type,

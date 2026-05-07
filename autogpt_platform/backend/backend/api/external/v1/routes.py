@@ -106,9 +106,7 @@ async def execute_graph_block(
             status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(e)
         ) from e
     except InsufficientTierError as e:
-        # 403 (not 402): user *has* credits (e.g. $3 onboarding grant);
-        # they're on the wrong tier. The upgrade message is what we
-        # actually want surfaced.
+        # 403 mapping — see InsufficientTierError docstring.
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
     output = defaultdict(list)
