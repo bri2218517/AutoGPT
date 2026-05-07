@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import urllib.parse
 from collections import defaultdict
@@ -22,7 +21,6 @@ from backend.data.block import BlockInput, CompletedBlockOutput
 from backend.executor.utils import (
     add_graph_execution,
     charge_for_direct_block_execution,
-    refund_for_failed_block_execution,
 )
 from backend.integrations.webhooks.graph_lifecycle_hooks import on_graph_activate
 from backend.util.exceptions import InsufficientBalanceError, InsufficientTierError
@@ -98,10 +96,7 @@ async def execute_graph_block(
         raise HTTPException(status_code=403, detail=f"Block #{block_id} is disabled.")
 
     try:
-        # Capture the pre-flight charge so the refund path uses the
-        # exact same `(cost, metadata)` rather than recomputing
-        # `block_usage_cost` against possibly-mutated state.
-        charge_receipt = await charge_for_direct_block_execution(
+        await charge_for_direct_block_execution(
             user_id=auth.user_id, block=obj, input_data=data, source="external"
         )
     except InsufficientBalanceError as e:
@@ -114,49 +109,10 @@ async def execute_graph_block(
         # actually want surfaced.
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
-    try:
-        output = defaultdict(list)
-        async for name, output_data in obj.execute(data):
-            output[name].append(output_data)
-        return output
-    except (Exception, asyncio.CancelledError):
-        # Refund the captured pre-flight charge (only if we actually
-        # charged — free blocks return None). CancelledError is a
-        # BaseException subclass in Py3.8+ so it would otherwise bypass
-        # `except Exception:` and skip the refund on client disconnect /
-        # ASGI timeout. Wrap so a refund failure never swallows the
-        # original exception (logged with cost so reconciliation can
-        # recover it).
-        if charge_receipt is not None:
-            try:
-                await refund_for_failed_block_execution(
-                    user_id=auth.user_id, receipt=charge_receipt
-                )
-            except (Exception, asyncio.CancelledError) as refund_err:
-                # CancelledError on the refund itself (ASGI timeout while
-                # awaiting refund) would bypass `except Exception` and
-                # propagate, demoting the original execution exception
-                # to ``__context__`` and skipping the leak log. Catch
-                # both here, log, and let the outer ``raise`` re-raise
-                # the original execution exception.
-                logger.warning(
-                    "BILLING_LEAK[REFUND_FAILED]: direct external block execution "
-                    "(user_id=%s, block_id=%s, cost=%s): %s",
-                    auth.user_id,
-                    block_id,
-                    charge_receipt.cost,
-                    refund_err,
-                    extra={
-                        "json_fields": {
-                            "billing_leak": True,
-                            "leak_type": "REFUND_FAILED",
-                            "user_id": auth.user_id,
-                            "block_id": block_id,
-                            "cost": str(charge_receipt.cost),
-                        }
-                    },
-                )
-        raise
+    output = defaultdict(list)
+    async for name, data in obj.execute(data):
+        output[name].append(data)
+    return output
 
 
 @v1_router.post(

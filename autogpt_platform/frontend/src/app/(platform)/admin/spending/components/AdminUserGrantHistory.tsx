@@ -12,10 +12,6 @@ import { SearchAndFilterAdminSpending } from "./SearchAndFilterAdminSpending";
 import { getUsersTransactionHistory } from "@/app/(platform)/admin/spending/actions";
 import { AdminAddMoneyButton } from "./AddMoneyButton";
 import { RateLimitModal } from "./RateLimitModal";
-import {
-  pickAmountColor,
-  pickTypePillColor,
-} from "./AdminUserGrantHistory.helpers";
 import { CreditTransactionType } from "@/lib/autogpt-server-api";
 
 export async function AdminUserGrantHistory({
@@ -35,22 +31,41 @@ export async function AdminUserGrantHistory({
     initialStatus,
   );
 
-  const formatAmount = (amount: number, type: CreditTransactionType) => (
-    <span className={pickAmountColor(amount, type)}>
-      ${Math.abs(amount / 100)}
-    </span>
-  );
+  // Helper function to format the amount with color based on transaction type
+  const formatAmount = (amount: number, type: CreditTransactionType) => {
+    const isPositive = type === CreditTransactionType.GRANT;
+    const isNeutral = type === CreditTransactionType.TOP_UP;
+    const color = isPositive
+      ? "text-green-600"
+      : isNeutral
+        ? "text-blue-600"
+        : "text-red-600";
+    return <span className={color}>${Math.abs(amount / 100)}</span>;
+  };
 
-  const formatType = (type: CreditTransactionType, amount: number) => (
-    <span
-      className={`rounded-full px-2 py-1 text-xs font-medium ${pickTypePillColor(
-        type,
-        amount,
-      )}`}
-    >
-      {type.valueOf()}
-    </span>
-  );
+  // Helper function to format the transaction type with color
+  const formatType = (type: CreditTransactionType) => {
+    const isGrant = type === CreditTransactionType.GRANT;
+    const isPurchased = type === CreditTransactionType.TOP_UP;
+    const isSpent = type === CreditTransactionType.USAGE;
+
+    const displayText = type;
+    let bgColor = "";
+
+    if (isGrant) {
+      bgColor = "bg-green-100 text-green-800";
+    } else if (isPurchased) {
+      bgColor = "bg-blue-100 text-blue-800";
+    } else if (isSpent) {
+      bgColor = "bg-red-100 text-red-800";
+    }
+
+    return (
+      <span className={`rounded-full px-2 py-1 text-xs font-medium ${bgColor}`}>
+        {displayText.valueOf()}
+      </span>
+    );
+  };
 
   // Helper function to format the date
   const formatDate = (date: Date) => {
@@ -105,10 +120,7 @@ export async function AdminUserGrantHistory({
                   </TableCell>
 
                   <TableCell>
-                    {formatType(
-                      transaction.transaction_type,
-                      transaction.amount,
-                    )}
+                    {formatType(transaction.transaction_type)}
                   </TableCell>
                   <TableCell className="text-gray-600">
                     {formatDate(transaction.transaction_time)}

@@ -159,31 +159,6 @@ class UserCreditBase(ABC):
         pass
 
     @abstractmethod
-    async def refund_credits(
-        self,
-        user_id: str,
-        cost: int,
-        metadata: UsageTransactionMetadata,
-    ) -> int:
-        """
-        Refund a previously-spent USAGE charge by writing a paired REFUND
-        transaction with the same metadata so credit history shows a clean
-        spend+refund pair attributable to the same block invocation.
-
-        Args:
-            user_id (str): The user ID.
-            cost (int): The positive amount of the original USAGE charge to
-                undo (will be credited back to the user as ``+cost``).
-            metadata (UsageTransactionMetadata): Metadata of the original
-                spend; ``reason`` is wrapped as ``"Refund: {original}"`` so
-                history is auditable.
-
-        Returns:
-            int: The new balance after the refund.
-        """
-        pass
-
-    @abstractmethod
     async def top_up_credits(self, user_id: str, amount: int):
         """
         Top up the credits for the user.
@@ -645,18 +620,11 @@ class UserCreditBase(ABC):
 
             # Clear insufficient funds notification flags when credits are added
             # so user can receive alerts again if they run out in the future.
-            # Positive REFUND covers block-execute refunds that restore balance;
-            # the negative-amount REFUND (Stripe clawback) is excluded by the
-            # `amount > 0` guard above.
             if (
                 amount > 0
                 and is_active
                 and transaction_type
-                in [
-                    CreditTransactionType.GRANT,
-                    CreditTransactionType.TOP_UP,
-                    CreditTransactionType.REFUND,
-                ]
+                in [CreditTransactionType.GRANT, CreditTransactionType.TOP_UP]
             ):
                 # Lazy import to avoid circular dependency with executor.manager
                 from backend.executor.billing import (
@@ -734,32 +702,6 @@ class UserCredit(UserCreditBase):
                     f"Auto top-up failed for user {user_id}, balance: {balance}, amount: {auto_top_up.amount}, error: {e}"
                 )
 
-        return balance
-
-    async def refund_credits(
-        self,
-        user_id: str,
-        cost: int,
-        metadata: UsageTransactionMetadata,
-    ) -> int:
-        if cost <= 0:
-            return 0
-
-        # Tag the refund row with the original metadata so credit history
-        # can pair the spend and refund by block_id / input cost_filter.
-        refund_metadata = metadata.model_copy(
-            update={
-                "reason": (
-                    f"Refund: {metadata.reason}" if metadata.reason else "Refund"
-                ),
-            }
-        )
-        balance, _ = await self._add_transaction(
-            user_id=user_id,
-            amount=cost,
-            transaction_type=CreditTransactionType.REFUND,
-            metadata=SafeJson(refund_metadata.model_dump()),
-        )
         return balance
 
     async def top_up_credits(
@@ -1357,9 +1299,6 @@ class DisabledUserCredit(UserCreditBase):
         return []
 
     async def spend_credits(self, *args, **kwargs) -> int:
-        return 0
-
-    async def refund_credits(self, *args, **kwargs) -> int:
         return 0
 
     async def top_up_credits(self, *args, **kwargs):

@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from starlette.status import (
     HTTP_204_NO_CONTENT,
     HTTP_402_PAYMENT_REQUIRED,
+    HTTP_403_FORBIDDEN,
     HTTP_404_NOT_FOUND,
 )
 from typing_extensions import Optional, TypedDict
@@ -479,10 +480,7 @@ async def execute_graph_block(
         raise HTTPException(status_code=404, detail="User not found.")
 
     try:
-        # Capture the pre-flight charge so the refund path uses the
-        # exact same `(cost, metadata)` rather than recomputing
-        # `block_usage_cost` against possibly-mutated state.
-        charge_receipt = await execution_utils.charge_for_direct_block_execution(
+        await execution_utils.charge_for_direct_block_execution(
             user_id=user_id, block=obj, input_data=data, source="internal"
         )
     except InsufficientBalanceError as e:
@@ -491,17 +489,19 @@ async def execute_graph_block(
         # 403 (not 402): user *has* credits (e.g. $3 onboarding grant);
         # they're on the wrong tier. The upgrade message is what we
         # actually want surfaced.
-        raise HTTPException(status_code=403, detail=str(e)) from e
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN, detail=str(e)
+        ) from e
 
     start_time = time.time()
     try:
         output = defaultdict(list)
-        async for name, output_data in obj.execute(
+        async for name, data in obj.execute(
             data,
             user_id=user_id,
             # Note: graph_exec_id and graph_id are not available for direct block execution
         ):
-            output[name].append(output_data)
+            output[name].append(data)
 
         # Record successful block execution with duration
         duration = time.time() - start_time
@@ -511,44 +511,7 @@ async def execute_graph_block(
         )
 
         return output
-    except (Exception, asyncio.CancelledError):
-        # Refund the captured pre-flight charge (only if we actually
-        # charged — free blocks return None). CancelledError is a
-        # BaseException subclass in Py3.8+ so it would otherwise bypass
-        # `except Exception:` and skip the refund on client disconnect /
-        # ASGI timeout. Wrap so a refund failure never swallows the
-        # original exception (logged with cost so reconciliation can
-        # recover it).
-        if charge_receipt is not None:
-            try:
-                await execution_utils.refund_for_failed_block_execution(
-                    user_id=user_id, receipt=charge_receipt
-                )
-            except (Exception, asyncio.CancelledError) as refund_err:
-                # CancelledError on the refund itself (ASGI timeout while
-                # awaiting refund) would bypass `except Exception` and
-                # propagate, demoting the original execution exception
-                # to ``__context__`` and skipping the leak log. Catch
-                # both here, log, and let the outer ``raise`` re-raise
-                # the original execution exception.
-                logger.warning(
-                    "BILLING_LEAK[REFUND_FAILED]: direct internal block execution "
-                    "(user_id=%s, block_id=%s, cost=%s): %s",
-                    user_id,
-                    block_id,
-                    charge_receipt.cost,
-                    refund_err,
-                    extra={
-                        "json_fields": {
-                            "billing_leak": True,
-                            "leak_type": "REFUND_FAILED",
-                            "user_id": user_id,
-                            "block_id": block_id,
-                            "cost": str(charge_receipt.cost),
-                        }
-                    },
-                )
-
+    except Exception:
         # Record failed block execution
         duration = time.time() - start_time
         block_type = obj.__class__.__name__
