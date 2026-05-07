@@ -53,8 +53,7 @@ export async function AdminUserGrantHistory({
     const isGrant = type === CreditTransactionType.GRANT;
     const isPurchased = type === CreditTransactionType.TOP_UP;
     const isSpent = type === CreditTransactionType.USAGE;
-    const isRefundCredit =
-      type === CreditTransactionType.REFUND && amount > 0;
+    const isRefundCredit = type === CreditTransactionType.REFUND && amount > 0;
     const isRefundClawback =
       type === CreditTransactionType.REFUND && amount < 0;
 
@@ -129,7 +128,10 @@ export async function AdminUserGrantHistory({
                   </TableCell>
 
                   <TableCell>
-                    {formatType(transaction.transaction_type, transaction.amount)}
+                    {formatType(
+                      transaction.transaction_type,
+                      transaction.amount,
+                    )}
                   </TableCell>
                   <TableCell className="text-gray-600">
                     {formatDate(transaction.transaction_time)}
