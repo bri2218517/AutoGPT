@@ -7,11 +7,15 @@ from .model_normalize import normalize_model_for_transport
 
 
 def _make_cfg(**kwargs) -> ChatConfig:
-    return ChatConfig(
-        thinking_standard_model="anthropic/claude-sonnet-4-6",
-        thinking_advanced_model="anthropic/claude-opus-4-7",
-        **kwargs,
-    )
+    defaults: dict = {
+        "thinking_standard_model": "anthropic/claude-sonnet-4-6",
+        "thinking_advanced_model": "anthropic/claude-opus-4-7",
+        # Aux key satisfies ``_validate_aux_client_for_direct_main`` —
+        # these tests target normalize behavior, not the aux check.
+        "aux_api_key": "or-aux-key",
+    }
+    defaults.update(kwargs)
+    return ChatConfig(**defaults)
 
 
 class TestNormalizeModelForTransport:
