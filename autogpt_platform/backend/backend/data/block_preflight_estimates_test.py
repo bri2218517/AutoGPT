@@ -135,3 +135,28 @@ def test_non_object_root_disables_estimates(monkeypatch, tmp_path: Path):
     f.write_text("[1, 2, 3]")
     monkeypatch.setattr(bpe, "_ESTIMATES_PATH", f)
     assert bpe.get_preflight_estimate("anything") == 0
+
+
+def test_non_finite_mean_clamps_to_zero(monkeypatch, tmp_path: Path):
+    """Python's json.loads accepts non-spec NaN/Infinity; a hot-swapped or
+    corrupted JSON containing those would crash `int(round(...))`. Verify
+    they clamp to 0 instead — the docstring promises no JSON content can
+    crash a billing call site.
+    """
+    f = tmp_path / "estimates.json"
+    # Write the file directly with NaN/Infinity literals — Python's json.loads
+    # accepts these even though spec JSON forbids them.
+    f.write_text(
+        '{"version": 1, "estimates": {'
+        '"nan_block": {"block_name": "Bad", "cost_type": "SECOND",'
+        ' "samples": 10, "mean_credits": NaN},'
+        '"inf_block": {"block_name": "Bad", "cost_type": "SECOND",'
+        ' "samples": 10, "mean_credits": Infinity},'
+        '"neg_inf_block": {"block_name": "Bad", "cost_type": "SECOND",'
+        ' "samples": 10, "mean_credits": -Infinity}'
+        "}}"
+    )
+    monkeypatch.setattr(bpe, "_ESTIMATES_PATH", f)
+    assert bpe.get_preflight_estimate("nan_block") == 0
+    assert bpe.get_preflight_estimate("inf_block") == 0
+    assert bpe.get_preflight_estimate("neg_inf_block") == 0

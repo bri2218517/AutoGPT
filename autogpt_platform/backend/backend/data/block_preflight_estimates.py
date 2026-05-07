@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import TypedDict
 
@@ -89,6 +90,12 @@ def get_preflight_estimate(block_id: str) -> int:
     try:
         mean = float(raw_mean)
     except (TypeError, ValueError):
+        return 0
+    # Python's `json.loads` accepts non-spec `NaN`/`Infinity`, so a corrupt
+    # or hot-swapped JSON could land us with a non-finite mean — `int(round)`
+    # raises on those. Clamp to 0 to keep the docstring's promise that no
+    # JSON content can crash a billing call site.
+    if not math.isfinite(mean):
         return 0
     return max(0, int(round(mean)))
 
