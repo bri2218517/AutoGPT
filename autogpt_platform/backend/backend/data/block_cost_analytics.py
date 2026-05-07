@@ -125,15 +125,18 @@ async def compute_block_cost_estimates(
             # Skip blocks that don't have a dynamic cost type — their pre-flight
             # is already correct and shouldn't be overridden by a historical mean.
             continue
+        # The SQL guards against NULL aggregates (HAVING COUNT >= 1, exec_cost >= 0)
+        # but a single corrupt row could still surface as NULL — coerce defensively
+        # so a malformed row doesn't 500 the endpoint.
         out.append(
             BlockCostEstimateRow(
                 block_id=block_id,
                 block_name=r.get("block_name") or block_id,
                 cost_type=cost_type,
-                samples=int(r["samples"]),
-                mean_credits=int(r["mean_credits"]),
-                p50_credits=int(r["p50_credits"]),
-                p95_credits=int(r["p95_credits"]),
+                samples=int(r.get("samples") or 0),
+                mean_credits=int(r.get("mean_credits") or 0),
+                p50_credits=int(r.get("p50_credits") or 0),
+                p95_credits=int(r.get("p95_credits") or 0),
             )
         )
     return out
