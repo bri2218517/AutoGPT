@@ -274,7 +274,10 @@ async def charge_reconciled_usage(
                 metadata=reconcile_metadata,
             )
         # Refunds can't push the balance below the threshold — skip.
-        if delta > 0:
+        # Only fire user-level low-balance handling when NOT using org
+        # billing — otherwise the user's personal auto-top-up would trigger
+        # even though the deduction came from OrgBalance.
+        if delta > 0 and not org_id:
             # handle_low_balance is sync + does a blocking RPC; dispatch to
             # thread so we don't block the event loop. Rare path (threshold
             # crossings only).
