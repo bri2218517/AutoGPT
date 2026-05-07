@@ -1,4 +1,5 @@
 import logging
+import math
 import typing
 from datetime import datetime, timezone
 
@@ -81,10 +82,14 @@ async def get_block_cost_estimates(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # Ceil so a [00:00:00Z, 23:59:59.999Z] window — what the frontend sends for
+    # an inclusive 7-day pick — reports 7, not 6 (`.days` would truncate).
+    window_days = math.ceil((end - start).total_seconds() / 86400)
+
     return BlockCostEstimatesResponse(
         estimates=rows,
         total_rows=len(rows),
-        window_days=(end - start).days,
+        window_days=window_days,
         max_window_days=ANALYTICS_MAX_DAYS,
         min_samples=min_samples,
         generated_at=datetime.now(timezone.utc),
