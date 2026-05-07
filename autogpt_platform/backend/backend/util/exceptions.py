@@ -110,11 +110,13 @@ class InsufficientTierError(ValueError):
         user_id: str,
         current_tier: str,
         required_tier: str,
-        message: str = (
-            "This endpoint requires a paid subscription. "
-            "Upgrade to BASIC or higher to use the direct block-execute API."
-        ),
+        message: str | None = None,
     ):
+        if message is None:
+            message = (
+                "This endpoint requires a paid subscription. "
+                f"Upgrade to {required_tier} or higher to use this endpoint."
+            )
         super().__init__(message)
         self.args = (message, user_id, current_tier, required_tier)
         self.message = message

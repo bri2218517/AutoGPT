@@ -38,14 +38,18 @@ def setup_app_auth(mock_jwt_user, setup_test_user):
 
 @pytest.fixture(autouse=True)
 def default_paid_tier(mocker: pytest_mock.MockFixture):
-    """Default `get_user_tier` to BASIC so block-execute tests aren't
-    blocked by the NO_TIER gate. Tests that exercise the gate override
-    this with their own ``get_user_tier`` patch."""
+    """Default `get_user_tier` to BASIC + `ENABLE_PLATFORM_PAYMENT` ON
+    so block-execute tests run as if the tier gate is active. Tests
+    that exercise the gate override these with their own patches."""
     from prisma.enums import SubscriptionTier
 
     mocker.patch(
         "backend.copilot.rate_limit.get_user_tier",
         AsyncMock(return_value=SubscriptionTier.BASIC),
+    )
+    mocker.patch(
+        "backend.util.feature_flag.is_feature_enabled",
+        AsyncMock(return_value=True),
     )
 
 
@@ -352,6 +356,60 @@ def test_execute_graph_block_rejects_no_tier_user_with_403(
     cost_mock.assert_not_called()
     mock_credit_model.spend_credits.assert_not_awaited()
     mock_block.execute.assert_not_called()
+
+
+def test_no_tier_user_bypasses_gate_when_payment_flag_off(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """Beta cohort: when ENABLE_PLATFORM_PAYMENT is off for the user,
+    NO_TIER must NOT be gated — mirrors the existing flag-skip in
+    backend/copilot/rate_limit.py so beta testers and the e2e suite
+    keep working."""
+    from prisma.enums import SubscriptionTier
+
+    mock_block = Mock()
+    mock_block.disabled = False
+    mock_block.id = "paid-block"
+    mock_block.name = "PaidBlock"
+
+    async def mock_execute(*args, **kwargs):
+        yield "output", {"data": "ok"}
+
+    mock_block.execute = mock_execute
+
+    mocker.patch(
+        "backend.api.features.v1.get_block",
+        return_value=mock_block,
+    )
+    mock_user = Mock()
+    mock_user.timezone = "UTC"
+    mocker.patch(
+        "backend.api.features.v1.get_user_by_id",
+        return_value=mock_user,
+    )
+    tier_mock = AsyncMock(return_value=SubscriptionTier.NO_TIER)
+    mocker.patch("backend.copilot.rate_limit.get_user_tier", tier_mock)
+    mocker.patch(
+        "backend.util.feature_flag.is_feature_enabled",
+        AsyncMock(return_value=False),
+    )
+    mocker.patch(
+        "backend.executor.utils.block_usage_cost",
+        return_value=(42, {}),
+    )
+    mock_credit_model = mocker.AsyncMock()
+    mocker.patch(
+        "backend.executor.utils.get_user_credit_model",
+        return_value=mock_credit_model,
+    )
+
+    response = client.post(
+        "/blocks/paid-block/execute", json={"input_name": "x", "input_value": "y"}
+    )
+
+    assert response.status_code == 200
+    mock_credit_model.spend_credits.assert_awaited_once()
+    tier_mock.assert_not_awaited()
 
 
 def test_execute_graph_block_allows_basic_tier_user(

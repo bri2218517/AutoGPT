@@ -231,6 +231,11 @@ async def charge_for_direct_block_execution(
     programmatic block-execute. Tier check runs BEFORE
     ``block_usage_cost`` / ``spend_credits`` so we never charge a
     NO_TIER user just to refund them.
+
+    Skips the tier gate when ``ENABLE_PLATFORM_PAYMENT`` is off for
+    this user — beta cohort and e2e suite have unrestricted access by
+    convention; mirrors ``backend/copilot/rate_limit.py`` (search for
+    the same flag).
     """
     # Lazy import: ``backend.copilot.rate_limit`` imports execution
     # helpers at module scope, so a top-level import here would form a
@@ -239,14 +244,16 @@ async def charge_for_direct_block_execution(
     from prisma.enums import SubscriptionTier
 
     from backend.copilot.rate_limit import get_user_tier
+    from backend.util.feature_flag import Flag, is_feature_enabled
 
-    tier = await get_user_tier(user_id)
-    if tier == SubscriptionTier.NO_TIER:
-        raise InsufficientTierError(
-            user_id=user_id,
-            current_tier=tier.value,
-            required_tier=SubscriptionTier.BASIC.value,
-        )
+    if await is_feature_enabled(Flag.ENABLE_PLATFORM_PAYMENT, user_id):
+        tier = await get_user_tier(user_id)
+        if tier == SubscriptionTier.NO_TIER:
+            raise InsufficientTierError(
+                user_id=user_id,
+                current_tier=tier.value,
+                required_tier=SubscriptionTier.BASIC.value,
+            )
 
     cost, cost_filter = block_usage_cost(block, input_data)
     if cost <= 0:

@@ -35,14 +35,18 @@ def setup_auth(test_user_id):
 
 @pytest.fixture(autouse=True)
 def default_paid_tier(monkeypatch: pytest.MonkeyPatch):
-    """Default `get_user_tier` to BASIC so block-execute tests aren't
-    blocked by the NO_TIER gate. Tests that exercise the gate override
-    this with their own ``get_user_tier`` patch."""
+    """Default `get_user_tier` to BASIC + `ENABLE_PLATFORM_PAYMENT` ON
+    so block-execute tests run as if the tier gate is active. Tests
+    that exercise the gate override these with their own patches."""
     from prisma.enums import SubscriptionTier
 
     monkeypatch.setattr(
         "backend.copilot.rate_limit.get_user_tier",
         AsyncMock(return_value=SubscriptionTier.BASIC),
+    )
+    monkeypatch.setattr(
+        "backend.util.feature_flag.is_feature_enabled",
+        AsyncMock(return_value=True),
     )
 
 
@@ -191,6 +195,39 @@ def test_execute_graph_block_rejects_no_tier_user_with_403(
     assert "upgrade" in response.json()["detail"].lower()
     cost_mock.assert_not_called()
     spend_mock.assert_not_awaited()
+
+
+def test_no_tier_user_bypasses_gate_when_payment_flag_off(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Beta cohort: when ENABLE_PLATFORM_PAYMENT is off for the user,
+    NO_TIER must NOT be gated — mirrors the existing flag-skip in
+    backend/copilot/rate_limit.py so beta testers and the e2e suite
+    keep working."""
+    from prisma.enums import SubscriptionTier
+
+    block = _stub_block(name="PaidBlock")
+    monkeypatch.setattr("backend.blocks.get_block", lambda _: block)
+    tier_mock = AsyncMock(return_value=SubscriptionTier.NO_TIER)
+    monkeypatch.setattr("backend.copilot.rate_limit.get_user_tier", tier_mock)
+    monkeypatch.setattr(
+        "backend.util.feature_flag.is_feature_enabled",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        "backend.executor.utils.block_usage_cost", lambda *_a, **_k: (5, {})
+    )
+    spend_mock = AsyncMock(return_value=95)
+    monkeypatch.setattr(
+        "backend.executor.utils.get_user_credit_model",
+        AsyncMock(return_value=MagicMock(spend_credits=spend_mock)),
+    )
+
+    response = client.post(f"/blocks/{block.id}/execute", json={})
+
+    assert response.status_code == 200, f"got {response.status_code}: {response.text}"
+    spend_mock.assert_awaited_once()
+    tier_mock.assert_not_awaited()
 
 
 def test_execute_graph_block_allows_basic_tier_user(monkeypatch: pytest.MonkeyPatch):
