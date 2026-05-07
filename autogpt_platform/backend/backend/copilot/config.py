@@ -781,22 +781,22 @@ class ChatConfig(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_aux_client_for_direct_main(self) -> "ChatConfig":
-        """Fail at boot when direct-Anthropic main mode + non-Anthropic aux
-        models would land on a credential-less aux client.
+        """Fail at boot when direct-Anthropic main mode + non-Anthropic
+        ``title_model`` + no explicit aux creds would 401 every title call.
 
         Trip wire: ``use_openrouter=False`` (main routes to Anthropic),
-        ``aux_api_key`` unresolved (no ``CHAT_AUX_API_KEY`` /
-        ``OPEN_ROUTER_API_KEY`` env), and ``title_model`` /
-        ``simulation_model`` are non-Anthropic slugs.  Without explicit
-        OR creds the aux client would silently get
-        ``(None, https://openrouter.ai/api/v1)`` and 401 every title
-        call — a regression that's invisible until the first chat.
+        no ``CHAT_AUX_API_KEY``, no fallback ``api_key``, and
+        ``title_model`` is non-Anthropic.  Without explicit aux creds
+        the aux client would silently get a credential-less tuple and
+        401 every title call — a regression that's invisible until
+        the first chat.
 
         Skipped for subscription mode (the SDK CLI uses OAuth and the
-        aux flow is unaffected).  Skipped when an aux key resolves
-        from any of the supported envs.  Skipped when the aux models
-        are themselves Anthropic (then the fallback to direct creds is
-        fine — Anthropic serves its own models).
+        aux flow is unaffected).  Skipped when ``CHAT_AUX_API_KEY`` is
+        set (or when ``api_key`` is set and ``aux_uses_openrouter`` —
+        a single-key OR deployment).  Skipped when the title model is
+        Anthropic (then the fallback to direct creds is fine —
+        Anthropic serves its own model).
         """
         if self.use_claude_code_subscription:
             return self
@@ -841,11 +841,10 @@ class ChatConfig(BaseSettings):
         raise ValueError(
             f"Direct-Anthropic main mode (use_openrouter=False) "
             f"with non-Anthropic title_model={title!r} requires "
-            f"explicit OpenRouter credentials for the aux client. "
-            f"Set CHAT_AUX_API_KEY (or OPEN_ROUTER_API_KEY) so "
-            f"title generation keeps routing through OpenRouter, or "
-            f"override the title model to an ``anthropic/`` or "
-            f"``claude-`` slug."
+            f"explicit auxiliary credentials.  Set CHAT_AUX_API_KEY "
+            f"(and optionally CHAT_AUX_BASE_URL) so title generation "
+            f"routes through a non-Anthropic provider, or override "
+            f"CHAT_TITLE_MODEL to an ``anthropic/`` or ``claude-`` slug."
         )
 
     # Prompt paths for different contexts

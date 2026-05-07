@@ -2200,6 +2200,11 @@ async def stream_chat_completion_baseline(
             log_prefix="[Baseline]",
             cost_usd=state.cost_usd,
             model=active_model,
+            # Provider tracks the actual main transport so direct-Anthropic
+            # baseline turns land under ``provider="anthropic"`` instead of
+            # the helper's default ``"open_router"`` — required for the
+            # admin cost dashboard to attribute spend correctly.
+            provider="open_router" if config.openrouter_active else "anthropic",
         )
 
         # Persist structured tool-call history (assistant + tool messages)
