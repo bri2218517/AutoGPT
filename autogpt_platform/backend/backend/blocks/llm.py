@@ -1,6 +1,7 @@
 # This file contains a lot of prompt block strings that would trigger "line too long"
 # flake8: noqa: E501
 import logging
+import math
 import re
 import secrets
 from abc import ABC
@@ -13,6 +14,8 @@ import ollama
 import openai
 from anthropic.types import ToolParam
 from groq import AsyncGroq
+from openai.types.chat import ChatCompletion as OpenAIChatCompletion
+from openai.types.shared_params import ResponseFormatJSONObject
 from pydantic import BaseModel, SecretStr
 
 from backend.blocks._base import (
@@ -104,7 +107,6 @@ class LlmModelMeta(EnumMeta):
 
 
 class LlmModel(str, Enum, metaclass=LlmModelMeta):
-
     @classmethod
     def _missing_(cls, value: object) -> "LlmModel | None":
         """Handle provider-prefixed model names like 'anthropic/claude-sonnet-4-6'."""
@@ -141,6 +143,7 @@ class LlmModel(str, Enum, metaclass=LlmModelMeta):
     CLAUDE_4_5_SONNET = "claude-sonnet-4-5-20250929"
     CLAUDE_4_5_HAIKU = "claude-haiku-4-5-20251001"
     CLAUDE_4_6_OPUS = "claude-opus-4-6"
+    CLAUDE_4_7_OPUS = "claude-opus-4-7"
     CLAUDE_4_6_SONNET = "claude-sonnet-4-6"
     CLAUDE_3_HAIKU = "claude-3-haiku-20240307"
     # AI/ML API models
@@ -201,10 +204,29 @@ class LlmModel(str, Enum, metaclass=LlmModelMeta):
     GROK_4 = "x-ai/grok-4"
     GROK_4_FAST = "x-ai/grok-4-fast"
     GROK_4_1_FAST = "x-ai/grok-4.1-fast"
+    GROK_4_20 = "x-ai/grok-4.20"
+    GROK_4_20_MULTI_AGENT = "x-ai/grok-4.20-multi-agent"
     GROK_CODE_FAST_1 = "x-ai/grok-code-fast-1"
     KIMI_K2 = "moonshotai/kimi-k2"
+    KIMI_K2_0905 = "moonshotai/kimi-k2-0905"
+    KIMI_K2_5 = "moonshotai/kimi-k2.5"
+    KIMI_K2_6 = "moonshotai/kimi-k2.6"
+    KIMI_K2_THINKING = "moonshotai/kimi-k2-thinking"
     QWEN3_235B_A22B_THINKING = "qwen/qwen3-235b-a22b-thinking-2507"
     QWEN3_CODER = "qwen/qwen3-coder"
+    # Z.ai (Zhipu) models
+    ZAI_GLM_4_32B = "z-ai/glm-4-32b"
+    ZAI_GLM_4_5 = "z-ai/glm-4.5"
+    ZAI_GLM_4_5_AIR = "z-ai/glm-4.5-air"
+    ZAI_GLM_4_5_AIR_FREE = "z-ai/glm-4.5-air:free"
+    ZAI_GLM_4_5V = "z-ai/glm-4.5v"
+    ZAI_GLM_4_6 = "z-ai/glm-4.6"
+    ZAI_GLM_4_6V = "z-ai/glm-4.6v"
+    ZAI_GLM_4_7 = "z-ai/glm-4.7"
+    ZAI_GLM_4_7_FLASH = "z-ai/glm-4.7-flash"
+    ZAI_GLM_5 = "z-ai/glm-5"
+    ZAI_GLM_5_TURBO = "z-ai/glm-5-turbo"
+    ZAI_GLM_5V_TURBO = "z-ai/glm-5v-turbo"
     # Llama API models
     LLAMA_API_LLAMA_4_SCOUT = "Llama-4-Scout-17B-16E-Instruct-FP8"
     LLAMA_API_LLAMA4_MAVERICK = "Llama-4-Maverick-17B-128E-Instruct-FP8"
@@ -311,6 +333,9 @@ MODEL_METADATA = {
     LlmModel.CLAUDE_4_6_OPUS: ModelMetadata(
         "anthropic", 200000, 128000, "Claude Opus 4.6", "Anthropic", "Anthropic", 3
     ),  # claude-opus-4-6
+    LlmModel.CLAUDE_4_7_OPUS: ModelMetadata(
+        "anthropic", 200000, 128000, "Claude Opus 4.7", "Anthropic", "Anthropic", 3
+    ),  # claude-opus-4-7
     LlmModel.CLAUDE_4_6_SONNET: ModelMetadata(
         "anthropic", 200000, 64000, "Claude Sonnet 4.6", "Anthropic", "Anthropic", 3
     ),  # claude-sonnet-4-6
@@ -612,11 +637,41 @@ MODEL_METADATA = {
     LlmModel.GROK_4_1_FAST: ModelMetadata(
         "open_router", 2000000, 30000, "Grok 4.1 Fast", "OpenRouter", "xAI", 1
     ),
+    LlmModel.GROK_4_20: ModelMetadata(
+        "open_router", 2000000, 100000, "Grok 4.20", "OpenRouter", "xAI", 3
+    ),
+    LlmModel.GROK_4_20_MULTI_AGENT: ModelMetadata(
+        "open_router",
+        2000000,
+        100000,
+        "Grok 4.20 Multi-Agent",
+        "OpenRouter",
+        "xAI",
+        3,
+    ),
     LlmModel.GROK_CODE_FAST_1: ModelMetadata(
         "open_router", 256000, 10000, "Grok Code Fast 1", "OpenRouter", "xAI", 1
     ),
     LlmModel.KIMI_K2: ModelMetadata(
         "open_router", 131000, 131000, "Kimi K2", "OpenRouter", "Moonshot AI", 1
+    ),
+    LlmModel.KIMI_K2_0905: ModelMetadata(
+        "open_router", 262144, 262144, "Kimi K2 0905", "OpenRouter", "Moonshot AI", 1
+    ),
+    LlmModel.KIMI_K2_5: ModelMetadata(
+        "open_router", 262144, 262144, "Kimi K2.5", "OpenRouter", "Moonshot AI", 1
+    ),
+    LlmModel.KIMI_K2_6: ModelMetadata(
+        "open_router", 262144, 262144, "Kimi K2.6", "OpenRouter", "Moonshot AI", 2
+    ),
+    LlmModel.KIMI_K2_THINKING: ModelMetadata(
+        "open_router",
+        262144,
+        262144,
+        "Kimi K2 Thinking",
+        "OpenRouter",
+        "Moonshot AI",
+        2,
     ),
     LlmModel.QWEN3_235B_A22B_THINKING: ModelMetadata(
         "open_router",
@@ -629,6 +684,43 @@ MODEL_METADATA = {
     ),
     LlmModel.QWEN3_CODER: ModelMetadata(
         "open_router", 262144, 262144, "Qwen 3 Coder", "OpenRouter", "Qwen", 3
+    ),
+    # https://openrouter.ai/models?q=z-ai
+    LlmModel.ZAI_GLM_4_32B: ModelMetadata(
+        "open_router", 128000, 128000, "GLM 4 32B", "OpenRouter", "Z.ai", 1
+    ),
+    LlmModel.ZAI_GLM_4_5: ModelMetadata(
+        "open_router", 131072, 98304, "GLM 4.5", "OpenRouter", "Z.ai", 2
+    ),
+    LlmModel.ZAI_GLM_4_5_AIR: ModelMetadata(
+        "open_router", 131072, 98304, "GLM 4.5 Air", "OpenRouter", "Z.ai", 1
+    ),
+    LlmModel.ZAI_GLM_4_5_AIR_FREE: ModelMetadata(
+        "open_router", 131072, 96000, "GLM 4.5 Air (Free)", "OpenRouter", "Z.ai", 1
+    ),
+    LlmModel.ZAI_GLM_4_5V: ModelMetadata(
+        "open_router", 65536, 16384, "GLM 4.5V", "OpenRouter", "Z.ai", 2
+    ),
+    LlmModel.ZAI_GLM_4_6: ModelMetadata(
+        "open_router", 204800, 204800, "GLM 4.6", "OpenRouter", "Z.ai", 1
+    ),
+    LlmModel.ZAI_GLM_4_6V: ModelMetadata(
+        "open_router", 131072, 131072, "GLM 4.6V", "OpenRouter", "Z.ai", 1
+    ),
+    LlmModel.ZAI_GLM_4_7: ModelMetadata(
+        "open_router", 202752, 65535, "GLM 4.7", "OpenRouter", "Z.ai", 1
+    ),
+    LlmModel.ZAI_GLM_4_7_FLASH: ModelMetadata(
+        "open_router", 202752, 202752, "GLM 4.7 Flash", "OpenRouter", "Z.ai", 1
+    ),
+    LlmModel.ZAI_GLM_5: ModelMetadata(
+        "open_router", 80000, 80000, "GLM 5", "OpenRouter", "Z.ai", 2
+    ),
+    LlmModel.ZAI_GLM_5_TURBO: ModelMetadata(
+        "open_router", 202752, 131072, "GLM 5 Turbo", "OpenRouter", "Z.ai", 3
+    ),
+    LlmModel.ZAI_GLM_5V_TURBO: ModelMetadata(
+        "open_router", 202752, 131072, "GLM 5V Turbo", "OpenRouter", "Z.ai", 3
     ),
     # Llama API models
     LlmModel.LLAMA_API_LLAMA_4_SCOUT: ModelMetadata(
@@ -686,17 +778,20 @@ class LLMResponse(BaseModel):
     tool_calls: Optional[List[ToolContentBlock]] | None
     prompt_tokens: int
     completion_tokens: int
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
     reasoning: Optional[str] = None
+    provider_cost: float | None = None
 
 
 def convert_openai_tool_fmt_to_anthropic(
     openai_tools: list[dict] | None = None,
-) -> Iterable[ToolParam] | anthropic.Omit:
+) -> Iterable[ToolParam] | anthropic.NotGiven:
     """
     Convert OpenAI tool format to Anthropic tool format.
     """
     if not openai_tools or len(openai_tools) == 0:
-        return anthropic.omit
+        return anthropic.NOT_GIVEN
 
     anthropic_tools = []
     for tool in openai_tools:
@@ -719,6 +814,32 @@ def convert_openai_tool_fmt_to_anthropic(
         anthropic_tools.append(anthropic_tool)
 
     return anthropic_tools
+
+
+def extract_openrouter_cost(response: OpenAIChatCompletion) -> float | None:
+    """Extract OpenRouter's per-request USD cost from a chat-completion response.
+
+    OpenRouter populates a ``cost`` field on the standard ``usage`` object (a
+    USD float) when the request body includes ``usage: {"include": True}``.
+    The OpenAI SDK's typed ``CompletionUsage`` does not declare it, so we read
+    it off ``model_extra`` (pydantic v2's typed extras container) — no
+    ``getattr``. Mirrors backend/executor/simulator.py::_extract_cost_usd —
+    keep the two aligned.
+    """
+    usage = response.usage
+    if usage is None:
+        return None
+    extras = usage.model_extra or {}
+    cost = extras.get("cost")
+    if cost is None:
+        return None
+    try:
+        cost_f = float(cost)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(cost_f) or cost_f < 0:
+        return None
+    return cost_f
 
 
 def extract_openai_reasoning(response) -> str | None:
@@ -802,6 +923,21 @@ async def llm_call(
     """
     provider = llm_model.metadata.provider
     context_window = llm_model.context_window
+
+    # Transparent OpenRouter routing for Anthropic models: when an OpenRouter
+    # API key is configured, route direct-Anthropic models through OpenRouter
+    # instead. This gives us per-request USD cost for free, so provider_cost
+    # is populated without manual token-rate arithmetic.
+    or_key = settings.secrets.open_router_api_key
+    or_model_id: str | None = None
+    if provider == "anthropic" and or_key:
+        provider = "open_router"
+        credentials = APIKeyCredentials(
+            provider=ProviderName.OPEN_ROUTER,
+            title="OpenRouter (auto)",
+            api_key=SecretStr(or_key),
+        )
+        or_model_id = f"anthropic/{llm_model.value}"
 
     if compress_prompt_to_fit:
         result = await compress_context(
@@ -888,8 +1024,12 @@ async def llm_call(
             reasoning=reasoning,
         )
     elif provider == "anthropic":
-
         an_tools = convert_openai_tool_fmt_to_anthropic(tools)
+        # Cache tool definitions alongside the system prompt.
+        # Placing cache_control on the last tool caches all tool schemas as a
+        # single prefix — reads cost 10% of normal input tokens.
+        if isinstance(an_tools, list) and an_tools:
+            an_tools[-1] = {**an_tools[-1], "cache_control": {"type": "ephemeral"}}
 
         system_messages = [p["content"] for p in prompt if p["role"] == "system"]
         sysprompt = " ".join(system_messages)
@@ -912,14 +1052,34 @@ async def llm_call(
         client = anthropic.AsyncAnthropic(
             api_key=credentials.api_key.get_secret_value()
         )
-        resp = await client.messages.create(
+        # create_kwargs is built as a plain dict so we can conditionally add
+        # the `system` field only when the prompt is non-empty.  Anthropic's
+        # API rejects empty text blocks (returns HTTP 400), so omitting the
+        # field is the correct behaviour for whitespace-only prompts.
+        create_kwargs: dict[str, Any] = dict(
             model=llm_model.value,
-            system=sysprompt,
             messages=messages,
             max_tokens=max_tokens,
+            # `an_tools` may be anthropic.NOT_GIVEN when no tools were
+            # configured. The SDK treats NOT_GIVEN as a sentinel meaning "omit
+            # this field from the serialized request", so passing it here is
+            # equivalent to not including the key at all — no `tools` field is
+            # sent to the API in that case.
             tools=an_tools,
             timeout=600,
         )
+        if sysprompt.strip():
+            # Wrap the system prompt in a single cacheable text block.
+            # The guard intentionally omits `system` for whitespace-only
+            # prompts — Anthropic rejects empty text blocks with HTTP 400.
+            create_kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": sysprompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        resp = await client.messages.create(**create_kwargs)
 
         if not resp.content:
             raise ValueError("No content returned from Anthropic.")
@@ -964,6 +1124,11 @@ async def llm_call(
             tool_calls=tool_calls,
             prompt_tokens=resp.usage.input_tokens,
             completion_tokens=resp.usage.output_tokens,
+            cache_read_tokens=getattr(resp.usage, "cache_read_input_tokens", None) or 0,
+            cache_creation_tokens=getattr(
+                resp.usage, "cache_creation_input_tokens", None
+            )
+            or 0,
             reasoning=reasoning,
         )
     elif provider == "groq":
@@ -1032,11 +1197,19 @@ async def llm_call(
                 "HTTP-Referer": "https://agpt.co",
                 "X-Title": "AutoGPT",
             },
-            model=llm_model.value,
+            # Ask OpenRouter to include the per-request USD cost on the usage
+            # object. Same shape used by simulator.py — keep aligned.
+            extra_body={"usage": {"include": True}},
+            model=or_model_id or llm_model.value,
             messages=prompt,  # type: ignore
             max_tokens=max_tokens,
             tools=tools_param,  # type: ignore
             parallel_tool_calls=parallel_tool_calls_param,
+            response_format=(
+                ResponseFormatJSONObject(type="json_object")
+                if force_json_output
+                else openai.omit
+            ),
         )
 
         if not response.choices:
@@ -1053,6 +1226,7 @@ async def llm_call(
             prompt_tokens=response.usage.prompt_tokens if response.usage else 0,
             completion_tokens=response.usage.completion_tokens if response.usage else 0,
             reasoning=reasoning,
+            provider_cost=extract_openrouter_cost(response),
         )
     elif provider == "llama_api":
         tools_param = tools if tools else openai.NOT_GIVEN
@@ -1360,6 +1534,7 @@ class AIStructuredResponseGeneratorBlock(AIBlockBase):
 
         error_feedback_message = ""
         llm_model = input_data.model
+        total_provider_cost: float | None = None
 
         for retry_count in range(input_data.retry):
             logger.debug(f"LLM request: {prompt}")
@@ -1377,12 +1552,19 @@ class AIStructuredResponseGeneratorBlock(AIBlockBase):
                     max_tokens=input_data.max_tokens,
                 )
                 response_text = llm_response.response
-                self.merge_stats(
-                    NodeExecutionStats(
-                        input_token_count=llm_response.prompt_tokens,
-                        output_token_count=llm_response.completion_tokens,
-                    )
+                # Accumulate token counts and provider_cost for every attempt
+                # (each call costs tokens and USD, regardless of validation outcome).
+                token_stats = NodeExecutionStats(
+                    input_token_count=llm_response.prompt_tokens,
+                    output_token_count=llm_response.completion_tokens,
+                    cache_read_token_count=llm_response.cache_read_tokens,
+                    cache_creation_token_count=llm_response.cache_creation_tokens,
                 )
+                self.merge_stats(token_stats)
+                if llm_response.provider_cost is not None:
+                    total_provider_cost = (
+                        total_provider_cost or 0.0
+                    ) + llm_response.provider_cost
                 logger.debug(f"LLM attempt-{retry_count} response: {response_text}")
 
                 if input_data.expected_format:
@@ -1451,6 +1633,12 @@ class AIStructuredResponseGeneratorBlock(AIBlockBase):
                             NodeExecutionStats(
                                 llm_call_count=retry_count + 1,
                                 llm_retry_count=retry_count,
+                                provider_cost=total_provider_cost,
+                                provider_cost_type=(
+                                    "cost_usd"
+                                    if total_provider_cost is not None
+                                    else None
+                                ),
                             )
                         )
                         yield "response", response_obj
@@ -1471,6 +1659,10 @@ class AIStructuredResponseGeneratorBlock(AIBlockBase):
                         NodeExecutionStats(
                             llm_call_count=retry_count + 1,
                             llm_retry_count=retry_count,
+                            provider_cost=total_provider_cost,
+                            provider_cost_type=(
+                                "cost_usd" if total_provider_cost is not None else None
+                            ),
                         )
                     )
                     yield "response", {"response": response_text}
@@ -1502,6 +1694,15 @@ class AIStructuredResponseGeneratorBlock(AIBlockBase):
 
                 error_feedback_message = f"Error calling LLM: {e}"
 
+        # All retries exhausted or user-error break: persist accumulated cost so
+        # the executor can still charge/report the spend even on failure.
+        if total_provider_cost is not None:
+            self.merge_stats(
+                NodeExecutionStats(
+                    provider_cost=total_provider_cost,
+                    provider_cost_type="cost_usd",
+                )
+            )
         raise RuntimeError(error_feedback_message)
 
     def response_format_instructions(
