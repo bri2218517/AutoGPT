@@ -41,11 +41,19 @@ export function useBlockCostEstimates() {
     try {
       const startIso = dateInputToUtcIso(start);
       const endIso = dateInputToUtcIsoEnd(end);
-      if (!startIso || !endIso) return;
+      if (!startIso || !endIso) {
+        toast({
+          title: "Invalid date range",
+          description: "Could not parse the selected start/end as UTC.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const safeMinSamples = Math.max(1, Math.floor(Number(minSamples) || 1));
       const response = await getV2ExportBlockCostEstimates({
         start: startIso as unknown as Date,
         end: endIso as unknown as Date,
-        min_samples: minSamples,
+        min_samples: safeMinSamples,
       });
       const payload = okData(response);
       if (!payload) {

@@ -108,10 +108,20 @@ async def test_dynamic_cost_blocks_returned_with_resolved_type():
 
 
 @pytest.mark.asyncio
+async def test_window_cap_catches_fractional_overflow():
+    """A window of 90 days + 1 hour must trip the cap — the older `.days`
+    check truncated and silently let the over-cap window through."""
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=ANALYTICS_MAX_DAYS, hours=1)
+    with pytest.raises(ValueError, match="exceeds max"):
+        await compute_block_cost_estimates(start=start, end=end)
+
+
+@pytest.mark.asyncio
 async def test_block_name_falls_back_to_block_id_when_metadata_missing():
     """Old USAGE rows may not have populated metadata->>'block', leading the
-    raw SQL to return a NULL block_name. Verify we fall back to the resolved
-    block class name rather than emitting `null`."""
+    raw SQL to return a NULL block_name. Verify we fall back to block_id
+    rather than emitting `null`."""
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=7)
 
@@ -140,5 +150,7 @@ async def test_block_name_falls_back_to_block_id_when_metadata_missing():
         out = await compute_block_cost_estimates(start=start, end=end)
 
     assert len(out) == 1
-    # Falls back to block_id when block_name is null in the historical row.
+    # Falls back to block_id when block_name is null in the historical row
+    # (not the block class name — the resolver isn't called here because the
+    # row already supplied a block_id; we just want a non-null label).
     assert out[0].block_name == "dyn-1"

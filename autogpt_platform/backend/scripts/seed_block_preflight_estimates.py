@@ -28,6 +28,8 @@ ESTIMATES_PATH = REPO_BACKEND / "backend" / "data" / "block_preflight_estimates.
 
 
 async def main(days: int, min_samples: int, write: bool) -> None:
+    if days <= 0:
+        raise SystemExit("--days must be a positive integer")
     if not os.environ.get("DATABASE_URL"):
         raise SystemExit("DATABASE_URL must be set")
 
@@ -70,7 +72,7 @@ async def main(days: int, min_samples: int, write: bool) -> None:
     )
 
     if write:
-        ESTIMATES_PATH.write_text(serialised)
+        ESTIMATES_PATH.write_text(serialised, encoding="utf-8")
         print(f"Wrote {ESTIMATES_PATH}")
     else:
         print(serialised)

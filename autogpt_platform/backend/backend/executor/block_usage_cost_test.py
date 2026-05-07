@@ -31,6 +31,20 @@ from backend.integrations.credentials_store import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_preflight_estimate(monkeypatch):
+    """Force `get_preflight_estimate` to return 0 in this module's tests so
+    they don't accidentally couple to a populated
+    `block_preflight_estimates.json` once the admin export tool seeds it.
+    Tests that want a non-zero estimate (e.g.
+    `test_preflight_uses_historical_estimate_for_dynamic_cost_types`) override
+    this themselves on `executor_utils.get_preflight_estimate`.
+    """
+    from backend.executor import utils as executor_utils
+
+    monkeypatch.setattr(executor_utils, "get_preflight_estimate", lambda _bid: 0)
+
+
 @pytest.fixture
 def tmp_block_costs_override(monkeypatch):
     """Swap out BLOCK_COSTS[SearchTheWebBlock] for the duration of a test."""

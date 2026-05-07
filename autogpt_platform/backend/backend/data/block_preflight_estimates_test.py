@@ -47,7 +47,12 @@ def test_returns_estimate_for_known_block(monkeypatch, tmp_path: Path):
     assert bpe.get_preflight_estimate("block-2") == 0
 
 
-def test_cache_does_not_re_read_file(monkeypatch, tmp_path: Path):
+def test_cache_refreshes_on_file_mtime_change(monkeypatch, tmp_path: Path):
+    """Hot-swapping the JSON on a running pod must be picked up on the next
+    call, without a process restart — keyed on file mtime."""
+    import os
+    import time
+
     f = tmp_path / "estimates.json"
     f.write_text(
         json.dumps(
@@ -66,22 +71,67 @@ def test_cache_does_not_re_read_file(monkeypatch, tmp_path: Path):
     )
     monkeypatch.setattr(bpe, "_ESTIMATES_PATH", f)
     assert bpe.get_preflight_estimate("block-1") == 7
-    # Mutate the file; cached value should win until reset.
+
+    # Rewrite with a newer mtime — cache must refresh on the next call.
+    new_payload = {
+        "version": 1,
+        "estimates": {
+            "block-1": {
+                "block_name": "FooBlock",
+                "cost_type": "SECOND",
+                "samples": 50,
+                "mean_credits": 999,
+            }
+        },
+    }
+    f.write_text(json.dumps(new_payload))
+    # Bump mtime to guarantee the stat-based cache key invalidates even on
+    # filesystems with second-resolution mtime.
+    later = time.time() + 1
+    os.utime(f, (later, later))
+
+    assert bpe.get_preflight_estimate("block-1") == 999
+
+
+def test_negative_or_non_numeric_mean_clamps_to_zero(monkeypatch, tmp_path: Path):
+    """Corrupt entries must never produce negative billing pre-flight."""
+    f = tmp_path / "estimates.json"
     f.write_text(
         json.dumps(
             {
                 "version": 1,
                 "estimates": {
-                    "block-1": {
-                        "block_name": "FooBlock",
+                    "negative": {
+                        "block_name": "Bad",
                         "cost_type": "SECOND",
-                        "samples": 50,
-                        "mean_credits": 999,
-                    }
+                        "samples": 10,
+                        "mean_credits": -42,
+                    },
+                    "non_numeric": {
+                        "block_name": "Bad",
+                        "cost_type": "SECOND",
+                        "samples": 10,
+                        "mean_credits": "oops",
+                    },
+                    "fractional": {
+                        "block_name": "Ok",
+                        "cost_type": "SECOND",
+                        "samples": 10,
+                        "mean_credits": 2.6,
+                    },
                 },
             }
         )
     )
-    assert bpe.get_preflight_estimate("block-1") == 7
-    bpe.reset_cache()
-    assert bpe.get_preflight_estimate("block-1") == 999
+    monkeypatch.setattr(bpe, "_ESTIMATES_PATH", f)
+    assert bpe.get_preflight_estimate("negative") == 0
+    assert bpe.get_preflight_estimate("non_numeric") == 0
+    # Round, don't truncate — 2.6 → 3.
+    assert bpe.get_preflight_estimate("fractional") == 3
+
+
+def test_non_object_root_disables_estimates(monkeypatch, tmp_path: Path):
+    f = tmp_path / "estimates.json"
+    f.write_text("[1, 2, 3]")
+    monkeypatch.setattr(bpe, "_ESTIMATES_PATH", f)
+    assert bpe.get_preflight_estimate("anything") == 0

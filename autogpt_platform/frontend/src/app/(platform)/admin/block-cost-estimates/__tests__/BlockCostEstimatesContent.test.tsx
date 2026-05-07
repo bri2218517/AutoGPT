@@ -49,14 +49,6 @@ const sampleResponse = {
     max_window_days: 90,
     min_samples: 10,
     generated_at: "2026-05-07T13:00:00.000Z",
-    estimates_json: {
-      "blk-1": {
-        block_name: "SearchTheWebBlock",
-        cost_type: "second",
-        samples: 200,
-        mean_credits: 7,
-      },
-    },
   },
 };
 

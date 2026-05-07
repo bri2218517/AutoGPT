@@ -10247,14 +10247,6 @@
             "type": "string",
             "format": "date-time",
             "title": "Generated At"
-          },
-          "estimates_json": {
-            "additionalProperties": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "object",
-            "title": "Estimates Json"
           }
         },
         "type": "object",
@@ -10264,8 +10256,7 @@
           "window_days",
           "max_window_days",
           "min_samples",
-          "generated_at",
-          "estimates_json"
+          "generated_at"
         ],
         "title": "BlockCostEstimatesResponse"
       },

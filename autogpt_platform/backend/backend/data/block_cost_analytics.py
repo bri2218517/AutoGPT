@@ -7,7 +7,7 @@ reconciliation only settles a small delta.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from pydantic import BaseModel
@@ -67,13 +67,19 @@ async def compute_block_cost_estimates(
     deltas as one cost), then averages across executions per block. Filters to
     blocks whose current cost type is dynamic — static-cost blocks already
     charge correctly pre-flight and don't need an estimate.
+
+    User-ID exemption: this query intentionally aggregates across users — the
+    purpose is platform-wide cost calibration, not per-user data access. Per
+    AGENTS.md the caller must enforce admin-only auth (the only caller is the
+    admin route, which is gated by `requires_admin_user`).
     """
-    if (end - start).days > ANALYTICS_MAX_DAYS:
-        raise ValueError(
-            f"window {(end - start).days}d exceeds max {ANALYTICS_MAX_DAYS}d"
-        )
     if start >= end:
         raise ValueError("start must be before end")
+    # Use total_seconds rather than `.days` so a 90d-and-1-hour window doesn't
+    # slip past the cap because `.days` truncates fractional days.
+    if (end - start) > timedelta(days=ANALYTICS_MAX_DAYS):
+        approx_days = (end - start).total_seconds() / 86400
+        raise ValueError(f"window {approx_days:.2f}d exceeds max {ANALYTICS_MAX_DAYS}d")
 
     query = """
     WITH per_exec AS (
@@ -99,7 +105,10 @@ async def compute_block_cost_estimates(
       ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY exec_cost))::int AS p50_credits,
       ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY exec_cost))::int AS p95_credits
     FROM per_exec
-    WHERE exec_cost > 0
+    -- Keep zero-cost executions (post-flight refund cancelled the pre-flight
+    -- estimate) so the historical mean reflects the full distribution. Drop
+    -- only over-refunded outliers, which are net-negative on the user side.
+    WHERE exec_cost >= 0
     GROUP BY block_id
     HAVING COUNT(*) >= $3
     ORDER BY samples DESC

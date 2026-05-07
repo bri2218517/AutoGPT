@@ -11,8 +11,10 @@ export function dateInputToUtcIsoEnd(input: string): string | null {
 }
 
 export function defaultStartDate(): string {
+  // 6 days back so the inclusive [start, end] window covers exactly 7
+  // calendar days when end is today.
   const d = new Date();
-  d.setUTCDate(d.getUTCDate() - 7);
+  d.setUTCDate(d.getUTCDate() - 6);
   return d.toISOString().slice(0, 10);
 }
 

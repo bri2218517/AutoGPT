@@ -27,21 +27,50 @@ class BlockPreflightEstimate(TypedDict):
 
 
 _cache: dict[str, BlockPreflightEstimate] | None = None
+_cache_mtime_ns: int | None = None
 
 
 def _load() -> dict[str, BlockPreflightEstimate]:
-    global _cache
-    if _cache is not None:
-        return _cache
+    """Return the estimates dict, refreshing if the JSON file has changed.
+
+    The cache is keyed on the file's `mtime_ns` so a hot-swapped JSON (mounted
+    config, manual edit on a long-running pod) is picked up on the next call
+    without requiring a process restart. The fast path — file unchanged — is a
+    single `stat()`.
+    """
+    global _cache, _cache_mtime_ns
     try:
-        raw = json.loads(_ESTIMATES_PATH.read_text())
-        loaded: dict[str, BlockPreflightEstimate] = raw.get("estimates", {}) or {}
-    except (FileNotFoundError, json.JSONDecodeError):
+        current_mtime = _ESTIMATES_PATH.stat().st_mtime_ns
+    except OSError:
+        # File missing or inaccessible — keep whatever's cached; if nothing
+        # has ever loaded, return empty.
+        return _cache if _cache is not None else {}
+
+    if _cache is not None and _cache_mtime_ns == current_mtime:
+        return _cache
+
+    try:
+        raw = json.loads(_ESTIMATES_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
         logger.exception(
-            "Failed to load %s; preflight estimates disabled", _ESTIMATES_PATH
+            "Failed to load %s; preflight estimates disabled",
+            _ESTIMATES_PATH.name,
         )
-        loaded = {}
+        loaded: dict[str, BlockPreflightEstimate] = {}
+    else:
+        if not isinstance(raw, dict):
+            logger.error(
+                "Invalid estimates JSON root in %s (expected object); "
+                "preflight estimates disabled",
+                _ESTIMATES_PATH.name,
+            )
+            loaded = {}
+        else:
+            estimates = raw.get("estimates", {}) or {}
+            loaded = estimates if isinstance(estimates, dict) else {}
+
     _cache = loaded
+    _cache_mtime_ns = current_mtime
     return loaded
 
 
@@ -49,16 +78,23 @@ def get_preflight_estimate(block_id: str) -> int:
     """Return the historical-average preflight cost for a block in credits.
 
     Returns 0 when no estimate is available (unseen block, low sample count,
-    or file missing) so the caller falls back to the existing 0-preflight
-    behaviour.
+    file missing, or malformed entry) so the caller falls back to the
+    existing 0-preflight behaviour. Negative or non-numeric `mean_credits`
+    are clamped to 0 — billing must never go negative on a corrupt entry.
     """
     entry = _load().get(block_id)
     if not entry:
         return 0
-    return int(entry.get("mean_credits", 0))
+    raw_mean = entry.get("mean_credits", 0)
+    try:
+        mean = float(raw_mean)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, int(round(mean)))
 
 
 def reset_cache() -> None:
     """Test-only: drop the in-memory cache so a freshly-written JSON re-loads."""
-    global _cache
+    global _cache, _cache_mtime_ns
     _cache = None
+    _cache_mtime_ns = None

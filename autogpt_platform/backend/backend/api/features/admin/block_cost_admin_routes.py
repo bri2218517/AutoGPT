@@ -29,9 +29,6 @@ class BlockCostEstimatesResponse(BaseModel):
     max_window_days: int
     min_samples: int
     generated_at: datetime
-    # JSON snippet ready to paste into block_preflight_estimates.json. Lets the
-    # admin export skip a frontend transform step.
-    estimates_json: dict[str, dict[str, typing.Any]]
 
 
 @router.get(
@@ -81,16 +78,6 @@ async def get_block_cost_estimates(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    estimates_json: dict[str, dict[str, typing.Any]] = {
-        r.block_id: {
-            "block_name": r.block_name,
-            "cost_type": r.cost_type,
-            "samples": r.samples,
-            "mean_credits": r.mean_credits,
-        }
-        for r in rows
-    }
-
     return BlockCostEstimatesResponse(
         estimates=rows,
         total_rows=len(rows),
@@ -98,5 +85,4 @@ async def get_block_cost_estimates(
         max_window_days=ANALYTICS_MAX_DAYS,
         min_samples=min_samples,
         generated_at=datetime.now(timezone.utc),
-        estimates_json=estimates_json,
     )
