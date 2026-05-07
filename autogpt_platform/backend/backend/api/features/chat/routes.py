@@ -464,9 +464,7 @@ async def delete_session(
     Raises:
         HTTPException: 404 if session not found or not owned by user.
     """
-    deleted = await delete_chat_session(
-        session_id, user_id, organization_id=ctx.org_id
-    )
+    deleted = await delete_chat_session(session_id, user_id, organization_id=ctx.org_id)
 
     if not deleted:
         raise HTTPException(
@@ -568,7 +566,10 @@ async def get_session(
     When no pagination params are provided, returns the most recent messages.
     """
     page = await get_chat_messages_paginated(
-        session_id, limit, before_sequence, user_id=user_id,
+        session_id,
+        limit,
+        before_sequence,
+        user_id=user_id,
         organization_id=ctx.org_id,
     )
     if page is None:

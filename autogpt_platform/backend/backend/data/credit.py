@@ -94,7 +94,9 @@ class InvoiceListItem(BaseModel):
 
 class UserCreditBase(ABC):
     @abstractmethod
-    async def get_credits(self, user_id: str, organization_id: str | None = None) -> int:
+    async def get_credits(
+        self, user_id: str, organization_id: str | None = None
+    ) -> int:
         """
         Get the current credits for the user.
 
@@ -159,7 +161,9 @@ class UserCreditBase(ABC):
         pass
 
     @abstractmethod
-    async def top_up_credits(self, user_id: str, amount: int, organization_id: str | None = None):
+    async def top_up_credits(
+        self, user_id: str, amount: int, organization_id: str | None = None
+    ):
         """
         Top up the credits for the user.
 
@@ -1155,7 +1159,9 @@ class UserCredit(UserCreditBase):
                 metadata=SafeJson(checkout_session),
             )
 
-    async def get_credits(self, user_id: str, organization_id: str | None = None) -> int:
+    async def get_credits(
+        self, user_id: str, organization_id: str | None = None
+    ) -> int:
         balance, _ = await self._get_credits(user_id)
         return balance
 
@@ -1289,8 +1295,6 @@ class UserCredit(UserCreditBase):
         ]
 
 
-
-
 class DisabledUserCredit(UserCreditBase):
     async def get_credits(self, *args, **kwargs) -> int:
         return 100
@@ -1339,6 +1343,24 @@ async def get_user_credit_model(user_id: str) -> UserCreditBase:
     _ = user_id
     if not settings.config.enable_credit:
         return DisabledUserCredit()
+    return UserCredit()
+
+
+async def get_credit_model(
+    user_id: str, organization_id: str | None = None
+) -> UserCreditBase:
+    """Return the appropriate credit model based on context.
+
+    When an ``organization_id`` is supplied, billing operations are routed
+    to the org-level credit tables via ``OrgCreditModel``.  Otherwise falls
+    back to the standard per-user credit model.
+    """
+    if not settings.config.enable_credit:
+        return DisabledUserCredit()
+    if organization_id:
+        from backend.data.org_credit import OrgCreditModel
+
+        return OrgCreditModel(organization_id)
     return UserCredit()
 
 

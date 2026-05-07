@@ -61,11 +61,11 @@ from backend.data.credit import (
     create_subscription_checkout,
     get_active_subscription_period_end,
     get_auto_top_up,
+    get_credit_model,
     get_pending_subscription_change,
     get_proration_credit_cents,
     get_subscription_price_id,
     get_user_billing_cycle,
-    get_user_credit_model,
     handle_subscription_payment_failure,
     handle_subscription_payment_success,
     modify_stripe_subscription_for_tier,
@@ -599,8 +599,8 @@ async def get_user_credits(
     user_id: Annotated[str, Security(get_user_id)],
     ctx: Annotated[RequestContext, Security(get_request_context)],
 ) -> dict[str, int]:
-    user_credit_model = await get_user_credit_model(user_id)
-    return {"credits": await user_credit_model.get_credits(user_id)}
+    credit_model = await get_credit_model(user_id, ctx.org_id)
+    return {"credits": await credit_model.get_credits(user_id)}
 
 
 @v1_router.post(
@@ -614,8 +614,8 @@ async def request_top_up(
     user_id: Annotated[str, Security(get_user_id)],
     ctx: Annotated[RequestContext, Security(get_request_context)],
 ):
-    user_credit_model = await get_user_credit_model(user_id)
-    checkout_url = await user_credit_model.top_up_intent(user_id, request.credit_amount)
+    credit_model = await get_credit_model(user_id, ctx.org_id)
+    checkout_url = await credit_model.top_up_intent(user_id, request.credit_amount)
     return {"checkout_url": checkout_url}
 
 
@@ -627,11 +627,12 @@ async def request_top_up(
 )
 async def refund_top_up(
     user_id: Annotated[str, Security(get_user_id)],
+    ctx: Annotated[RequestContext, Security(get_request_context)],
     transaction_key: str,
     metadata: dict[str, str],
 ) -> int:
-    user_credit_model = await get_user_credit_model(user_id)
-    return await user_credit_model.top_up_refund(user_id, transaction_key, metadata)
+    credit_model = await get_credit_model(user_id, ctx.org_id)
+    return await credit_model.top_up_refund(user_id, transaction_key, metadata)
 
 
 @v1_router.patch(
@@ -640,9 +641,12 @@ async def refund_top_up(
     tags=["credits"],
     dependencies=[Security(requires_user)],
 )
-async def fulfill_checkout(user_id: Annotated[str, Security(get_user_id)]):
-    user_credit_model = await get_user_credit_model(user_id)
-    await user_credit_model.fulfill_checkout(user_id=user_id)
+async def fulfill_checkout(
+    user_id: Annotated[str, Security(get_user_id)],
+    ctx: Annotated[RequestContext, Security(get_request_context)],
+):
+    credit_model = await get_credit_model(user_id, ctx.org_id)
+    await credit_model.fulfill_checkout(user_id=user_id)
     return Response(status_code=200)
 
 
@@ -653,7 +657,9 @@ async def fulfill_checkout(user_id: Annotated[str, Security(get_user_id)]):
     dependencies=[Security(requires_user)],
 )
 async def configure_user_auto_top_up(
-    request: AutoTopUpConfig, user_id: Annotated[str, Security(get_user_id)]
+    request: AutoTopUpConfig,
+    user_id: Annotated[str, Security(get_user_id)],
+    ctx: Annotated[RequestContext, Security(get_request_context)],
 ) -> str:
     """Configure auto top-up settings and perform an immediate top-up if needed.
 
@@ -671,14 +677,14 @@ async def configure_user_auto_top_up(
             status_code=422, detail="Amount must be greater than or equal to threshold"
         )
 
-    user_credit_model = await get_user_credit_model(user_id)
-    current_balance = await user_credit_model.get_credits(user_id)
+    credit_model = await get_credit_model(user_id, ctx.org_id)
+    current_balance = await credit_model.get_credits(user_id)
 
     try:
         if current_balance < request.threshold:
-            await user_credit_model.top_up_credits(user_id, request.amount)
+            await credit_model.top_up_credits(user_id, request.amount)
         else:
-            await user_credit_model.top_up_credits(user_id, 0)
+            await credit_model.top_up_credits(user_id, 0)
     except ValueError as e:
         known_messages = (
             "must not be negative",
@@ -706,6 +712,7 @@ async def configure_user_auto_top_up(
 )
 async def get_user_auto_top_up(
     user_id: Annotated[str, Security(get_user_id)],
+    ctx: Annotated[RequestContext, Security(get_request_context)],
 ) -> AutoTopUpConfig:
     return await get_auto_top_up(user_id)
 
@@ -1381,9 +1388,10 @@ async def stripe_webhook(request: Request):
 )
 async def manage_payment_method(
     user_id: Annotated[str, Security(get_user_id)],
+    ctx: Annotated[RequestContext, Security(get_request_context)],
 ) -> dict[str, str]:
-    user_credit_model = await get_user_credit_model(user_id)
-    return {"url": await user_credit_model.create_billing_portal_session(user_id)}
+    credit_model = await get_credit_model(user_id, ctx.org_id)
+    return {"url": await credit_model.create_billing_portal_session(user_id)}
 
 
 @v1_router.get(
@@ -1402,8 +1410,8 @@ async def get_credit_history(
     if transaction_count_limit < 1 or transaction_count_limit > 1000:
         raise ValueError("Transaction count limit must be between 1 and 1000")
 
-    user_credit_model = await get_user_credit_model(user_id)
-    return await user_credit_model.get_transaction_history(
+    credit_model = await get_credit_model(user_id, ctx.org_id)
+    return await credit_model.get_transaction_history(
         user_id=user_id,
         transaction_time_ceiling=transaction_time,
         transaction_count_limit=transaction_count_limit,
@@ -1421,8 +1429,8 @@ async def get_refund_requests(
     user_id: Annotated[str, Security(get_user_id)],
     ctx: Annotated[RequestContext, Security(get_request_context)],
 ) -> list[RefundRequest]:
-    user_credit_model = await get_user_credit_model(user_id)
-    return await user_credit_model.get_refund_requests(user_id)
+    credit_model = await get_credit_model(user_id, ctx.org_id)
+    return await credit_model.get_refund_requests(user_id)
 
 
 @v1_router.get(
@@ -1433,6 +1441,7 @@ async def get_refund_requests(
 )
 async def list_invoices(
     user_id: Annotated[str, Security(get_user_id)],
+    ctx: Annotated[RequestContext, Security(get_request_context)],
     limit: int = Query(24, ge=1, le=100),
 ) -> list[InvoiceListItem]:
     """Recent Stripe invoices for the current user.
@@ -1441,8 +1450,8 @@ async def list_invoices(
     ``invoice_pdf_url`` (direct PDF download). Returns an empty list when
     the credit system is disabled or the user has no Stripe customer yet.
     """
-    user_credit_model = await get_user_credit_model(user_id)
-    return await user_credit_model.list_invoices(user_id, limit=limit)
+    credit_model = await get_credit_model(user_id, ctx.org_id)
+    return await credit_model.list_invoices(user_id, limit=limit)
 
 
 ########################################################
@@ -1713,8 +1722,8 @@ async def execute_graph(
     dry_run: Annotated[bool, Body(embed=True)] = False,
 ) -> execution_db.GraphExecutionMeta:
     if not dry_run:
-        user_credit_model = await get_user_credit_model(user_id)
-        current_balance = await user_credit_model.get_credits(user_id)
+        credit_model = await get_credit_model(user_id, ctx.org_id)
+        current_balance = await credit_model.get_credits(user_id)
         if current_balance <= 0:
             raise HTTPException(
                 status_code=402,

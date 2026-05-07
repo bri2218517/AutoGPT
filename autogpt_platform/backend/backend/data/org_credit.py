@@ -7,11 +7,19 @@ All balance mutations use atomic SQL to prevent race conditions.
 """
 
 import logging
+from datetime import datetime, timezone
 
-from prisma.enums import CreditTransactionType
+import stripe
+from prisma.enums import CreditTransactionType, OnboardingStep
 from pydantic import BaseModel
 
+from backend.data.credit import (
+    InvoiceListItem,
+    UsageTransactionMetadata,
+    UserCreditBase,
+)
 from backend.data.db import prisma
+from backend.data.model import RefundRequest, TransactionHistory
 from backend.util.exceptions import InsufficientBalanceError
 from backend.util.json import SafeJson
 
@@ -239,3 +247,146 @@ async def unassign_seat(org_id: str, user_id: str) -> None:
         },
         data={"status": "INACTIVE"},
     )
+
+
+class OrgCreditModel(UserCreditBase):
+    """Credit model that routes billing operations to the org-level tables.
+
+    Wraps the standalone org credit functions so that billing routes can
+    transparently operate on org credits when an ``organization_id`` is
+    present in the request context.
+    """
+
+    def __init__(self, org_id: str):
+        self._org_id = org_id
+
+    async def get_credits(
+        self, user_id: str, organization_id: str | None = None
+    ) -> int:
+        return await get_org_credits(self._org_id)
+
+    async def get_transaction_history(
+        self,
+        user_id: str,
+        transaction_count_limit: int,
+        transaction_time_ceiling: datetime | None = None,
+        transaction_type: str | None = None,
+    ) -> TransactionHistory:
+        raw = await get_org_transaction_history(
+            self._org_id,
+            limit=transaction_count_limit,
+            offset=0,
+        )
+        from backend.data.model import UserTransaction
+
+        transactions = [
+            UserTransaction(
+                user_id=user_id,
+                amount=t["amount"],
+                running_balance=t.get("runningBalance", 0) or 0,
+                transaction_type=t.get("type", CreditTransactionType.USAGE),
+                transaction_key=t.get("transactionKey", ""),
+                description=f"{t.get('type', 'UNKNOWN')} Transaction",
+            )
+            for t in raw
+        ]
+        return TransactionHistory(
+            transactions=transactions,
+            next_transaction_time=None,
+        )
+
+    async def get_refund_requests(self, user_id: str) -> list[RefundRequest]:
+        return []
+
+    async def spend_credits(
+        self,
+        user_id: str,
+        cost: int,
+        metadata: UsageTransactionMetadata,
+    ) -> int:
+        return await spend_org_credits(
+            self._org_id, user_id, cost, metadata=metadata.model_dump()
+        )
+
+    async def top_up_credits(
+        self,
+        user_id: str,
+        amount: int,
+        organization_id: str | None = None,
+        **kwargs,
+    ):
+        await top_up_org_credits(self._org_id, amount, user_id=user_id)
+
+    async def grant_credits(
+        self,
+        user_id: str,
+        amount: int,
+        reason: str,
+        transaction_key: str | None = None,
+    ) -> int:
+        return await top_up_org_credits(
+            self._org_id, amount, user_id=user_id, metadata={"reason": reason}
+        )
+
+    async def onboarding_reward(
+        self, user_id: str, credits: int, step: OnboardingStep
+    ) -> bool:
+        return False
+
+    async def top_up_intent(self, user_id: str, amount: int) -> str:
+        raise NotImplementedError("Org-level Stripe top-up intent not yet implemented")
+
+    async def top_up_refund(
+        self, user_id: str, transaction_key: str, metadata: dict[str, str]
+    ) -> int:
+        raise NotImplementedError("Org-level top-up refund not yet implemented")
+
+    async def deduct_credits(self, request: stripe.Refund | stripe.Dispute):
+        raise NotImplementedError("Org-level credit deduction not yet implemented")
+
+    async def handle_dispute(self, dispute: stripe.Dispute):
+        raise NotImplementedError("Org-level dispute handling not yet implemented")
+
+    async def fulfill_checkout(
+        self, *, session_id: str | None = None, user_id: str | None = None
+    ):
+        raise NotImplementedError("Org-level checkout fulfillment not yet implemented")
+
+    async def list_invoices(
+        self, user_id: str, limit: int = 24
+    ) -> list[InvoiceListItem]:
+        org = await prisma.organization.find_unique(where={"id": self._org_id})
+        if not org or not org.stripeCustomerId:
+            return []
+
+        from fastapi.concurrency import run_in_threadpool
+
+        limit = max(1, min(limit, 100))
+        try:
+            invoices = await run_in_threadpool(
+                stripe.Invoice.list,
+                customer=org.stripeCustomerId,
+                limit=limit,
+            )
+        except stripe.StripeError:
+            logger.exception("Stripe invoice list failed for org %s", self._org_id)
+            return []
+
+        return [
+            InvoiceListItem(
+                id=invoice.id or "",
+                number=invoice.number,
+                created_at=datetime.fromtimestamp(
+                    invoice.created or 0,
+                    tz=timezone.utc,
+                ),
+                total_cents=invoice.total or 0,
+                amount_paid_cents=invoice.amount_paid or 0,
+                currency=(invoice.currency or "usd").lower(),
+                status=invoice.status or "open",
+                description=invoice.description,
+                hosted_invoice_url=invoice.hosted_invoice_url,
+                invoice_pdf_url=invoice.invoice_pdf,
+            )
+            for invoice in invoices.data
+        ]
