@@ -376,6 +376,20 @@ async def extract_business_understanding(
         )
     model = chat_cfg.title_model
 
+    # ``_LLM_TIMEOUT`` was sized for OpenRouter latency. Local CPU-only
+    # Ollama can take 30–120+ seconds for even a small JSON extraction
+    # (`qwen3:0.6b` on a 4-core VM is typical of the no-API-key install
+    # target), so the fixed cloud timeout fires before the model finishes
+    # and every Tally submission raises ``TimeoutError`` under local
+    # transport. Track the operator's already-tuned
+    # ``local_request_timeout_s`` instead — the same knob that gates the
+    # AsyncOpenAI client timeout, so the two stay aligned.
+    timeout_s = (
+        chat_cfg.local_request_timeout_s
+        if chat_cfg.transport.name == "local"
+        else _LLM_TIMEOUT
+    )
+
     try:
         response = await asyncio.wait_for(
             client.chat.completions.create(
@@ -389,7 +403,7 @@ async def extract_business_understanding(
                 response_format={"type": "json_object"},
                 temperature=0.0,
             ),
-            timeout=_LLM_TIMEOUT,
+            timeout=timeout_s,
         )
     except asyncio.TimeoutError:
         logger.warning("Tally: LLM extraction timed out")
