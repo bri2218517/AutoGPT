@@ -145,6 +145,7 @@ class SilenceWatchdog:
                     await self._safe_emit(message)
                     self._fired_tiers.add(tier_index)
                     self._last_status_emitted_at = now
+                    break  # one emission per tick; suppression window paces the next tier
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 — defensive: keep loop alive on bugs in emit

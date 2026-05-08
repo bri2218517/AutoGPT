@@ -2072,11 +2072,7 @@ async def stream_chat_completion_baseline(
                 yield evt
             state.assistant_text += fallback_text
         elif loop_result and loop_result.finished_naturally:
-            # Natural finish under the tool budget but the terminal round
-            # produced no visible text — model returned thinking-only or
-            # an empty AssistantMessage.  Mirrors the SDK's
-            # ``StreamError(code="empty_completion")`` surface so the FE
-            # doesn't render a blank / forever-streaming bubble.
+            # mirrors SDK's empty_completion surface — prevents blank bubble on thinking-only turns
             terminal_round_text = state.assistant_text[text_len_before_final_round[0] :]
             fallback_events, fallback_text = (
                 _build_natural_finish_empty_fallback_events(terminal_round_text)

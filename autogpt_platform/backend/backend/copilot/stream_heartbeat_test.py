@@ -288,3 +288,28 @@ async def test_emit_status_failure_does_not_kill_watchdog():
         # First emit raised — but the watchdog must still be alive.
         assert watchdog._task is not None
         assert not watchdog._task.done()
+
+
+@pytest.mark.asyncio
+async def test_wrap_underlying_stream_closed_on_early_consumer_exit():
+    """Early aclose() on the wrapper must propagate to the underlying stream
+    so its cleanup (e.g. SDK lock release) runs deterministically."""
+    closed = False
+
+    async def _closeable_stream() -> AsyncGenerator[StreamBaseResponse, None]:
+        nonlocal closed
+        try:
+            for _ in range(100):
+                await asyncio.sleep(0.01)
+                yield StreamTextDelta(id="t1", delta="x")
+        finally:
+            closed = True
+
+    schedule = [(60.0, "Working on it…")]  # never fires in this test
+    gen = wrap_stream_with_heartbeat(
+        _closeable_stream(), schedule=schedule, tick_s=0.05
+    )
+    await gen.__anext__()  # consume one event
+    await gen.aclose()  # exit early
+    await asyncio.sleep(0.05)  # let cleanup propagate
+    assert closed, "Underlying stream was not closed on early consumer exit"
