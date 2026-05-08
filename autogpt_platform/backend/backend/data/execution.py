@@ -1196,6 +1196,59 @@ def _build_node_execution_where_clause(
     return where_clause
 
 
+async def reap_orphan_node_executions(
+    min_age_seconds: int = 300,
+    limit: int = 1000,
+) -> int:
+    """Mark RUNNING node executions FAILED when their parent graph execution is
+    already in a terminal state (FAILED / COMPLETED / TERMINATED).
+
+    This handles the case where the graph_exec status was set externally (e.g.
+    by stop_graph_execution or activity_status_generator) but the in-flight
+    node tasks didn't propagate the cancellation — leaving ghost RUNNING rows.
+
+    Args:
+        min_age_seconds: ignore node_execs newer than this; avoids racing with
+            healthy in-flight executions in the brief window between graph
+            terminal-status update and node-task cleanup.
+        limit: max node_execs to scan per pass.
+
+    Returns:
+        Number of node executions reaped.
+    """
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(seconds=min_age_seconds)
+    terminal_statuses = {
+        ExecutionStatus.FAILED.value,
+        ExecutionStatus.COMPLETED.value,
+        ExecutionStatus.TERMINATED.value,
+    }
+
+    candidates = await AgentNodeExecution.prisma().find_many(
+        where={
+            "executionStatus": ExecutionStatus.RUNNING.value,
+            "startedTime": {"lt": cutoff},
+        },
+        include={"GraphExecution": True},
+        take=limit,
+    )
+
+    orphan_ids = [
+        ne.id
+        for ne in candidates
+        if ne.GraphExecution and ne.GraphExecution.executionStatus in terminal_statuses
+    ]
+
+    if not orphan_ids:
+        return 0
+
+    await update_node_execution_status_batch(
+        orphan_ids,
+        ExecutionStatus.FAILED,
+        stats={"error": "orphaned_after_graph_terminal"},
+    )
+    return len(orphan_ids)
+
+
 async def get_node_executions(
     graph_exec_id: str | None = None,
     node_id: str | None = None,

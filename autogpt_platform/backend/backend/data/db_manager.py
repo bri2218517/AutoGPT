@@ -59,6 +59,7 @@ from backend.data.execution import (
     get_latest_node_execution,
     get_node_execution,
     get_node_executions,
+    reap_orphan_node_executions,
     set_execution_kv_data,
     update_graph_execution_start_time,
     update_graph_execution_stats,
@@ -231,6 +232,7 @@ class DatabaseManager(AppService):
     get_latest_node_execution = _(get_latest_node_execution)
     update_node_execution_status = _(update_node_execution_status)
     update_node_execution_status_batch = _(update_node_execution_status_batch)
+    reap_orphan_node_executions = _(reap_orphan_node_executions)
     update_graph_execution_start_time = _(update_graph_execution_start_time)
     update_graph_execution_stats = _(update_graph_execution_stats)
     upsert_execution_input = _(upsert_execution_input)

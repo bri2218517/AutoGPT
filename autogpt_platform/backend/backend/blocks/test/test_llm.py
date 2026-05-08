@@ -1456,3 +1456,62 @@ class TestAnthropicCacheControl:
         assert (
             "system" not in captured_kwargs
         ), "whitespace-only sysprompt must be omitted to avoid Anthropic 400"
+
+
+class TestLLMRequestTimeout:
+    """Test that llm_call enforces a hard request timeout regardless of provider."""
+
+    @pytest.mark.asyncio
+    async def test_llm_call_times_out_when_provider_hangs(self, monkeypatch):
+        """A hanging provider call must not park the caller indefinitely."""
+        import asyncio
+
+        # Force a tiny timeout so the test runs quickly.
+        monkeypatch.setattr(llm, "LLM_REQUEST_TIMEOUT_SECONDS", 0.2)
+
+        async def hang_forever(*args, **kwargs):
+            await asyncio.sleep(60)
+
+        with patch("openai.AsyncOpenAI") as mock_openai:
+            mock_client = AsyncMock()
+            mock_openai.return_value = mock_client
+            mock_client.responses.create = AsyncMock(side_effect=hang_forever)
+
+            with pytest.raises(TimeoutError) as exc_info:
+                await llm.llm_call(
+                    credentials=llm.TEST_CREDENTIALS,
+                    llm_model=llm.DEFAULT_LLM_MODEL,
+                    prompt=[{"role": "user", "content": "Hello"}],
+                    max_tokens=100,
+                )
+
+            assert "0.2s" in str(exc_info.value) or "exceeded" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_llm_call_passes_timeout_to_openai_sdk(self):
+        """The OpenAI SDK call must receive a `timeout=` argument so it errors
+        out on its own without waiting for our outer wait_for to fire."""
+        captured_kwargs: dict[str, Any] = {}
+
+        mock_response = MagicMock()
+        mock_response.output_text = "ok"
+        mock_response.output = []
+        mock_response.usage = MagicMock(input_tokens=1, output_tokens=1)
+
+        async def capture(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_response
+
+        with patch("openai.AsyncOpenAI") as mock_openai:
+            mock_client = AsyncMock()
+            mock_openai.return_value = mock_client
+            mock_client.responses.create = AsyncMock(side_effect=capture)
+
+            await llm.llm_call(
+                credentials=llm.TEST_CREDENTIALS,
+                llm_model=llm.DEFAULT_LLM_MODEL,
+                prompt=[{"role": "user", "content": "Hello"}],
+                max_tokens=100,
+            )
+
+        assert captured_kwargs.get("timeout") == llm.LLM_REQUEST_TIMEOUT_SECONDS
