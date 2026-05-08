@@ -38,6 +38,13 @@ _OPENROUTER_INCLUDE_USAGE_COST: dict[str, Any] = {"usage": {"include": True}}
 _MAX_JSON_RETRIES = 3
 _MAX_OUTPUT_TOKENS = 150
 
+# Sentinel for ``generate_activity_status_for_execution.model_name``. The
+# parameter defaults to this for cloud routing. Under the local transport
+# we only override to ``ChatConfig.title_model`` when the caller didn't
+# supply an explicit value — same pattern ``ChatConfig._apply_local_aux_models``
+# uses for ``title_model`` / ``simulation_model``.
+_DEFAULT_MODEL_NAME = "gpt-4o-mini"
+
 
 # Default system prompt template for activity status generation
 DEFAULT_SYSTEM_PROMPT = """You are an AI assistant analyzing what an agent execution accomplished and whether it worked correctly. 
@@ -198,7 +205,7 @@ async def generate_activity_status_for_execution(
     db_client: "DatabaseManagerAsyncClient",
     user_id: str,
     execution_status: ExecutionStatus | None = None,
-    model_name: str = "gpt-4o-mini",
+    model_name: str = _DEFAULT_MODEL_NAME,
     skip_feature_flag: bool = False,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     user_prompt: str = DEFAULT_USER_PROMPT,
@@ -342,7 +349,16 @@ async def generate_activity_status_for_execution(
 
         is_local_transport = chat_cfg.transport.name == "local"
         if is_local_transport:
-            or_model = chat_cfg.title_model
+            # Only auto-override to ``chat_cfg.title_model`` when the caller
+            # left ``model_name`` at its cloud-routing default. An explicit
+            # caller-supplied value (e.g. an admin reroute or a test) wins
+            # — we mustn't silently discard it. Same pattern
+            # ``ChatConfig._apply_local_aux_models`` uses for the field defaults.
+            or_model = (
+                chat_cfg.title_model
+                if model_name == _DEFAULT_MODEL_NAME
+                else model_name
+            )
             extra_body: dict[str, Any] = {
                 "options": {"num_ctx": chat_cfg.local_num_ctx}
             }
