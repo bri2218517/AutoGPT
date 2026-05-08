@@ -7,7 +7,7 @@ schedule (sub-second thresholds) so they run quickly without flakiness.
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 
 import pytest
 import pytest_asyncio
@@ -187,7 +187,7 @@ async def test_cleanup_on_context_exit():
 
 async def _delayed_stream(
     items: list[tuple[float, StreamBaseResponse]],
-) -> AsyncIterator[StreamBaseResponse]:
+) -> AsyncGenerator[StreamBaseResponse, None]:
     """Helper: yield ``items`` with the given pre-yield sleeps."""
     for delay, item in items:
         if delay > 0:

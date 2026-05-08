@@ -36,7 +36,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
 from backend.copilot.response_model import StreamBaseResponse, StreamStatus
@@ -164,12 +164,12 @@ class SilenceWatchdog:
 
 
 async def wrap_stream_with_heartbeat(
-    stream: AsyncIterator[StreamBaseResponse],
+    stream: AsyncGenerator[StreamBaseResponse, None],
     *,
     schedule: list[tuple[float, str]] | None = None,
     suppression_window_s: float = DEFAULT_SUPPRESSION_WINDOW_S,
     tick_s: float = DEFAULT_TICK_S,
-) -> AsyncIterator[StreamBaseResponse]:
+) -> AsyncGenerator[StreamBaseResponse, None]:
     """Wrap a stream of ``StreamBaseResponse`` events with a silence
     watchdog so periodic ``StreamStatus`` events fire during long gaps.
 
@@ -189,6 +189,13 @@ async def wrap_stream_with_heartbeat(
             async for event in stream:
                 await out_queue.put(("driver", event))
         finally:
+            # Forward close to the underlying stream so its own cleanup
+            # (e.g. SDK stream lock release) runs deterministically — the
+            # ``async for`` above does not call ``aclose()`` on cancel /
+            # GeneratorExit, leaving the lock held until GC. Mirrors the
+            # explicit aclose pattern in ``executor/processor.py``.
+            with contextlib.suppress(Exception):
+                await stream.aclose()
             await out_queue.put(("driver", sentinel))
 
     drain_task = asyncio.create_task(_drain_driver(), name="stream-heartbeat-drain")
