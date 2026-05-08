@@ -2,10 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.data.execution import (
-    ExecutionStatus,
-    update_graph_execution_stats,
-)
+from backend.data.execution import ExecutionStatus, update_graph_execution_stats
 
 
 @pytest.mark.asyncio
@@ -99,21 +96,24 @@ async def test_cascade_can_be_disabled_explicitly():
 async def test_cascade_records_terminal_status_in_node_error():
     """The child error stamp should reference which terminal status caused it
     so we can tell deploy-time cancellations from billing failures from manual stops."""
-    captured = {}
+    captured: dict = {}
 
-    async def capture_update(**kwargs):
-        captured.update(kwargs)
+    def fake_get_update_status_data(status, execution_data, stats):
+        captured["status"] = status
+        captured["stats"] = stats
+        return {"executionStatus": status}
 
     with patch("backend.data.execution.AgentGraphExecution") as mock_graph, patch(
         "backend.data.execution.AgentNodeExecution"
-    ) as mock_node:
+    ) as mock_node, patch(
+        "backend.data.execution._get_update_status_data",
+        side_effect=fake_get_update_status_data,
+    ):
         mock_graph.prisma.return_value.update_many = AsyncMock()
         mock_graph.prisma.return_value.find_unique_or_raise = AsyncMock(
             return_value=MagicMock()
         )
-        mock_node.prisma.return_value.update_many = AsyncMock(
-            side_effect=capture_update
-        )
+        mock_node.prisma.return_value.update_many = AsyncMock()
 
         with patch(
             "backend.data.execution.GraphExecution.from_db",
@@ -124,9 +124,5 @@ async def test_cascade_records_terminal_status_in_node_error():
                 status=ExecutionStatus.TERMINATED,
             )
 
-    data = captured.get("data") or {}
-    stats_payload = data.get("stats") or {}
-    error_msg = (
-        stats_payload.get("error", "") if isinstance(stats_payload, dict) else ""
-    )
-    assert "terminated" in error_msg.lower()
+    assert captured.get("status") == ExecutionStatus.FAILED
+    assert "terminated" in captured.get("stats", {}).get("error", "").lower()
