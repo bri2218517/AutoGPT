@@ -57,18 +57,25 @@ def _load() -> dict[str, BlockPreflightEstimate]:
             "Failed to load %s; preflight estimates disabled",
             _ESTIMATES_PATH.name,
         )
-        loaded: dict[str, BlockPreflightEstimate] = {}
-    else:
-        if not isinstance(raw, dict):
-            logger.error(
-                "Invalid estimates JSON root in %s (expected object); "
-                "preflight estimates disabled",
-                _ESTIMATES_PATH.name,
-            )
-            loaded = {}
-        else:
-            estimates = raw.get("estimates", {}) or {}
-            loaded = estimates if isinstance(estimates, dict) else {}
+        # Don't bump _cache_mtime_ns on a failed parse — otherwise a same-mtime
+        # in-place fix (low-resolution FS, atomic-rename to a buffer with the
+        # same timestamp) leaves the empty cache poisoned forever.
+        _cache = {}
+        return _cache
+
+    if not isinstance(raw, dict):
+        logger.error(
+            "Invalid estimates JSON root in %s (expected object); "
+            "preflight estimates disabled",
+            _ESTIMATES_PATH.name,
+        )
+        _cache = {}
+        return _cache
+
+    estimates = raw.get("estimates", {}) or {}
+    loaded: dict[str, BlockPreflightEstimate] = (
+        estimates if isinstance(estimates, dict) else {}
+    )
 
     _cache = loaded
     _cache_mtime_ns = current_mtime

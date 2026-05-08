@@ -137,6 +137,45 @@ def test_non_object_root_disables_estimates(monkeypatch, tmp_path: Path):
     assert bpe.get_preflight_estimate("anything") == 0
 
 
+def test_corrupt_json_does_not_poison_cache_when_fixed_in_place(
+    monkeypatch, tmp_path: Path
+):
+    """Atomic-rename / same-mtime fixes must recover. Bumping `_cache_mtime_ns`
+    on a failed parse would leave an empty cache pinned until the file's
+    mtime advances — on low-resolution filesystems or atomic-rename flows
+    that can pin to the corrupt timestamp indefinitely.
+    """
+    import os
+
+    f = tmp_path / "estimates.json"
+    f.write_text("{ not valid json")
+    monkeypatch.setattr(bpe, "_ESTIMATES_PATH", f)
+    assert bpe.get_preflight_estimate("block-1") == 0
+    poisoned_mtime = f.stat().st_mtime
+
+    # Fix the file but pin the mtime to the corrupt-version timestamp —
+    # simulates a low-resolution FS or atomic-rename flow that doesn't
+    # bump the timestamp.
+    f.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "estimates": {
+                    "block-1": {
+                        "block_name": "FooBlock",
+                        "cost_type": "SECOND",
+                        "samples": 50,
+                        "mean_credits": 11,
+                    }
+                },
+            }
+        )
+    )
+    os.utime(f, (poisoned_mtime, poisoned_mtime))
+
+    assert bpe.get_preflight_estimate("block-1") == 11
+
+
 def test_non_finite_mean_clamps_to_zero(monkeypatch, tmp_path: Path):
     """Python's json.loads accepts non-spec NaN/Infinity; a hot-swapped or
     corrupted JSON containing those would crash `int(round(...))`. Verify
