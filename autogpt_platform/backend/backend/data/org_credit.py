@@ -303,6 +303,7 @@ class OrgCreditModel(UserCreditBase):
         user_id: str,
         cost: int,
         metadata: UsageTransactionMetadata,
+        fail_insufficient_credits: bool = True,
     ) -> int:
         return await spend_org_credits(
             self._org_id, user_id, cost, metadata=metadata.model_dump()

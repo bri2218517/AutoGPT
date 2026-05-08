@@ -729,7 +729,7 @@ class Scheduler(AppService):
             cron=cron,
             input_data=input_data,
             input_credentials=input_credentials,
-            organization_id=organization_id,
+            organization_id=organization_id or "",
             team_id=team_id,
         )
         job = self.scheduler.add_job(
