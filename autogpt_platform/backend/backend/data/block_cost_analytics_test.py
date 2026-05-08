@@ -118,6 +118,32 @@ async def test_window_cap_catches_fractional_overflow():
 
 
 @pytest.mark.asyncio
+async def test_min_samples_threshold_passed_to_sql_query():
+    """`min_samples` is enforced by `HAVING COUNT(*) >= $3` in the SQL — the
+    aggregator must forward the parameter unchanged so rows below the threshold
+    never surface from the database."""
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=7)
+
+    with (
+        patch(
+            "backend.data.block_cost_analytics.query_raw_with_schema",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_query,
+        patch(
+            "backend.data.block_cost_analytics._resolve_cost_type",
+            return_value="second",
+        ),
+    ):
+        await compute_block_cost_estimates(start=start, end=end, min_samples=42)
+
+    # query_raw_with_schema(query, start, end, min_samples)
+    args = mock_query.await_args.args
+    assert args[3] == 42
+
+
+@pytest.mark.asyncio
 async def test_block_name_falls_back_to_block_id_when_metadata_missing():
     """Old USAGE rows may not have populated metadata->>'block', leading the
     raw SQL to return a NULL block_name. Verify we fall back to block_id

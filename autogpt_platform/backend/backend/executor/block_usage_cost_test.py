@@ -21,6 +21,7 @@ from backend.data.block_cost_config import (
     TokenRate,
 )
 from backend.data.model import NodeExecutionStats
+from backend.executor import utils as executor_utils
 from backend.executor.utils import block_usage_cost
 from backend.integrations.credentials_store import (
     anthropic_credentials,
@@ -40,8 +41,6 @@ def _stub_preflight_estimate(monkeypatch):
     `test_preflight_uses_historical_estimate_for_dynamic_cost_types`) override
     this themselves on `executor_utils.get_preflight_estimate`.
     """
-    from backend.executor import utils as executor_utils
-
     monkeypatch.setattr(executor_utils, "get_preflight_estimate", lambda _bid: 0)
 
 
@@ -145,8 +144,6 @@ def test_preflight_estimate_disabled_for_no_reconciliation_callers(
     `use_preflight_estimate=False` so dynamic-cost blocks return 0 instead
     of locking in an unreconciled estimate as the final charge.
     """
-    from backend.executor import utils as executor_utils
-
     tmp_block_costs_override(
         [BlockCost(cost_amount=1, cost_type=BlockCostType.SECOND, cost_divisor=10)]
     )
@@ -170,8 +167,6 @@ def test_preflight_uses_historical_estimate_for_dynamic_cost_types(
     registered historical-average estimate instead of 0 — so the post-flight
     reconciliation only settles a small delta and a billing leak is bounded
     by that delta rather than the full execution cost."""
-    from backend.executor import utils as executor_utils
-
     tmp_block_costs_override(
         [BlockCost(cost_amount=1, cost_type=BlockCostType.SECOND, cost_divisor=10)]
     )
