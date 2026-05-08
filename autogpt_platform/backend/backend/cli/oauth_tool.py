@@ -34,7 +34,6 @@ import base64
 import hashlib
 import secrets
 import sys
-import uuid
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
@@ -42,6 +41,8 @@ from urllib.parse import urlparse
 import click
 from autogpt_libs.api_key.keysmith import APIKeySmith
 from prisma.enums import APIKeyPermission
+
+from backend.util.ids import new_uuid
 
 keysmith = APIKeySmith()
 
@@ -109,7 +110,7 @@ def generate_app_credentials(
         raise ValueError("At least one scope is required")
 
     # Generate credentials
-    app_id = str(uuid.uuid4())
+    app_id = new_uuid()
     client_id = generate_client_id()
     client_secret_plaintext, client_secret_hash, client_secret_salt = (
         generate_client_secret()

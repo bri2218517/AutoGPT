@@ -19,7 +19,6 @@ from typing import (
     cast,
     get_args,
 )
-from uuid import uuid4
 
 from prisma.enums import CreditTransactionType, OnboardingStep, SubscriptionTier
 from pydantic import (
@@ -41,6 +40,7 @@ from pydantic_core import (
 from typing_extensions import TypedDict
 
 from backend.integrations.providers import ProviderName
+from backend.util.ids import new_uuid
 from backend.util.json import loads as json_loads
 from backend.util.request import parse_url
 from backend.util.settings import Secrets
@@ -325,7 +325,7 @@ def is_sdk_default(cred_id: str) -> bool:
 
 
 class _BaseCredentials(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid4()))
+    id: str = Field(default_factory=new_uuid)
     provider: str
     title: Optional[str] = None
     is_managed: bool = False

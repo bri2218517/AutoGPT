@@ -3,7 +3,6 @@ import logging
 import os
 import threading
 import time
-import uuid
 from enum import Enum
 from typing import Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -49,6 +48,7 @@ from backend.util.exceptions import (
     NotAuthorizedError,
     NotFoundError,
 )
+from backend.util.ids import new_uuid
 from backend.util.logging import PrefixFilter
 from backend.util.retry import func_retry
 from backend.util.service import (
@@ -712,7 +712,7 @@ class Scheduler(AppService):
         logger.info(
             f"Scheduling job for user {user_id} with timezone {user_timezone} (cron: {cron})"
         )
-        schedule_id = str(uuid.uuid4())
+        schedule_id = new_uuid()
 
         job_args = GraphExecutionJobArgs(
             schedule_id=schedule_id,
