@@ -85,7 +85,6 @@ from .utils import (
     GRAPH_EXECUTION_EXCHANGE,
     GRAPH_EXECUTION_QUEUE_NAME,
     GRAPH_EXECUTION_ROUTING_KEY,
-    NODE_EXECUTION_TIMEOUT_SECONDS,
     CancelExecutionEvent,
     ExecutionOutputEntry,
     LogMetadata,
@@ -733,26 +732,28 @@ class ExecutionProcessor:
                 status=ExecutionStatus.RUNNING,
             )
 
-            # Hard outer wall-clock cap on the block's run. Per-LLM-call
-            # timeouts and per-call retry classifiers handle their own bounds,
-            # but a block that loops over many sub-calls can compound those
-            # into hours. This is the executor-level ceiling so the pool can't
-            # be parked by a single runaway block.
-            await asyncio.wait_for(
-                _drive_execution(),
-                timeout=NODE_EXECUTION_TIMEOUT_SECONDS,
-            )
+            # Per-block wall-clock cap on `run`. Leaf compute blocks inherit
+            # the default cap; coordination blocks (AgentExecutor, AutoPilot)
+            # opt out by overriding `execution_timeout_seconds = None`. Their
+            # sub-graphs and inner LLM calls have their own bounds, so the
+            # outer cap would false-positive on legitimately long runs.
+            block_timeout = node.block.execution_timeout_seconds
+            if block_timeout is None:
+                await _drive_execution()
+            else:
+                await asyncio.wait_for(_drive_execution(), timeout=block_timeout)
 
             log_metadata.info(f"Finished node execution {node_exec.node_exec_id}")
             status = ExecutionStatus.COMPLETED
 
-        except asyncio.TimeoutError as e:
+        except asyncio.TimeoutError:
+            block_timeout = node.block.execution_timeout_seconds
             stats.error = TimeoutError(
-                f"Node execution exceeded {NODE_EXECUTION_TIMEOUT_SECONDS}s wall-clock cap"
+                f"Node execution exceeded {block_timeout}s wall-clock cap"
             )
             log_metadata.warning(
                 f"Node execution {node_exec.node_exec_id} timed out after "
-                f"{NODE_EXECUTION_TIMEOUT_SECONDS}s — marking FAILED"
+                f"{block_timeout}s — marking FAILED"
             )
             status = ExecutionStatus.FAILED
 
