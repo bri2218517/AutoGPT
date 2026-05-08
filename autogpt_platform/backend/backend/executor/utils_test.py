@@ -1915,3 +1915,42 @@ async def test_add_graph_execution_concurrent_limit_skipped_for_sub_graphs(
         await add_graph_execution(graph_id="g", user_id="user", execution_context=ctx)
 
     mock_edb.get_graph_executions_count.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_add_graph_execution_concurrent_limit_lock_timeout_raises_429(
+    mocker: MockerFixture,
+):
+    """Redis LockError (blocking_timeout exhausted) surfaces as ConcurrentTaskLimitError."""
+    from redis.exceptions import LockError
+
+    from backend.copilot.rate_limit import ConcurrentTaskLimitError
+
+    mocker.patch(
+        "backend.executor.utils.is_user_paywalled",
+        new=mocker.AsyncMock(return_value=False),
+    )
+    mocker.patch("backend.executor.utils.prisma").is_connected.return_value = True
+
+    # Build a redis mock whose .lock() raises LockError on acquisition.
+    lock_cm = mocker.MagicMock()
+    lock_cm.__aenter__ = mocker.AsyncMock(side_effect=LockError("timed out"))
+    lock_cm.__aexit__ = mocker.AsyncMock(return_value=False)
+    mock_redis = mocker.MagicMock()
+    mock_redis.lock.return_value = lock_cm
+    mocker.patch(
+        "backend.data.redis_client.get_redis_async",
+        new=mocker.AsyncMock(return_value=mock_redis),
+    )
+    mocker.patch(
+        "backend.executor.utils.validate_and_construct_node_execution_input",
+        new=mocker.AsyncMock(return_value=(mocker.MagicMock(version=1), [], {}, set())),
+    )
+    mock_edb = mocker.patch("backend.executor.utils.execution_db")
+    mock_edb.get_graph_executions_count = mocker.AsyncMock(return_value=0)
+    mock_edb.create_graph_execution = mocker.AsyncMock()
+
+    with pytest.raises(ConcurrentTaskLimitError):
+        await add_graph_execution(graph_id="g", user_id="busy-user")
+
+    mock_edb.create_graph_execution.assert_not_called()
