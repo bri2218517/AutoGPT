@@ -351,7 +351,12 @@ async def generate_activity_status_for_execution(
             # need to be remapped to OpenRouter's namespaced form. Already-prefixed
             # values (e.g. "openai/gpt-4o-mini", "anthropic/claude-...") pass through.
             or_model = model_name if "/" in model_name else f"openai/{model_name}"
-            extra_body = _OPENROUTER_INCLUDE_USAGE_COST
+            # Shallow-copy the module-level constant rather than sharing
+            # the reference. The OpenAI SDK treats ``extra_body`` as opaque
+            # pass-through, but if any intermediate layer ever mutates it
+            # the shared constant would leak across coroutines. Mirrors the
+            # defensive ``dict(...)`` ``baseline/service.py`` already uses.
+            extra_body = dict(_OPENROUTER_INCLUDE_USAGE_COST)
 
         # Track the most recent attempt's usage so we can persist cost even
         # when every retry fails — the API calls were billed regardless of

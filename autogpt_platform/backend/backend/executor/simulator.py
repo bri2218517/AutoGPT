@@ -160,7 +160,12 @@ async def _call_llm_for_simulation(
     if chat_cfg.transport.name == "local":
         extra_body: dict[str, Any] = {"options": {"num_ctx": chat_cfg.local_num_ctx}}
     else:
-        extra_body = _OPENROUTER_INCLUDE_USAGE_COST
+        # Shallow-copy the constant rather than sharing the reference — see
+        # the matching pattern in ``baseline/service.py`` and
+        # ``activity_status_generator.py``. Defends against intermediate
+        # layers ever mutating ``extra_body`` and corrupting the shared
+        # module-level dict for every future call.
+        extra_body = dict(_OPENROUTER_INCLUDE_USAGE_COST)
 
     model = _simulator_model()
     last_error: Exception | None = None
