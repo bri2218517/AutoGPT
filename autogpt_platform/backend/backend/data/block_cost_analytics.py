@@ -44,6 +44,14 @@ def _resolve_cost_type(block_id: str) -> str | None:
     We collapse them to a single representative type for the export so the
     admin view stays compact; reconciliation continues to use the per-filter
     entry at runtime.
+
+    Trade-off: the JSON estimate is **per-block-id, not per-filter**. For
+    blocks with tier-style filters (e.g. Ayrshare `is_video=True → 5cr` vs
+    `is_video=False → 2cr`), the seeded mean averages across all filters and
+    the pre-flight charge will over-bill low-tier runs and under-bill high-tier
+    runs; reconciliation refunds/debt settles the delta. The seeding-PR
+    reviewer should spot-check the `p95/mean` ratio for any block whose ratio
+    is wide enough to suggest filter-tier costs.
     """
     block = get_block(block_id)
     if not block:
