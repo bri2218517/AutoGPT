@@ -390,19 +390,30 @@ async def extract_business_understanding(
         else _LLM_TIMEOUT
     )
 
+    # Mirror the other three call sites (``baseline/service.py``,
+    # ``simulator.py``, ``activity_status_generator.py``) and forward
+    # ``options.num_ctx`` under local transport so Ollama's OpenAI shim
+    # doesn't silently cap context at its 4 k default and chew through
+    # long form submissions (see ollama/ollama#2714). Non-Ollama
+    # OpenAI-compat backends ignore unknown ``options`` keys, so the
+    # forward is safe across the local stack.
+    create_kwargs: dict = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": f"{_EXTRACTION_PROMPT}{formatted_text}{_EXTRACTION_SUFFIX}",
+            }
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.0,
+    }
+    if chat_cfg.transport.name == "local":
+        create_kwargs["extra_body"] = {"options": {"num_ctx": chat_cfg.local_num_ctx}}
+
     try:
         response = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": f"{_EXTRACTION_PROMPT}{formatted_text}{_EXTRACTION_SUFFIX}",
-                    }
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.0,
-            ),
+            client.chat.completions.create(**create_kwargs),
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
