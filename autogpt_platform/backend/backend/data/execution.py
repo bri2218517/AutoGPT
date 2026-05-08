@@ -1241,12 +1241,14 @@ async def reap_orphan_node_executions(
     if not orphan_ids:
         return 0
 
-    await update_node_execution_status_batch(
+    # Use the actual rows-updated count rather than `len(orphan_ids)` — the
+    # batch update filters by allowed_from statuses, so a row that completed
+    # itself between our find_many and update_many won't be counted.
+    return await update_node_execution_status_batch(
         orphan_ids,
         ExecutionStatus.FAILED,
         stats={"error": "orphaned_after_graph_terminal"},
     )
-    return len(orphan_ids)
 
 
 async def get_node_executions(

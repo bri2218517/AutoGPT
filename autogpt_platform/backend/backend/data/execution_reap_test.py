@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -12,7 +12,8 @@ def _candidate(node_exec_id: str, parent_status: str, started_seconds_ago: int =
     return SimpleNamespace(
         id=node_exec_id,
         executionStatus=ExecutionStatus.RUNNING.value,
-        startedTime=datetime.now(tz=timezone.utc),
+        startedTime=datetime.now(tz=timezone.utc)
+        - timedelta(seconds=started_seconds_ago),
         GraphExecution=SimpleNamespace(executionStatus=parent_status),
     )
 
@@ -27,10 +28,13 @@ async def test_reaper_marks_node_execs_failed_when_parent_terminal():
         _candidate("ne-still-running", ExecutionStatus.RUNNING.value),
     ]
 
-    with patch("backend.data.execution.AgentNodeExecution") as mock_ne, patch(
-        "backend.data.execution.update_node_execution_status_batch",
-        new_callable=AsyncMock,
-    ) as mock_batch:
+    with (
+        patch("backend.data.execution.AgentNodeExecution") as mock_ne,
+        patch(
+            "backend.data.execution.update_node_execution_status_batch",
+            new_callable=AsyncMock,
+        ) as mock_batch,
+    ):
         mock_ne.prisma.return_value.find_many = AsyncMock(return_value=candidates)
         mock_batch.return_value = 3
 
@@ -52,10 +56,13 @@ async def test_reaper_no_op_when_all_parents_running():
         _candidate(f"ne-{i}", ExecutionStatus.RUNNING.value) for i in range(3)
     ]
 
-    with patch("backend.data.execution.AgentNodeExecution") as mock_ne, patch(
-        "backend.data.execution.update_node_execution_status_batch",
-        new_callable=AsyncMock,
-    ) as mock_batch:
+    with (
+        patch("backend.data.execution.AgentNodeExecution") as mock_ne,
+        patch(
+            "backend.data.execution.update_node_execution_status_batch",
+            new_callable=AsyncMock,
+        ) as mock_batch,
+    ):
         mock_ne.prisma.return_value.find_many = AsyncMock(return_value=candidates)
 
         reaped = await reap_orphan_node_executions()
@@ -67,9 +74,12 @@ async def test_reaper_no_op_when_all_parents_running():
 @pytest.mark.asyncio
 async def test_reaper_query_filters_by_min_age_and_running_status():
     """Verify the prisma find_many is constrained to old RUNNING node_execs only."""
-    with patch("backend.data.execution.AgentNodeExecution") as mock_ne, patch(
-        "backend.data.execution.update_node_execution_status_batch",
-        new_callable=AsyncMock,
+    with (
+        patch("backend.data.execution.AgentNodeExecution") as mock_ne,
+        patch(
+            "backend.data.execution.update_node_execution_status_batch",
+            new_callable=AsyncMock,
+        ),
     ):
         find_many = AsyncMock(return_value=[])
         mock_ne.prisma.return_value.find_many = find_many
@@ -81,3 +91,30 @@ async def test_reaper_query_filters_by_min_age_and_running_status():
     assert "lt" in where["startedTime"]
     assert find_many.await_args.kwargs["take"] == 500
     assert find_many.await_args.kwargs["include"] == {"GraphExecution": True}
+
+
+@pytest.mark.asyncio
+async def test_reaper_returns_actual_db_update_count_not_candidate_count():
+    """If a candidate transitions away from RUNNING between find_many and
+    update_many (TOCTOU), the reaper must report the real DB-update count
+    rather than `len(orphan_ids)`."""
+    candidates = [
+        _candidate("ne-1", ExecutionStatus.FAILED.value),
+        _candidate("ne-2", ExecutionStatus.FAILED.value),
+        _candidate("ne-3", ExecutionStatus.FAILED.value),
+    ]
+
+    with (
+        patch("backend.data.execution.AgentNodeExecution") as mock_ne,
+        patch(
+            "backend.data.execution.update_node_execution_status_batch",
+            new_callable=AsyncMock,
+        ) as mock_batch,
+    ):
+        mock_ne.prisma.return_value.find_many = AsyncMock(return_value=candidates)
+        # Simulate one row already having transitioned away from RUNNING.
+        mock_batch.return_value = 2
+
+        reaped = await reap_orphan_node_executions()
+
+    assert reaped == 2
