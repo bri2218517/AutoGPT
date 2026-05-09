@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { render } from "@/tests/integrations/test-utils";
 import { QueueBadge } from "../QueueBadge";
 
@@ -33,7 +33,6 @@ vi.mock("@/components/molecules/Toast/use-toast", () => ({
 }));
 
 afterEach(() => {
-  cleanup();
   cancelMock.mockClear();
   isPending = false;
 });

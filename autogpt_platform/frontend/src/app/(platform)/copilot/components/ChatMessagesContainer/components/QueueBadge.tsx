@@ -11,7 +11,11 @@ import {
 } from "@/components/atoms/Tooltip/BaseTooltip";
 import { toast } from "@/components/molecules/Toast/use-toast";
 import * as Sentry from "@sentry/nextjs";
-import { Hourglass, WarningCircle, XCircle } from "@phosphor-icons/react";
+import {
+  HourglassIcon,
+  WarningCircleIcon,
+  XCircleIcon,
+} from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 
 interface Props {
@@ -74,7 +78,7 @@ export function QueueBadge({
             className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700"
             data-testid="queue-badge-blocked"
           >
-            <WarningCircle size={12} weight="fill" />
+            <WarningCircleIcon size={12} weight="fill" />
             Blocked
           </span>
         </TooltipTrigger>
@@ -98,7 +102,7 @@ export function QueueBadge({
             className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-[11px] font-medium text-purple-800"
             data-testid="queue-badge-queued"
           >
-            <Hourglass size={12} weight="bold" />
+            <HourglassIcon size={12} weight="bold" />
             Queued
           </span>
         </TooltipTrigger>
@@ -117,7 +121,7 @@ export function QueueBadge({
               data-testid="queue-cancel-button"
               className="inline-flex h-4 w-4 items-center justify-center rounded-full text-neutral-500 transition-colors hover:text-red-600 disabled:opacity-50"
             >
-              <XCircle size={14} weight="fill" />
+              <XCircleIcon size={14} weight="fill" />
             </button>
           </TooltipTrigger>
           <TooltipContent side="top">Cancel queued task</TooltipContent>

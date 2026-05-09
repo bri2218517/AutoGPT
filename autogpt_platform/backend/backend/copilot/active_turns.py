@@ -81,6 +81,18 @@ def inflight_turn_limit_message(limit: int | None = None) -> str:
     )
 
 
+def running_turn_limit_message(limit: int | None = None) -> str:
+    """Default :class:`ConcurrentTurnLimitError` detail when the
+    *running* cap is hit on a path that does not queue (AutoPilotBlock,
+    ``run_sub_session``). The HTTP route catches the error before it
+    surfaces and replaces the message with the inflight one."""
+    resolved = get_running_turn_limit() if limit is None else limit
+    return (
+        f"You have {resolved} AutoPilot tasks already running. "
+        f"Please wait for one of them to finish before starting a new one."
+    )
+
+
 def queued_turn_message() -> str:
     """User-facing message rendered when a turn is queued instead of
     starting immediately because the running cap is full."""
@@ -93,16 +105,19 @@ def queued_turn_message() -> str:
 # Back-compat shims — older module name. Prefer the explicit running/inflight
 # variants in new code.
 get_concurrent_turn_limit = get_running_turn_limit
-concurrent_turn_limit_message = inflight_turn_limit_message
+concurrent_turn_limit_message = running_turn_limit_message
 
 
 class ConcurrentTurnLimitError(Exception):
-    """User has reached the configured concurrent in-flight AutoPilot
-    turn cap. Maps to HTTP 429 in the API layer.
+    """User has reached the configured running AutoPilot turn cap.
+
+    The HTTP chat route catches this and falls through to the FIFO
+    queue (or 429 at the inflight cap). Non-HTTP paths surface the
+    default ``running_turn_limit_message`` to the user.
     """
 
     def __init__(self, message: str | None = None) -> None:
-        super().__init__(message or concurrent_turn_limit_message())
+        super().__init__(message or running_turn_limit_message())
 
 
 def _user_pool_key(user_id: str) -> str:
@@ -112,7 +127,9 @@ def _user_pool_key(user_id: str) -> str:
     return f"{_USER_ACTIVE_TURNS_KEY_PREFIX}{{{user_id}}}"
 
 
-async def _try_admit_user_turn(user_id: str, session_id: str) -> SlotAdmission:
+async def _try_admit_user_turn(
+    user_id: str, session_id: str, capacity: int
+) -> SlotAdmission:
     """Atomic admit/refresh against the user's active-turn pool.
 
     Fails open (returns ``ADMITTED``) on Redis errors so a brown-out
@@ -125,7 +142,7 @@ async def _try_admit_user_turn(user_id: str, session_id: str) -> SlotAdmission:
             redis,
             pool_key=_user_pool_key(user_id),
             slot_id=session_id,
-            capacity=get_concurrent_turn_limit(),
+            capacity=capacity,
             score=now,
             stale_before_score=now - MAX_TURN_LIFETIME_SECONDS,
             ttl_seconds=MAX_TURN_LIFETIME_SECONDS,
@@ -137,6 +154,29 @@ async def _try_admit_user_turn(user_id: str, session_id: str) -> SlotAdmission:
             exc,
         )
         return SlotAdmission.ADMITTED
+
+
+async def get_running_session_ids(user_id: str) -> set[str]:
+    """Set of session IDs currently consuming a running-turn slot.
+
+    Used by the dispatcher to skip queued heads whose session already
+    has a running turn — otherwise ``acquire_turn_slot`` returns
+    ``REFRESHED`` and two turns share a single slot, with the first
+    turn's completion releasing the shared slot prematurely.
+    """
+    try:
+        redis = await get_redis_async()
+        key = _user_pool_key(user_id)
+        await redis.zremrangebyscore(
+            key, "-inf", time.time() - MAX_TURN_LIFETIME_SECONDS
+        )
+        members = await redis.zrange(key, 0, -1)
+        return {m.decode() if isinstance(m, bytes) else m for m in members}
+    except (RedisError, RedisClusterException, ConnectionError, OSError) as exc:
+        logger.warning(
+            "get_running_session_ids: Redis unavailable for user=%s: %s", user_id, exc
+        )
+        return set()
 
 
 async def count_running_turns(user_id: str) -> int:
@@ -206,8 +246,19 @@ class TurnSlot:
 async def acquire_turn_slot(
     user_id: str | None,
     session_id: str,
+    capacity: int | None = None,
 ) -> AsyncIterator[TurnSlot]:
     """Reserve a turn slot for the duration of the ``async with`` block.
+
+    ``capacity`` controls how many concurrent slots the user may hold:
+
+    * The HTTP chat route uses the default (running cap, default 5) so
+      the 6th submit raises :class:`ConcurrentTurnLimitError` and the
+      route falls through to the FIFO queue.
+    * Non-HTTP entry points (``schedule_turn`` for ``run_sub_session``
+      / ``AutoPilotBlock``) pass the inflight cap (default 15) since
+      they have no queue and must preserve the prior cap behaviour
+      from #13064.
 
     Three branches on entry:
 
@@ -219,16 +270,22 @@ async def acquire_turn_slot(
       caller does NOT own its release. Exiting without ``keep`` is a
       no-op.
     * **Rejected** — pool is at the configured cap; raises
-      :class:`ConcurrentTurnLimitError` (caller maps to HTTP 429).
+      :class:`ConcurrentTurnLimitError` (caller maps to HTTP 429 or
+      surfaces the message to the AutoPilot tool result).
 
     Anonymous sessions (``user_id`` falsy) bypass the gate entirely and
     yield a no-op handle.
     """
     handle = TurnSlot(user_id or "", session_id)
     if user_id:
-        outcome = await _try_admit_user_turn(user_id, session_id)
+        resolved_capacity = (
+            capacity if capacity is not None else get_running_turn_limit()
+        )
+        outcome = await _try_admit_user_turn(user_id, session_id, resolved_capacity)
         if outcome is SlotAdmission.REJECTED:
-            raise ConcurrentTurnLimitError()
+            raise ConcurrentTurnLimitError(
+                running_turn_limit_message(resolved_capacity)
+            )
         if outcome is SlotAdmission.ADMITTED:
             handle.admitted = True
 

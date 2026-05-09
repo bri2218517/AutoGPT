@@ -327,7 +327,7 @@ async def dispatch_next_for_user(user_id: str) -> bool:
     # Local imports to keep the cold-start path light and avoid pulling
     # the rate-limit + executor pipeline into modules that just want
     # queue counts.
-    from backend.copilot.active_turns import acquire_turn_slot
+    from backend.copilot.active_turns import acquire_turn_slot, get_running_session_ids
     from backend.copilot.config import ChatConfig
     from backend.copilot.executor.utils import dispatch_turn
     from backend.copilot.model import invalidate_session_cache
@@ -347,6 +347,22 @@ async def dispatch_next_for_user(user_id: str) -> bool:
         order={"createdAt": "asc"},
     )
     if head is None:
+        return False
+
+    # Skip dispatch if the head's session already has a running turn —
+    # otherwise ``acquire_turn_slot`` returns ``REFRESHED`` instead of
+    # admitting a fresh slot, two turns share a single slot, and the
+    # first turn's completion releases the shared slot for both. The
+    # next slot-free hook (or routine timer) will retry once that
+    # session is idle.
+    busy_sessions = await get_running_session_ids(user_id)
+    if head.sessionId in busy_sessions:
+        logger.debug(
+            "dispatch_next_for_user: queued head %s targets busy session %s; "
+            "deferring to next slot-free tick",
+            head.id,
+            head.sessionId,
+        )
         return False
 
     if await is_user_paywalled(user_id):

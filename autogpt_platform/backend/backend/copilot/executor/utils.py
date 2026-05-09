@@ -9,7 +9,11 @@ import logging
 
 from pydantic import BaseModel
 
-from backend.copilot.active_turns import TurnSlot, acquire_turn_slot
+from backend.copilot.active_turns import (
+    TurnSlot,
+    acquire_turn_slot,
+    get_inflight_turn_limit,
+)
 from backend.copilot.config import CopilotLlmModel, CopilotMode
 from backend.copilot.permissions import CopilotPermissions
 from backend.data.rabbitmq import Exchange, ExchangeType, Queue, RabbitMQConfig
@@ -316,8 +320,16 @@ async def schedule_turn(
       a RabbitMQ blip cannot leak a slot until the stale-cutoff sweep.
     * On success the slot is *kept*: ownership transfers to
       ``mark_session_completed``, which releases it when the turn ends.
+
+    Capacity is the *inflight* cap (default 15) rather than the running
+    cap (default 5): non-HTTP callers (``run_sub_session``,
+    ``AutoPilotBlock``) have no FIFO queue fallback, so applying the
+    soft running cap here would regress concurrency below the prior
+    SECRT-2335 hotfix behaviour.
     """
-    async with acquire_turn_slot(user_id, session_id) as slot:
+    async with acquire_turn_slot(
+        user_id, session_id, capacity=get_inflight_turn_limit()
+    ) as slot:
         await dispatch_turn(
             slot,
             session_id=session_id,
