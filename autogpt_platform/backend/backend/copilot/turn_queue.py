@@ -387,8 +387,22 @@ async def dispatch_next_for_user(user_id: str) -> bool:
     except Exception:
         # Roll the claim back so a missed-dispatch tick or the next
         # slot-free event can retry. We re-set queueStatus rather than
-        # leaving the row half-promoted with stale metadata.
-        await chat_db().restore_claimed_turn_to_queued(message_id=row.id)
+        # leaving the row half-promoted with stale metadata. The
+        # restore call has its own try/except so a transient DB error
+        # there doesn't swallow the original dispatch exception or
+        # leave the operator with no signal — at minimum we log loudly
+        # so the orphaned row is recoverable from logs + DB inspection.
+        try:
+            await chat_db().restore_claimed_turn_to_queued(message_id=row.id)
+        except Exception as restore_exc:
+            logger.error(
+                "dispatch_next_for_user: failed to restore claim for "
+                "message=%s session=%s after dispatch failure; row left "
+                "with queueStatus=NULL and will need manual recovery: %s",
+                row.id,
+                row.session_id,
+                restore_exc,
+            )
         raise
     # The promoted row's queueStatus was cleared by claim_queued_turn_by_id;
     # refresh the chat-session cache so the frontend stops rendering the
