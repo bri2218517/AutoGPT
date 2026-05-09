@@ -26,6 +26,7 @@ import orjson
 from redis.exceptions import RedisError
 
 from backend.api.model import CopilotCompletionPayload
+from backend.copilot.active_turns import release_turn_slot
 from backend.data.db_accessors import chat_db
 from backend.data.notification_bus import (
     AsyncRedisNotificationEventBus,
@@ -870,8 +871,6 @@ async def mark_session_completed(
     # is a no-op in that case (no slot was ever acquired).
     user_id = (meta.get("user_id") or "") if meta else ""
     if user_id:
-        from backend.copilot.active_turns import release_turn_slot
-
         await release_turn_slot(user_id, session_id)
 
     # Force-release the executor's cluster lock so the next enqueued turn can

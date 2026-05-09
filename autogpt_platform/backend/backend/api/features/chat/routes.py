@@ -16,8 +16,8 @@ from backend.copilot import stream_registry
 from backend.copilot.active_turns import (
     CONCURRENT_TURN_LIMIT_MESSAGE,
     MAX_CONCURRENT_TURNS_PER_USER,
-    release_turn_slot,
-    try_acquire_turn_slot,
+    ConcurrentTurnLimitError,
+    acquire_turn_slot,
 )
 from backend.copilot.builder_context import resolve_session_permissions
 from backend.copilot.config import ChatConfig, CopilotLlmModel, CopilotMode
@@ -1084,54 +1084,56 @@ async def stream_chat_post(
     if turn_id:
         # Per-user concurrent-turn cap (SECRT-2335). Blocks API abuse where a
         # single user (or compromised key) spawns hundreds of concurrent turns
-        # before cost-based rate limiting catches up. Slot is released by
-        # ``mark_session_completed`` when the turn finishes / fails / cancels,
-        # or by the stale-cutoff sweep on the next acquire if a turn crashes
-        # without a clean completion event.
-        if user_id and not await try_acquire_turn_slot(
-            user_id=user_id,
-            session_id=session_id,
-            limit=MAX_CONCURRENT_TURNS_PER_USER,
-        ):
-            raise HTTPException(status_code=429, detail=CONCURRENT_TURN_LIMIT_MESSAGE)
-
+        # before cost-based rate limiting catches up. The context manager
+        # auto-releases the slot if anything between acquisition and
+        # ``slot.keep()`` raises (create_session / enqueue_copilot_turn
+        # failures, etc.) — only a successfully scheduled turn transfers
+        # slot ownership to ``mark_session_completed``.
         log_meta["turn_id"] = turn_id
         session_create_start = time.perf_counter()
         try:
-            await stream_registry.create_session(
-                session_id=session_id,
+            async with acquire_turn_slot(
                 user_id=user_id,
-                tool_call_id="chat_stream",
-                tool_name="chat",
-                turn_id=turn_id,
-            )
-        except Exception:
-            # Don't keep the slot if we couldn't even register the session.
-            if user_id:
-                await release_turn_slot(user_id, session_id)
-            raise
-        logger.info(
-            f"[TIMING] create_session completed in {(time.perf_counter() - session_create_start) * 1000:.1f}ms",
-            extra={
-                "json_fields": {
-                    **log_meta,
-                    "duration_ms": (time.perf_counter() - session_create_start) * 1000,
-                }
-            },
-        )
-        await enqueue_copilot_turn(
-            session_id=session_id,
-            user_id=user_id,
-            message=request.message,
-            turn_id=turn_id,
-            is_user_message=request.is_user_message,
-            context=request.context,
-            file_ids=sanitized_file_ids,
-            mode=request.mode,
-            model=request.model,
-            permissions=builder_permissions,
-            request_arrival_at=request_arrival_at,
-        )
+                session_id=session_id,
+                limit=MAX_CONCURRENT_TURNS_PER_USER,
+            ) as slot:
+                await stream_registry.create_session(
+                    session_id=session_id,
+                    user_id=user_id,
+                    tool_call_id="chat_stream",
+                    tool_name="chat",
+                    turn_id=turn_id,
+                )
+                logger.info(
+                    f"[TIMING] create_session completed in {(time.perf_counter() - session_create_start) * 1000:.1f}ms",
+                    extra={
+                        "json_fields": {
+                            **log_meta,
+                            "duration_ms": (time.perf_counter() - session_create_start)
+                            * 1000,
+                        }
+                    },
+                )
+                await enqueue_copilot_turn(
+                    session_id=session_id,
+                    user_id=user_id,
+                    message=request.message,
+                    turn_id=turn_id,
+                    is_user_message=request.is_user_message,
+                    context=request.context,
+                    file_ids=sanitized_file_ids,
+                    mode=request.mode,
+                    model=request.model,
+                    permissions=builder_permissions,
+                    request_arrival_at=request_arrival_at,
+                )
+                # Successfully scheduled — hand the slot off to
+                # ``mark_session_completed`` for the rest of the turn.
+                slot.keep()
+        except ConcurrentTurnLimitError as exc:
+            raise HTTPException(
+                status_code=429, detail=CONCURRENT_TURN_LIMIT_MESSAGE
+            ) from exc
     else:
         logger.info(
             f"[STREAM] Duplicate message detected for session {session_id}, skipping enqueue"

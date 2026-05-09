@@ -6,9 +6,10 @@ hundreds of simultaneous turns and exhaust shared infrastructure.
 
 Storage is a Redis sorted set per user (``copilot:user_active_turns:{user_id}``),
 member = ``session_id`` (one in-flight turn per session at most), score =
-unix timestamp of acquisition. Stale entries (older than ``stream_ttl``)
-are auto-cleaned on every count, so a crashed turn that never released
-its slot does not permanently consume the cap.
+unix timestamp of acquisition. Stale entries (older than
+:data:`STALE_TURN_CUTOFF_SECONDS`) are auto-cleaned on every acquisition,
+so a crashed turn that never released its slot does not permanently consume
+the cap.
 
 Acquisition is via a single Lua script that atomically:
 
@@ -18,17 +19,27 @@ Acquisition is via a single Lua script that atomically:
 
 This keeps two concurrent ``POST /chat`` requests from both reading
 ``count = 14`` and both sneaking through.
+
+Lifecycle
+---------
+
+The supported pattern is the :func:`acquire_turn_slot` async context manager.
+On a normal turn the chat route enters the manager, schedules the turn, and
+calls ``slot.keep()`` to transfer ownership of the slot to
+``mark_session_completed``, which releases it once the turn ends. If anything
+between ``__aenter__`` and ``slot.keep()`` raises (``create_session`` failure,
+``enqueue_copilot_turn`` failure, etc.), the slot is released automatically
+on context exit, so the route never leaks a slot on infrastructure errors.
 """
 
 import logging
 import time
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 from redis.exceptions import RedisClusterException, RedisError
 
-from backend.copilot.config import ChatConfig
 from backend.data.redis_client import AsyncRedisClient, get_redis_async
-
-_config = ChatConfig()
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +48,14 @@ logger = logging.getLogger(__name__)
 # setting once SECRT-2339 lands the configurable queue. For the hotfix this
 # is the single in-flight gate.
 MAX_CONCURRENT_TURNS_PER_USER = 15
+
+# Upper bound on how long a single turn can hold its slot before the
+# stale-cutoff sweep frees it. Matches the ``AutoPilotBlock`` 6h max-wait so a
+# legitimate long-running turn isn't prematurely released, while still
+# guaranteeing a crashed turn that never calls :func:`release_turn_slot`
+# cannot hold the slot forever. Far exceeds typical chat turn duration
+# (seconds-minutes); the normal release path is ``mark_session_completed``.
+STALE_TURN_CUTOFF_SECONDS = 6 * 60 * 60
 
 CONCURRENT_TURN_LIMIT_MESSAGE = (
     f"You've reached the limit of {MAX_CONCURRENT_TURNS_PER_USER} active tasks. "
@@ -57,7 +76,7 @@ class ConcurrentTurnLimitError(Exception):
 
 # Atomic check-and-add. KEYS[1] = user's sorted set; ARGV[1] = session_id;
 # ARGV[2] = now (score for new entry); ARGV[3] = stale cutoff timestamp;
-# ARGV[4] = limit; ARGV[5] = TTL seconds. Returns 1 on acquired, 0 on rejected.
+# ARGV[4] = limit; ARGV[5] = key TTL seconds. Returns 1 on acquired, 0 on rejected.
 _TRY_ACQUIRE_SCRIPT = """
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[3])
 local existing = redis.call('ZSCORE', KEYS[1], ARGV[1])
@@ -97,11 +116,15 @@ async def try_acquire_turn_slot(
     Fails open on Redis errors — the route continues but logs a warning.
     Failing closed here would 429 every user during a Redis brown-out, which
     is worse than the abuse-protection brief gap.
+
+    Most callers should use :func:`acquire_turn_slot` instead, which wraps
+    the acquire/release lifecycle in a context manager so the slot can't
+    leak on a downstream failure.
     """
     try:
         redis = await get_redis_async()
         now = time.time()
-        stale_cutoff = now - _config.stream_ttl
+        stale_cutoff = now - STALE_TURN_CUTOFF_SECONDS
         result = await redis.eval(  # type: ignore[misc]
             _TRY_ACQUIRE_SCRIPT,
             1,
@@ -110,7 +133,7 @@ async def try_acquire_turn_slot(
             str(now),
             str(stale_cutoff),
             str(limit),
-            str(_config.stream_ttl),
+            str(STALE_TURN_CUTOFF_SECONDS),
         )
     except (RedisError, RedisClusterException, ConnectionError, OSError) as exc:
         logger.warning(
@@ -147,10 +170,71 @@ async def count_active_turns(user_id: str) -> int:
     try:
         redis: AsyncRedisClient = await get_redis_async()
         key = _user_key(user_id)
-        await redis.zremrangebyscore(key, "-inf", time.time() - _config.stream_ttl)
+        await redis.zremrangebyscore(
+            key, "-inf", time.time() - STALE_TURN_CUTOFF_SECONDS
+        )
         return await redis.zcard(key)
     except (RedisError, RedisClusterException, ConnectionError, OSError) as exc:
         logger.warning(
             "count_active_turns: Redis unavailable for user=%s: %s", user_id, exc
         )
         return 0
+
+
+class TurnSlot:
+    """Handle yielded by :func:`acquire_turn_slot`. Call :meth:`keep` once
+    the turn has been successfully scheduled to transfer ownership of the
+    slot to ``mark_session_completed`` (which releases it on turn end).
+
+    If :meth:`keep` is never called — because acquisition was refused, the
+    user_id was empty, or the with-block exits with or without an
+    exception before reaching the call — the context manager releases the
+    slot itself on ``__aexit__``.
+    """
+
+    __slots__ = ("user_id", "session_id", "acquired", "_kept")
+
+    def __init__(self, user_id: str, session_id: str) -> None:
+        self.user_id = user_id
+        self.session_id = session_id
+        self.acquired = False
+        self._kept = False
+
+    def keep(self) -> None:
+        """Transfer slot ownership out of this context. Caller is now
+        responsible for ensuring ``mark_session_completed`` will release
+        it (or accepting the stale-cutoff fallback)."""
+        self._kept = True
+
+
+@asynccontextmanager
+async def acquire_turn_slot(
+    user_id: str | None,
+    session_id: str,
+    limit: int = MAX_CONCURRENT_TURNS_PER_USER,
+) -> AsyncIterator[TurnSlot]:
+    """Reserve a turn slot for the duration of the ``async with`` block.
+
+    On entry, raises :class:`ConcurrentTurnLimitError` if the user is at or
+    above ``limit`` (caller maps this to HTTP 429). Anonymous sessions
+    (``user_id`` falsy) bypass the gate and yield a no-op handle.
+
+    On exit:
+
+    * if the body called :meth:`TurnSlot.keep`, the slot is held — the
+      caller has handed off ownership to a downstream completion path.
+    * otherwise (clean exit *or* exception), the slot is released
+      immediately so failed schedules don't leak a slot until the
+      stale-cutoff sweep.
+    """
+    handle = TurnSlot(user_id or "", session_id)
+    if user_id:
+        if not await try_acquire_turn_slot(user_id, session_id, limit):
+            raise ConcurrentTurnLimitError()
+        handle.acquired = True
+
+    try:
+        yield handle
+    finally:
+        if handle.acquired and not handle._kept:
+            await release_turn_slot(handle.user_id, handle.session_id)
