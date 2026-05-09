@@ -1,10 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
 import { render } from "@/tests/integrations/test-utils";
 import { QueueBadge } from "../QueueBadge";
 
 const cancelMock = vi.fn();
+const captureExceptionMock = vi.fn();
+const toastMock = vi.fn();
 let isPending = false;
+type ErrorResponse = { response?: { status?: number } } | null;
+let errorResponse: ErrorResponse = null;
 
 vi.mock("@/app/api/__generated__/endpoints/chat/chat", () => ({
   useDeleteV2CancelQueuedTask: ({
@@ -17,6 +21,10 @@ vi.mock("@/app/api/__generated__/endpoints/chat/chat", () => ({
   }) => ({
     mutate: (args: { messageId: string }) => {
       cancelMock(args);
+      if (errorResponse !== null) {
+        mutation?.onError?.(errorResponse);
+        return;
+      }
       mutation?.onSuccess?.({ status: 204 });
     },
     isPending,
@@ -26,14 +34,22 @@ vi.mock("@/app/api/__generated__/endpoints/chat/chat", () => ({
   ],
 }));
 
-vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn() }));
-vi.mock("@/components/molecules/Toast/use-toast", () => ({
-  toast: vi.fn(),
-  useToast: () => ({ toast: vi.fn(), dismiss: vi.fn(), toasts: [] }),
+vi.mock("@sentry/nextjs", () => ({
+  captureException: (...args: unknown[]) => captureExceptionMock(...args),
 }));
+vi.mock("@/components/molecules/Toast/use-toast", () => ({
+  toast: (...args: unknown[]) => toastMock(...args),
+  useToast: () => ({ toast: toastMock, dismiss: vi.fn(), toasts: [] }),
+}));
+
+beforeEach(() => {
+  errorResponse = null;
+});
 
 afterEach(() => {
   cancelMock.mockClear();
+  captureExceptionMock.mockClear();
+  toastMock.mockClear();
   isPending = false;
 });
 
@@ -54,5 +70,38 @@ describe("QueueBadge", () => {
     render(<QueueBadge sessionID="sess-1" />);
     expect(screen.getByTestId("queue-badge-queued")).toBeDefined();
     expect(screen.queryByTestId("queue-cancel-button")).toBeNull();
+  });
+
+  it("treats a 404 cancel response as success (no toast, no Sentry)", () => {
+    // 404 = task already promoted / not owned: not a real failure, the
+    // UI just needs to resync. The destructive toast must NOT fire.
+    errorResponse = { response: { status: 404 } };
+    render(<QueueBadge rawMessageId="msg-x" sessionID="sess-1" />);
+    fireEvent.click(screen.getByTestId("queue-cancel-button"));
+    expect(toastMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the destructive toast and reports to Sentry on a real cancel error", () => {
+    errorResponse = { response: { status: 500 } };
+    render(<QueueBadge rawMessageId="msg-y" sessionID="sess-1" />);
+    fireEvent.click(screen.getByTestId("queue-cancel-button"));
+    expect(toastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        variant: "destructive",
+        title: "Could not cancel queued task",
+      }),
+    );
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles cancel errors with no response object (network error)", () => {
+    // No `.response` on the error → the `status === 404` check should
+    // be false, so we fall through to the toast + Sentry path.
+    errorResponse = {};
+    render(<QueueBadge rawMessageId="msg-z" sessionID="sess-1" />);
+    fireEvent.click(screen.getByTestId("queue-cancel-button"));
+    expect(toastMock).toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalled();
   });
 });
