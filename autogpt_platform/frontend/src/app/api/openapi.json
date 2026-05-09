@@ -2143,6 +2143,62 @@
         }
       }
     },
+    "/api/chat/queued-tasks": {
+      "get": {
+        "tags": ["v2", "chat", "chat"],
+        "summary": "List the user's queued + recently-blocked AutoPilot tasks",
+        "description": "Both queued (waiting for a running slot) and blocked (re-validation\nfailed; preserved instead of silently dropped) tasks. Ordered FIFO\nfor queued, newest-first for blocked.",
+        "operationId": "getV2List the user's queued + recently-blocked autopilot tasks",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/QueuedTaskList" }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/HTTP401NotAuthenticatedError"
+          }
+        },
+        "security": [{ "HTTPBearerJWT": [] }]
+      }
+    },
+    "/api/chat/queued-tasks/{message_id}": {
+      "delete": {
+        "tags": ["v2", "chat", "chat"],
+        "summary": "Cancel Queued Task",
+        "description": "Cancel a queued task before the dispatcher claims it.\n\nNo-op (404) if the row was already promoted to running, blocked,\ncancelled, or doesn't belong to this user — the cancel transition\nis gated on ``queueStatus='queued'`` AND ``Session.userId=user_id``\nin a single atomic update.",
+        "operationId": "deleteV2CancelQueuedTask",
+        "security": [{ "HTTPBearerJWT": [] }],
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "title": "Message Id" }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Successful Response" },
+          "401": {
+            "$ref": "#/components/responses/HTTP401NotAuthenticatedError"
+          },
+          "404": {
+            "description": "Queued task not found or not owned by user"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HTTPValidationError" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/chat/schema/tool-responses": {
       "get": {
         "tags": ["v2", "chat", "chat"],
@@ -15286,6 +15342,68 @@
         "required": ["buffer_length", "max_buffer_length", "turn_in_flight"],
         "title": "QueuePendingMessageResponse",
         "description": "Response returned when a message is queued because the session already\nhas a turn in flight.\n\n- ``buffer_length``: how many messages are now in the session's\n  pending buffer (after this push)\n- ``max_buffer_length``: the per-session cap (server-side constant)\n- ``turn_in_flight``: ``True`` if a copilot turn was running when\n  we checked — purely informational for UX feedback."
+      },
+      "QueuedTaskItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "ChatMessage id; pass to DELETE to cancel"
+          },
+          "session_id": { "type": "string", "title": "Session Id" },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "message": {
+            "anyOf": [
+              { "type": "string", "maxLength": 500 },
+              { "type": "null" }
+            ],
+            "title": "Message"
+          },
+          "queue_status": {
+            "type": "string",
+            "title": "Queue Status",
+            "description": "queued | blocked"
+          },
+          "blocked_reason": {
+            "anyOf": [{ "type": "string" }, { "type": "null" }],
+            "title": "Blocked Reason"
+          }
+        },
+        "type": "object",
+        "required": ["id", "session_id", "created_at", "queue_status"],
+        "title": "QueuedTaskItem",
+        "description": "One queued or blocked AutoPilot task. Frontend renders these in\nthe 'your queued tasks' panel + per-message badge in the chat view."
+      },
+      "QueuedTaskList": {
+        "properties": {
+          "running": { "type": "integer", "title": "Running" },
+          "queued": {
+            "items": { "$ref": "#/components/schemas/QueuedTaskItem" },
+            "type": "array",
+            "title": "Queued"
+          },
+          "blocked": {
+            "items": { "$ref": "#/components/schemas/QueuedTaskItem" },
+            "type": "array",
+            "title": "Blocked"
+          },
+          "running_cap": { "type": "integer", "title": "Running Cap" },
+          "inflight_cap": { "type": "integer", "title": "Inflight Cap" }
+        },
+        "type": "object",
+        "required": [
+          "running",
+          "queued",
+          "blocked",
+          "running_cap",
+          "inflight_cap"
+        ],
+        "title": "QueuedTaskList",
+        "description": "Response shape for ``GET /chat/queued-tasks``. ``running`` is the\nuser's current active-turn count (Redis); ``queued`` are the FIFO\nwaiting tasks; ``blocked`` are tasks the dispatcher gave up on\n(paywall lapsed, USD cap hit). Caps are echoed so the frontend can\nrender '5/5 running, 2 queued, room for 8 more' without a second\nsettings fetch."
       },
       "RateLimitResetResponse": {
         "properties": {
