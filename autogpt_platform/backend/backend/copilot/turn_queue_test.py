@@ -142,42 +142,6 @@ async def test_cancel_queued_turn_returns_false_when_not_owned_or_not_queued() -
     assert ok is False
 
 
-# ── mark_queued_turn_blocked ───────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_mark_queued_turn_blocked_invalidates_cache_on_success() -> None:
-    db = MagicMock()
-    db.mark_queued_turn_blocked_db = AsyncMock(return_value="s1")
-    invalidate = AsyncMock()
-    with (
-        patch.object(turn_queue, "chat_db", return_value=db),
-        patch(
-            "backend.copilot.model.invalidate_session_cache",
-            new=invalidate,
-        ),
-    ):
-        await turn_queue.mark_queued_turn_blocked(message_id="msg-1", reason="paywall")
-    invalidate.assert_awaited_once_with("s1")
-
-
-@pytest.mark.asyncio
-async def test_mark_queued_turn_blocked_noop_when_not_queued() -> None:
-    """No invalidation when the row was already cancelled / claimed."""
-    db = MagicMock()
-    db.mark_queued_turn_blocked_db = AsyncMock(return_value=None)
-    invalidate = AsyncMock()
-    with (
-        patch.object(turn_queue, "chat_db", return_value=db),
-        patch(
-            "backend.copilot.model.invalidate_session_cache",
-            new=invalidate,
-        ),
-    ):
-        await turn_queue.mark_queued_turn_blocked(message_id="msg-1", reason="paywall")
-    invalidate.assert_not_awaited()
-
-
 # ── claim_queued_turn_by_id ────────────────────────────────────────────
 
 
@@ -232,14 +196,14 @@ async def test_try_enqueue_turn_raises_when_at_inflight_cap() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_marks_blocked_when_user_paywalled() -> None:
-    """A queued head whose owner has lapsed to NO_TIER is marked
-    ``blocked`` with a paywall reason instead of consuming a running
-    slot for a turn that would immediately 402."""
+async def test_dispatch_leaves_queued_when_user_paywalled() -> None:
+    """A queued head whose owner has lapsed to NO_TIER stays queued —
+    no DB write, no transition. The next slot-free tick re-validates;
+    if the user re-subscribes the turn dispatches automatically."""
     head = _pyd_message()
     db = MagicMock()
-    db.find_oldest_queued_turn_for_user = AsyncMock(return_value=head)
-    db.mark_queued_turn_blocked_db = AsyncMock(return_value="s1")
+    db.list_queued_turns_for_user = AsyncMock(return_value=[head])
+    db.claim_queued_turn_by_id_db = AsyncMock()
     with (
         patch.object(turn_queue, "chat_db", return_value=db),
         patch(
@@ -250,24 +214,17 @@ async def test_dispatch_marks_blocked_when_user_paywalled() -> None:
             "backend.copilot.active_turns.get_running_session_ids",
             new=AsyncMock(return_value=set()),
         ),
-        patch(
-            "backend.copilot.model.invalidate_session_cache",
-            new=AsyncMock(),
-        ),
     ):
         promoted = await turn_queue.dispatch_next_for_user("u1")
     assert promoted is False
-    db.mark_queued_turn_blocked_db.assert_awaited_once()
-    kwargs = db.mark_queued_turn_blocked_db.call_args.kwargs
-    assert kwargs["message_id"] == "msg-1"
-    assert "Subscription required" in kwargs["reason"]
+    db.claim_queued_turn_by_id_db.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_dispatch_returns_false_when_queue_empty() -> None:
     """No-op when there's nothing queued for the user."""
     db = MagicMock()
-    db.find_oldest_queued_turn_for_user = AsyncMock(return_value=None)
+    db.list_queued_turns_for_user = AsyncMock(return_value=[])
     with (
         patch.object(turn_queue, "chat_db", return_value=db),
         patch(
@@ -280,34 +237,93 @@ async def test_dispatch_returns_false_when_queue_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_skips_busy_session() -> None:
-    """If the queued head's session already has a running turn, defer."""
-    head = _pyd_message(session_id="busy-session")
+async def test_dispatch_skips_busy_session_picks_next_idle() -> None:
+    """Head-of-line tolerance: if the oldest queued row's session is busy,
+    the dispatcher picks the first queued row whose session is idle.
+    Per-session FIFO is preserved, cross-session ordering is loosened."""
+    head = _pyd_message(id="msg-1", session_id="busy-session")
+    next_idle = _pyd_message(id="msg-2", session_id="idle-session")
+    claimed = _pyd_message(id="msg-2", session_id="idle-session", queue_status=None)
     db = MagicMock()
-    db.find_oldest_queued_turn_for_user = AsyncMock(return_value=head)
-    db.mark_queued_turn_blocked_db = AsyncMock()
+    db.list_queued_turns_for_user = AsyncMock(return_value=[head, next_idle])
+    db.claim_queued_turn_by_id_db = AsyncMock(return_value=claimed)
+    db.restore_claimed_turn_to_queued = AsyncMock()
+
+    class _SlotCM:
+        async def __aenter__(self):
+            return MagicMock()
+
+        async def __aexit__(self, *exc):
+            return None
+
     with (
         patch.object(turn_queue, "chat_db", return_value=db),
+        patch(
+            "backend.copilot.rate_limit.is_user_paywalled",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "backend.copilot.rate_limit.get_global_rate_limits",
+            new=AsyncMock(return_value=(100, 1000, None)),
+        ),
+        patch(
+            "backend.copilot.rate_limit.check_rate_limit",
+            new=AsyncMock(),
+        ),
         patch(
             "backend.copilot.active_turns.get_running_session_ids",
             new=AsyncMock(return_value={"busy-session"}),
         ),
+        patch(
+            "backend.copilot.active_turns.acquire_turn_slot",
+            return_value=_SlotCM(),
+        ),
+        patch(
+            "backend.copilot.executor.utils.dispatch_turn",
+            new=AsyncMock(),
+        ),
+        patch(
+            "backend.copilot.model.invalidate_session_cache",
+            new=AsyncMock(),
+        ),
     ):
         promoted = await turn_queue.dispatch_next_for_user("u1")
-    assert promoted is False
-    db.mark_queued_turn_blocked_db.assert_not_awaited()
+    assert promoted is True
+    db.claim_queued_turn_by_id_db.assert_awaited_once_with(message_id="msg-2")
 
 
 @pytest.mark.asyncio
-async def test_dispatch_marks_blocked_on_rate_limit_exceeded() -> None:
-    """Rate-limit exceeded at dispatch time → row marked blocked with a
-    usage-limit reason so the user sees why their queued task didn't run."""
+async def test_dispatch_returns_false_when_all_sessions_busy() -> None:
+    """If every queued row's session is busy, defer the whole dispatch."""
+    queued = [
+        _pyd_message(id="msg-1", session_id="busy-1"),
+        _pyd_message(id="msg-2", session_id="busy-2"),
+    ]
+    db = MagicMock()
+    db.list_queued_turns_for_user = AsyncMock(return_value=queued)
+    db.claim_queued_turn_by_id_db = AsyncMock()
+    with (
+        patch.object(turn_queue, "chat_db", return_value=db),
+        patch(
+            "backend.copilot.active_turns.get_running_session_ids",
+            new=AsyncMock(return_value={"busy-1", "busy-2"}),
+        ),
+    ):
+        promoted = await turn_queue.dispatch_next_for_user("u1")
+    assert promoted is False
+    db.claim_queued_turn_by_id_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_leaves_queued_on_rate_limit_exceeded() -> None:
+    """Rate-limit hit at dispatch time → row stays queued. The window
+    will reset and the next slot-free tick promotes it automatically."""
     from backend.copilot.rate_limit import RateLimitExceeded
 
     head = _pyd_message()
     db = MagicMock()
-    db.find_oldest_queued_turn_for_user = AsyncMock(return_value=head)
-    db.mark_queued_turn_blocked_db = AsyncMock(return_value="s1")
+    db.list_queued_turns_for_user = AsyncMock(return_value=[head])
+    db.claim_queued_turn_by_id_db = AsyncMock()
     resets_at = datetime.now(timezone.utc) + timedelta(hours=1)
     with (
         patch.object(turn_queue, "chat_db", return_value=db),
@@ -327,27 +343,21 @@ async def test_dispatch_marks_blocked_on_rate_limit_exceeded() -> None:
             "backend.copilot.active_turns.get_running_session_ids",
             new=AsyncMock(return_value=set()),
         ),
-        patch(
-            "backend.copilot.model.invalidate_session_cache",
-            new=AsyncMock(),
-        ),
     ):
         promoted = await turn_queue.dispatch_next_for_user("u1")
     assert promoted is False
-    kwargs = db.mark_queued_turn_blocked_db.call_args.kwargs
-    assert "current usage limit" in kwargs["reason"]
+    db.claim_queued_turn_by_id_db.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_dispatch_defers_on_rate_limit_unavailable() -> None:
     """Rate-limit service degraded → leave row queued for the next
-    slot-free tick, no block transition."""
+    slot-free tick, no transition."""
     from backend.copilot.rate_limit import RateLimitUnavailable
 
     head = _pyd_message()
     db = MagicMock()
-    db.find_oldest_queued_turn_for_user = AsyncMock(return_value=head)
-    db.mark_queued_turn_blocked_db = AsyncMock()
+    db.list_queued_turns_for_user = AsyncMock(return_value=[head])
     db.claim_queued_turn_by_id_db = AsyncMock()
     with (
         patch.object(turn_queue, "chat_db", return_value=db),
@@ -366,7 +376,6 @@ async def test_dispatch_defers_on_rate_limit_unavailable() -> None:
     ):
         promoted = await turn_queue.dispatch_next_for_user("u1")
     assert promoted is False
-    db.mark_queued_turn_blocked_db.assert_not_awaited()
     db.claim_queued_turn_by_id_db.assert_not_awaited()
 
 
@@ -379,7 +388,7 @@ async def test_dispatch_happy_path_claims_and_dispatches() -> None:
         queue_status=None, queue_metadata={"mode": "extended_thinking"}
     )
     db = MagicMock()
-    db.find_oldest_queued_turn_for_user = AsyncMock(return_value=head)
+    db.list_queued_turns_for_user = AsyncMock(return_value=[head])
     db.claim_queued_turn_by_id_db = AsyncMock(return_value=claimed)
     db.restore_claimed_turn_to_queued = AsyncMock()
     dispatch_turn_mock = AsyncMock()
@@ -437,7 +446,7 @@ async def test_dispatch_rolls_claim_back_on_dispatch_failure() -> None:
     head = _pyd_message()
     claimed = _pyd_message(queue_status=None)
     db = MagicMock()
-    db.find_oldest_queued_turn_for_user = AsyncMock(return_value=head)
+    db.list_queued_turns_for_user = AsyncMock(return_value=[head])
     db.claim_queued_turn_by_id_db = AsyncMock(return_value=claimed)
     db.restore_claimed_turn_to_queued = AsyncMock()
     dispatch_turn_mock = AsyncMock(side_effect=RuntimeError("RabbitMQ blip"))
@@ -494,5 +503,4 @@ def test_status_constants_match_schema_strings() -> None:
     plus the frontend's queue-status badge would silently break. Pin
     the values."""
     assert turn_queue.STATUS_QUEUED == "queued"
-    assert turn_queue.STATUS_BLOCKED == "blocked"
     assert turn_queue.STATUS_CANCELLED == "cancelled"

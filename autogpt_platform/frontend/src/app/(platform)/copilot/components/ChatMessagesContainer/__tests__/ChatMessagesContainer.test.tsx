@@ -59,22 +59,9 @@ vi.mock("../components/AssistantMessageActions", () => ({
 }));
 
 vi.mock("../components/QueueBadge", () => ({
-  QueueBadge: ({
-    queueStatus,
-    queueBlockedReason,
-    rawMessageId,
-  }: {
-    queueStatus: "queued" | "blocked";
-    queueBlockedReason?: string | null;
-    rawMessageId?: string | null;
-  }) => (
-    <span
-      data-testid="queue-badge"
-      data-status={queueStatus}
-      data-reason={queueBlockedReason ?? ""}
-      data-raw-id={rawMessageId ?? ""}
-    >
-      QueueBadge:{queueStatus}
+  QueueBadge: ({ rawMessageId }: { rawMessageId?: string | null }) => (
+    <span data-testid="queue-badge" data-raw-id={rawMessageId ?? ""}>
+      QueueBadge
     </span>
   ),
 }));
@@ -581,40 +568,7 @@ describe("ChatMessagesContainer — queue badges on user messages", () => {
       />,
     );
     const badge = screen.getByTestId("queue-badge");
-    expect(badge.getAttribute("data-status")).toBe("queued");
     expect(badge.getAttribute("data-raw-id")).toBe("uuid-q1");
-  });
-
-  it("renders a blocked QueueBadge with the blocked_reason for tooltip text", () => {
-    const userId = "user-b1";
-    const turnStats = new Map([
-      [
-        userId,
-        {
-          queueStatus: "blocked" as const,
-          queueBlockedReason: "Subscription required",
-          rawMessageId: "uuid-b1",
-        },
-      ],
-    ]);
-    const messages = [
-      {
-        id: userId,
-        role: "user" as const,
-        parts: [{ type: "text" as const, text: "blocked", state: "done" }],
-      },
-    ];
-    render(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      <ChatMessagesContainer
-        {...(baseProps as any)}
-        messages={messages as any}
-        turnStats={turnStats as any}
-      />,
-    );
-    const badge = screen.getByTestId("queue-badge");
-    expect(badge.getAttribute("data-status")).toBe("blocked");
-    expect(badge.getAttribute("data-reason")).toBe("Subscription required");
   });
 
   it("does NOT render a QueueBadge for normal (non-queued) user messages", () => {

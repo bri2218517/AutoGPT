@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated
 from uuid import uuid4
 
 from autogpt_libs import auth
@@ -16,7 +16,9 @@ from backend.copilot import service as chat_service
 from backend.copilot import stream_registry, turn_queue
 from backend.copilot.active_turns import (
     ConcurrentTurnLimitError,
+    count_running_turns,
     get_inflight_turn_limit,
+    get_running_turn_limit,
     inflight_turn_limit_message,
 )
 from backend.copilot.builder_context import resolve_session_permissions
@@ -144,11 +146,6 @@ async def _try_enqueue_chat_turn(
     pushed us over the cap. Raises ``InflightCapExceeded`` so the
     caller can map to HTTP 429.
     """
-    permissions_payload = (
-        builder_permissions.model_dump(exclude_none=True)
-        if builder_permissions
-        else None
-    )
     await turn_queue.try_enqueue_turn(
         user_id=user_id,
         inflight_cap=inflight_cap,
@@ -160,7 +157,11 @@ async def _try_enqueue_chat_turn(
         file_ids=sanitized_file_ids,
         mode=request.mode,
         model=request.model,
-        permissions=permissions_payload,
+        permissions=(
+            builder_permissions.model_dump(exclude_none=True)
+            if builder_permissions
+            else None
+        ),
         request_arrival_at=request_arrival_at,
     )
 
@@ -658,64 +659,52 @@ async def get_session(
 
 
 class QueuedTaskItem(BaseModel):
-    """One queued or blocked AutoPilot task. Frontend renders these in
-    the 'your queued tasks' panel + per-message badge in the chat view."""
+    """One queued AutoPilot task. Frontend renders these in the 'your
+    queued tasks' panel + per-message badge in the chat view."""
 
     id: str = Field(description="ChatMessage id; pass to DELETE to cancel")
     session_id: str
     created_at: datetime
     message: str | None = Field(default=None, max_length=500)
-    queue_status: str = Field(description="queued | blocked")
-    blocked_reason: str | None = None
 
 
 class QueuedTaskList(BaseModel):
     """Response shape for ``GET /chat/queued-tasks``. ``running`` is the
-    user's current active-turn count (Redis); ``queued`` are the FIFO
-    waiting tasks; ``blocked`` are tasks the dispatcher gave up on
-    (paywall lapsed, USD cap hit). Caps are echoed so the frontend can
-    render '5/5 running, 2 queued, room for 8 more' without a second
-    settings fetch."""
+    user's current active-turn count; ``queued`` are the FIFO waiting
+    tasks. Caps are echoed so the frontend can render '5/5 running, 2
+    queued, room for 8 more' without a second settings fetch."""
 
     running: int
     queued: list[QueuedTaskItem]
-    blocked: list[QueuedTaskItem]
     running_cap: int
     inflight_cap: int
 
 
 @router.get(
     "/queued-tasks",
-    summary="List the user's queued + recently-blocked AutoPilot tasks",
+    summary="List the user's queued AutoPilot tasks",
 )
 async def list_queued_tasks(
     user_id: Annotated[str, Security(auth.get_user_id)],
 ) -> QueuedTaskList:
-    """Both queued (waiting for a running slot) and blocked (re-validation
-    failed; preserved instead of silently dropped) tasks. Ordered FIFO
-    for queued, newest-first for blocked."""
-    from backend.copilot.active_turns import count_running_turns, get_running_turn_limit
-
+    """Tasks waiting for a running slot, ordered FIFO."""
     queued = await turn_queue.list_queued_turns(user_id)
-    blocked = await turn_queue.list_blocked_turns(user_id)
     running = await count_running_turns(user_id)
-
-    def _to_item(row: Any, status: str) -> QueuedTaskItem:
-        # ``row`` is a copilot.model.ChatMessage (Pydantic) returned via
-        # the chat_db() accessor, so attributes are snake_case.
-        return QueuedTaskItem(
-            id=row.id,
-            session_id=row.session_id,
-            created_at=row.created_at,
-            message=(row.content or "")[:500] if row.content else None,
-            queue_status=status,
-            blocked_reason=row.queue_blocked_reason,
-        )
 
     return QueuedTaskList(
         running=running,
-        queued=[_to_item(r, "queued") for r in queued],
-        blocked=[_to_item(r, "blocked") for r in blocked],
+        queued=[
+            QueuedTaskItem(
+                id=r.id,
+                session_id=r.session_id,
+                created_at=r.created_at,
+                message=(r.content or "")[:500] if r.content else None,
+            )
+            for r in queued
+            if r.id is not None
+            and r.session_id is not None
+            and r.created_at is not None
+        ],
         running_cap=get_running_turn_limit(),
         inflight_cap=get_inflight_turn_limit(),
     )

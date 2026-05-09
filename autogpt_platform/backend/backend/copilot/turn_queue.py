@@ -1,5 +1,5 @@
 """Per-user FIFO queue for AutoPilot chat turns that exceeded the soft
-running cap. SECRT-2339.
+running cap.
 
 Storage is the existing :class:`prisma.models.ChatMessage` table with
 a sparse ``queueStatus`` column — a queued task IS the user's message
@@ -7,13 +7,18 @@ in the conversation, just one waiting for a running slot. NULL on every
 chat-history row (the 99% case); set to one of:
 
 * ``"queued"``    — waiting for the running cap to drop below 5
-* ``"blocked"``   — pre-start re-validation failed (paywall lapsed,
-                    USD cap hit). Row stays so the user sees *why*
-                    instead of having the task vanish.
 * ``"cancelled"`` — user dropped it before the dispatcher claimed it.
 
 When the dispatcher promotes a row to running, ``queueStatus`` is
 cleared back to NULL — the row becomes a normal chat message.
+
+If the dispatcher finds the user paywalled / rate-limited at promote
+time, the row stays ``queued`` and the next slot-free hook re-validates
+— the row gets dispatched once eligibility returns, or the user can
+cancel manually. We don't have a separate "blocked" state because (a)
+paywall is already enforced at submit time so a queued+paywalled user
+is the rare mid-queue-lapse case, and (b) leaving the row queued lets
+it auto-recover when the user re-subscribes.
 
 Layered on top of:
 
@@ -50,7 +55,6 @@ logger = logging.getLogger(__name__)
 # ChatMessage.queueStatus values. Strings (not an enum) so adding a new
 # state is code-only with no Prisma migration.
 STATUS_QUEUED = "queued"
-STATUS_BLOCKED = "blocked"
 STATUS_CANCELLED = "cancelled"
 
 
@@ -81,12 +85,6 @@ async def list_queued_turns(user_id: str) -> list[ChatMessage]:
     """User's queued tasks, oldest-first (FIFO order). UX surface for the
     'your queued tasks' panel."""
     return await chat_db().list_queued_turns_for_user(user_id)
-
-
-async def list_blocked_turns(user_id: str) -> list[ChatMessage]:
-    """Tasks the dispatcher gave up on (paywall / cap re-check failed).
-    UX surface for the 'why didn't this run?' panel."""
-    return await chat_db().list_blocked_turns_for_user(user_id)
 
 
 # ============================================================================
@@ -222,28 +220,6 @@ async def cancel_queued_turn(*, user_id: str, message_id: str) -> bool:
     return True
 
 
-async def mark_queued_turn_blocked(*, message_id: str, reason: str) -> None:
-    """Pre-start re-validation failed at dispatch time; preserve the
-    row so the user sees why their queued task didn't run.
-
-    Gated on ``queueStatus='queued'`` so a parallel cancel (user clicked
-    the cancel button between the dispatcher's gate check and this call)
-    isn't silently overwritten with ``blocked``. Also a no-op if the row
-    was already claimed by a concurrent dispatcher.
-
-    Invalidates the session cache on success so the frontend transitions
-    from 'Queued' to 'Blocked' on its next refetch.
-    """
-    session_id = await chat_db().mark_queued_turn_blocked_db(
-        message_id=message_id, reason=reason
-    )
-    if session_id is None:
-        return
-    from backend.copilot.model import invalidate_session_cache
-
-    await invalidate_session_cache(session_id)
-
-
 async def claim_queued_turn_by_id(message_id: str) -> ChatMessage | None:
     """Atomically claim the specific queued row identified by
     ``message_id`` (clear ``queueStatus`` and stamp ``queueStartedAt``).
@@ -290,32 +266,38 @@ async def dispatch_next_for_user(user_id: str) -> bool:
         is_user_paywalled,
     )
 
-    head = await chat_db().find_oldest_queued_turn_for_user(user_id)
-    if head is None or head.id is None or head.session_id is None:
-        return False
-
-    # Skip dispatch if the head's session already has a running turn.
-    # Promoting here would refresh the same ChatSession's
-    # currentTurnStartedAt instead of getting a fresh slot, and the
-    # in-flight turn's completion would clear the timestamp out from
-    # under the just-promoted turn. The next slot-free hook (or routine
-    # timer) will retry once that session is idle.
+    # Find the oldest queued row whose session is currently idle. Strict
+    # FIFO across the whole queue would head-of-line block: if the
+    # oldest queued turn targets a session that already has a running
+    # turn, every subsequent queued task would stall behind it even
+    # though they target idle sessions. So we iterate the queue and
+    # pick the first row whose session isn't busy. Per-session FIFO is
+    # preserved (oldest-first within each session); only cross-session
+    # ordering is loosened, which matches the intent — sessions are
+    # independent conversation contexts.
     busy_sessions = await get_running_session_ids(user_id)
-    if head.session_id in busy_sessions:
-        logger.debug(
-            "dispatch_next_for_user: queued head %s targets busy session %s; "
-            "deferring to next slot-free tick",
-            head.id,
-            head.session_id,
-        )
+    queued = await chat_db().list_queued_turns_for_user(user_id)
+    head = next(
+        (
+            r
+            for r in queued
+            if r.id is not None
+            and r.session_id is not None
+            and r.session_id not in busy_sessions
+        ),
+        None,
+    )
+    if head is None:
         return False
 
     if await is_user_paywalled(user_id):
-        await mark_queued_turn_blocked(
-            message_id=head.id,
-            reason=(
-                "Subscription required to run AutoPilot tasks. " "Upgrade to continue."
-            ),
+        # Mid-queue paywall lapse: leave the row queued. The next
+        # slot-free hook re-validates; if the user re-subscribes the
+        # turn dispatches automatically, otherwise they cancel manually.
+        logger.info(
+            "dispatch_next_for_user: user=%s paywalled, leaving message=%s queued",
+            user_id,
+            head.id,
         )
         return False
 
@@ -332,13 +314,13 @@ async def dispatch_next_for_user(user_id: str) -> bool:
             weekly_cost_limit=weekly_limit,
         )
     except RateLimitExceeded as exc:
-        await mark_queued_turn_blocked(
-            message_id=head.id,
-            reason=(
-                f"This task is ready to run, but your current usage limit "
-                f"has been reached ({exc}). Top up or wait until your "
-                "limit resets to continue."
-            ),
+        # Same recovery model as paywall: leave the row queued, the
+        # rate-limit window will reset and the next tick promotes it.
+        logger.info(
+            "dispatch_next_for_user: user=%s rate-limited (%s), leaving message=%s queued",
+            user_id,
+            exc,
+            head.id,
         )
         return False
     except RateLimitUnavailable:

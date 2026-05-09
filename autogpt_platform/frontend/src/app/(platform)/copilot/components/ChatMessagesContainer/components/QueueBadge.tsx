@@ -11,16 +11,10 @@ import {
 } from "@/components/atoms/Tooltip/BaseTooltip";
 import { toast } from "@/components/molecules/Toast/use-toast";
 import * as Sentry from "@sentry/nextjs";
-import {
-  HourglassIcon,
-  WarningCircleIcon,
-  XCircleIcon,
-} from "@phosphor-icons/react";
+import { HourglassIcon, XCircleIcon } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 
 interface Props {
-  queueStatus: "queued" | "blocked";
-  queueBlockedReason?: string | null;
   /** Raw ChatMessage.id (UUID); required for the cancel endpoint. */
   rawMessageId?: string | null;
   sessionID: string | null;
@@ -29,12 +23,7 @@ interface Props {
 const QUEUED_TOOLTIP =
   "Will start automatically when one of your current tasks finishes.";
 
-export function QueueBadge({
-  queueStatus,
-  queueBlockedReason,
-  rawMessageId,
-  sessionID,
-}: Props) {
+export function QueueBadge({ rawMessageId, sessionID }: Props) {
   const queryClient = useQueryClient();
   const { mutate: cancelTask, isPending: isCancelling } =
     useDeleteV2CancelQueuedTask({
@@ -72,26 +61,6 @@ export function QueueBadge({
         },
       },
     });
-
-  if (queueStatus === "blocked") {
-    const reason = queueBlockedReason || "Task could not be queued.";
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span
-            className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700"
-            data-testid="queue-badge-blocked"
-          >
-            <WarningCircleIcon size={12} weight="fill" />
-            Blocked
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="max-w-xs whitespace-normal">
-          {reason}
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
 
   function handleCancel() {
     if (!rawMessageId || isCancelling) return;

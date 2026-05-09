@@ -5,13 +5,11 @@ export interface TurnStats {
   durationMs?: number;
   createdAt?: string;
   /**
-   * SECRT-2339: queue lifecycle for the user-row that initiated this turn.
-   * Populated only on user messages whose ChatMessage row carries
-   * ``queueStatus``. Surfaces a "Queued" / "Blocked" badge + cancel button
-   * in the chat view.
+   * Queue lifecycle for the user-row that initiated this turn. Populated
+   * only on user messages whose ChatMessage row carries ``queueStatus``.
+   * Surfaces a "Queued" badge + cancel button in the chat view.
    */
-  queueStatus?: "queued" | "blocked" | "cancelled" | null;
-  queueBlockedReason?: string | null;
+  queueStatus?: "queued" | "cancelled" | null;
   /** Raw ChatMessage.id (UUID). Required to call DELETE /chat/queued-tasks/{id}. */
   rawMessageId?: string | null;
 }
@@ -27,8 +25,7 @@ interface SessionChatMessage {
   sequence: number | null;
   duration_ms: number | null;
   created_at: string | null;
-  queue_status: "queued" | "blocked" | "cancelled" | null;
-  queue_blocked_reason: string | null;
+  queue_status: "queued" | "cancelled" | null;
 }
 
 function coerceSessionChatMessages(
@@ -45,9 +42,7 @@ function coerceSessionChatMessages(
       const rawQueueStatus =
         typeof msg.queue_status === "string" ? msg.queue_status : null;
       const queueStatus: SessionChatMessage["queue_status"] =
-        rawQueueStatus === "queued" ||
-        rawQueueStatus === "blocked" ||
-        rawQueueStatus === "cancelled"
+        rawQueueStatus === "queued" || rawQueueStatus === "cancelled"
           ? rawQueueStatus
           : null;
       return {
@@ -78,10 +73,6 @@ function coerceSessionChatMessages(
               ? msg.created_at.toISOString()
               : null,
         queue_status: queueStatus,
-        queue_blocked_reason:
-          typeof msg.queue_blocked_reason === "string"
-            ? msg.queue_blocked_reason
-            : null,
       };
     })
     .filter((m): m is SessionChatMessage => m !== null);
@@ -276,10 +267,9 @@ export function convertChatSessionMessagesToUiMessages(
     )
       return;
 
-    // SECRT-2339: cancelled queued messages stay in the DB for audit
-    // (so /chat/queued-tasks can echo them once before TTL evicts), but
-    // they should NOT clutter the conversation view — the user already
-    // saw them disappear when they clicked the cancel button.
+    // Cancelled queued messages stay in the DB for audit but should NOT
+    // clutter the conversation view — the user already saw them disappear
+    // when they clicked the cancel button.
     if (msg.queue_status === "cancelled") return;
 
     // Role=="reasoning" rows carry extended_thinking content.  Treat them as
@@ -422,10 +412,9 @@ export function convertChatSessionMessagesToUiMessages(
       patch.durationMs = msg.duration_ms;
     }
     if (uiRole === "user") {
-      // SECRT-2339: queue badge + cancel button consume these via
+      // Queue badge + cancel button consume these via
       // ``turnStats.get(message.id)`` in ChatMessagesContainer.
       patch.queueStatus = msg.queue_status;
-      patch.queueBlockedReason = msg.queue_blocked_reason;
       patch.rawMessageId = msg.id;
     }
     if (Object.keys(patch).length > 0) patchStats(msgId, patch);

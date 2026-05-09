@@ -718,18 +718,6 @@ async def test_count_queued_turns_for_user_filters_by_status() -> None:
 
 
 @pytest.mark.asyncio
-async def test_find_oldest_queued_turn_returns_none_when_empty() -> None:
-    from backend.copilot.db import find_oldest_queued_turn_for_user
-
-    find_first = AsyncMock(return_value=None)
-    with patch.object(
-        PrismaChatMessage, "prisma", return_value=AsyncMock(find_first=find_first)
-    ):
-        result = await find_oldest_queued_turn_for_user("u1")
-    assert result is None
-
-
-@pytest.mark.asyncio
 async def test_insert_queued_turn_serialises_metadata_via_safejson() -> None:
     from backend.copilot.db import insert_queued_turn
 
@@ -799,37 +787,6 @@ async def test_cancel_queued_turn_for_user_returns_none_when_not_owned() -> None
         return_value=AsyncMock(update_many=update_many),
     ):
         result = await cancel_queued_turn_for_user(user_id="u1", message_id="m1")
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_mark_queued_turn_blocked_db_returns_session_id_on_success() -> None:
-    from backend.copilot.db import mark_queued_turn_blocked_db
-
-    update_many = AsyncMock(return_value=1)
-    find_unique = AsyncMock(return_value=AsyncMock(sessionId="s1"))
-    with patch.object(
-        PrismaChatMessage,
-        "prisma",
-        return_value=AsyncMock(update_many=update_many, find_unique=find_unique),
-    ):
-        result = await mark_queued_turn_blocked_db(message_id="m1", reason="paywall")
-    assert result == "s1"
-    where = update_many.call_args.kwargs["where"]
-    assert where["queueStatus"] == "queued"
-
-
-@pytest.mark.asyncio
-async def test_mark_queued_turn_blocked_db_returns_none_when_not_queued() -> None:
-    from backend.copilot.db import mark_queued_turn_blocked_db
-
-    update_many = AsyncMock(return_value=0)
-    with patch.object(
-        PrismaChatMessage,
-        "prisma",
-        return_value=AsyncMock(update_many=update_many),
-    ):
-        result = await mark_queued_turn_blocked_db(message_id="m1", reason="paywall")
     assert result is None
 
 

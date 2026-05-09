@@ -766,7 +766,6 @@ async def clear_session_current_turn(session_id: str, user_id: str) -> None:
 
 
 _QUEUE_STATUS_QUEUED = "queued"
-_QUEUE_STATUS_BLOCKED = "blocked"
 _QUEUE_STATUS_CANCELLED = "cancelled"
 
 
@@ -790,33 +789,6 @@ async def list_queued_turns_for_user(user_id: str) -> list[ChatMessage]:
         order={"createdAt": "asc"},
     )
     return [ChatMessage.from_db(r) for r in rows]
-
-
-async def list_blocked_turns_for_user(user_id: str) -> list[ChatMessage]:
-    """User's recently-blocked turns, newest first."""
-    rows = await PrismaChatMessage.prisma().find_many(
-        where={
-            "queueStatus": _QUEUE_STATUS_BLOCKED,
-            "Session": {"is": {"userId": user_id}},
-        },
-        order={"createdAt": "desc"},
-    )
-    return [ChatMessage.from_db(r) for r in rows]
-
-
-async def find_oldest_queued_turn_for_user(
-    user_id: str,
-) -> ChatMessage | None:
-    """Head of the user's queue (oldest queued row), or ``None`` if
-    empty. Used by the dispatcher to pick the next turn to validate."""
-    row = await PrismaChatMessage.prisma().find_first(
-        where={
-            "queueStatus": _QUEUE_STATUS_QUEUED,
-            "Session": {"is": {"userId": user_id}},
-        },
-        order={"createdAt": "asc"},
-    )
-    return ChatMessage.from_db(row) if row else None
 
 
 async def insert_queued_turn(
@@ -857,23 +829,6 @@ async def cancel_queued_turn_for_user(*, user_id: str, message_id: str) -> str |
     updated = await PrismaChatMessage.prisma().update_many(
         where=where,
         data={"queueStatus": _QUEUE_STATUS_CANCELLED},
-    )
-    if updated == 0:
-        return None
-    row = await PrismaChatMessage.prisma().find_unique(where={"id": message_id})
-    return row.sessionId if row else None
-
-
-async def mark_queued_turn_blocked_db(*, message_id: str, reason: str) -> str | None:
-    """Mark a queued row as ``blocked`` with a reason. Gated on
-    ``queueStatus='queued'`` so a parallel cancel isn't overwritten.
-    Returns the row's ``sessionId`` on success, ``None`` otherwise."""
-    updated = await PrismaChatMessage.prisma().update_many(
-        where={"id": message_id, "queueStatus": _QUEUE_STATUS_QUEUED},
-        data={
-            "queueStatus": _QUEUE_STATUS_BLOCKED,
-            "queueBlockedReason": reason,
-        },
     )
     if updated == 0:
         return None

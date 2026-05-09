@@ -407,11 +407,8 @@ class DatabaseManager(AppService):
     clear_session_current_turn = _(chat_db.clear_session_current_turn)
     count_queued_turns_for_user = _(chat_db.count_queued_turns_for_user)
     list_queued_turns_for_user = _(chat_db.list_queued_turns_for_user)
-    list_blocked_turns_for_user = _(chat_db.list_blocked_turns_for_user)
-    find_oldest_queued_turn_for_user = _(chat_db.find_oldest_queued_turn_for_user)
     insert_queued_turn = _(chat_db.insert_queued_turn)
     cancel_queued_turn_for_user = _(chat_db.cancel_queued_turn_for_user)
-    mark_queued_turn_blocked_db = _(chat_db.mark_queued_turn_blocked_db)
     claim_queued_turn_by_id_db = _(chat_db.claim_queued_turn_by_id_db)
     restore_claimed_turn_to_queued = _(chat_db.restore_claimed_turn_to_queued)
 
@@ -647,10 +644,7 @@ class DatabaseManagerAsyncClient(AppServiceClient):
     clear_session_current_turn = d.clear_session_current_turn
     count_queued_turns_for_user = d.count_queued_turns_for_user
     list_queued_turns_for_user = d.list_queued_turns_for_user
-    list_blocked_turns_for_user = d.list_blocked_turns_for_user
-    find_oldest_queued_turn_for_user = d.find_oldest_queued_turn_for_user
     insert_queued_turn = d.insert_queued_turn
     cancel_queued_turn_for_user = d.cancel_queued_turn_for_user
-    mark_queued_turn_blocked_db = d.mark_queued_turn_blocked_db
     claim_queued_turn_by_id_db = d.claim_queued_turn_by_id_db
     restore_claimed_turn_to_queued = d.restore_claimed_turn_to_queued

@@ -37,48 +37,22 @@ afterEach(() => {
   isPending = false;
 });
 
-describe("QueueBadge — queued", () => {
+describe("QueueBadge", () => {
   it("renders the queued badge with the cancel button when a raw id is present", () => {
-    render(
-      <QueueBadge
-        queueStatus="queued"
-        rawMessageId="msg-1"
-        sessionID="sess-1"
-      />,
-    );
+    render(<QueueBadge rawMessageId="msg-1" sessionID="sess-1" />);
     expect(screen.getByTestId("queue-badge-queued")).toBeDefined();
     expect(screen.getByTestId("queue-cancel-button")).toBeDefined();
   });
 
   it("invokes the cancel mutation with the raw message id on click", () => {
-    render(
-      <QueueBadge
-        queueStatus="queued"
-        rawMessageId="msg-42"
-        sessionID="sess-1"
-      />,
-    );
+    render(<QueueBadge rawMessageId="msg-42" sessionID="sess-1" />);
     fireEvent.click(screen.getByTestId("queue-cancel-button"));
     expect(cancelMock).toHaveBeenCalledWith({ messageId: "msg-42" });
   });
 
   it("hides the cancel button when no raw id is available", () => {
-    render(<QueueBadge queueStatus="queued" sessionID="sess-1" />);
+    render(<QueueBadge sessionID="sess-1" />);
     expect(screen.getByTestId("queue-badge-queued")).toBeDefined();
-    expect(screen.queryByTestId("queue-cancel-button")).toBeNull();
-  });
-});
-
-describe("QueueBadge — blocked", () => {
-  it("renders the blocked badge with no cancel button", () => {
-    render(
-      <QueueBadge
-        queueStatus="blocked"
-        queueBlockedReason="Subscription required"
-        sessionID="sess-1"
-      />,
-    );
-    expect(screen.getByTestId("queue-badge-blocked")).toBeDefined();
     expect(screen.queryByTestId("queue-cancel-button")).toBeNull();
   });
 });

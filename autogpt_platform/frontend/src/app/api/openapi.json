@@ -2146,9 +2146,9 @@
     "/api/chat/queued-tasks": {
       "get": {
         "tags": ["v2", "chat", "chat"],
-        "summary": "List the user's queued + recently-blocked AutoPilot tasks",
-        "description": "Both queued (waiting for a running slot) and blocked (re-validation\nfailed; preserved instead of silently dropped) tasks. Ordered FIFO\nfor queued, newest-first for blocked.",
-        "operationId": "getV2List the user's queued + recently-blocked autopilot tasks",
+        "summary": "List the user's queued AutoPilot tasks",
+        "description": "Tasks waiting for a running slot, ordered FIFO.",
+        "operationId": "getV2List the user's queued autopilot tasks",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -15362,21 +15362,12 @@
               { "type": "null" }
             ],
             "title": "Message"
-          },
-          "queue_status": {
-            "type": "string",
-            "title": "Queue Status",
-            "description": "queued | blocked"
-          },
-          "blocked_reason": {
-            "anyOf": [{ "type": "string" }, { "type": "null" }],
-            "title": "Blocked Reason"
           }
         },
         "type": "object",
-        "required": ["id", "session_id", "created_at", "queue_status"],
+        "required": ["id", "session_id", "created_at"],
         "title": "QueuedTaskItem",
-        "description": "One queued or blocked AutoPilot task. Frontend renders these in\nthe 'your queued tasks' panel + per-message badge in the chat view."
+        "description": "One queued AutoPilot task. Frontend renders these in the 'your\nqueued tasks' panel + per-message badge in the chat view."
       },
       "QueuedTaskList": {
         "properties": {
@@ -15386,24 +15377,13 @@
             "type": "array",
             "title": "Queued"
           },
-          "blocked": {
-            "items": { "$ref": "#/components/schemas/QueuedTaskItem" },
-            "type": "array",
-            "title": "Blocked"
-          },
           "running_cap": { "type": "integer", "title": "Running Cap" },
           "inflight_cap": { "type": "integer", "title": "Inflight Cap" }
         },
         "type": "object",
-        "required": [
-          "running",
-          "queued",
-          "blocked",
-          "running_cap",
-          "inflight_cap"
-        ],
+        "required": ["running", "queued", "running_cap", "inflight_cap"],
         "title": "QueuedTaskList",
-        "description": "Response shape for ``GET /chat/queued-tasks``. ``running`` is the\nuser's current active-turn count (Redis); ``queued`` are the FIFO\nwaiting tasks; ``blocked`` are tasks the dispatcher gave up on\n(paywall lapsed, USD cap hit). Caps are echoed so the frontend can\nrender '5/5 running, 2 queued, room for 8 more' without a second\nsettings fetch."
+        "description": "Response shape for ``GET /chat/queued-tasks``. ``running`` is the\nuser's current active-turn count; ``queued`` are the FIFO waiting\ntasks. Caps are echoed so the frontend can render '5/5 running, 2\nqueued, room for 8 more' without a second settings fetch."
       },
       "RateLimitResetResponse": {
         "properties": {

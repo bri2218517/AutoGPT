@@ -407,27 +407,6 @@ describe("convertChatSessionMessagesToUiMessages — queue lifecycle", () => {
     expect(stats?.rawMessageId).toBe("uuid-user-1");
   });
 
-  it("captures blocked status + reason for tooltip", () => {
-    const result = convertChatSessionMessagesToUiMessages(
-      SESSION_ID,
-      [
-        {
-          id: "uuid-user-2",
-          role: "user",
-          content: "blocked",
-          sequence: 0,
-          queue_status: "blocked",
-          queue_blocked_reason: "Subscription required",
-        },
-      ],
-      { isComplete: true },
-    );
-
-    const stats = result.stats.get(result.messages[0].id);
-    expect(stats?.queueStatus).toBe("blocked");
-    expect(stats?.queueBlockedReason).toBe("Subscription required");
-  });
-
   it("hides cancelled queued messages from the conversation view", () => {
     const result = convertChatSessionMessagesToUiMessages(
       SESSION_ID,
@@ -461,6 +440,5 @@ describe("convertChatSessionMessagesToUiMessages — queue lifecycle", () => {
 
     const stats = result.stats.get(result.messages[0].id);
     expect(stats?.queueStatus).toBeNull();
-    expect(stats?.queueBlockedReason).toBeNull();
   });
 });

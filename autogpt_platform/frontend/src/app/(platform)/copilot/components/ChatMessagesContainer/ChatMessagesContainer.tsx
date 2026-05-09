@@ -565,8 +565,7 @@ export function ChatMessagesContainer({
               {message.role === "user" &&
                 (() => {
                   const stats = turnStats?.get(message.id);
-                  const queueStatus = stats?.queueStatus;
-                  if (queueStatus !== "queued" && queueStatus !== "blocked") {
+                  if (stats?.queueStatus !== "queued") {
                     return null;
                   }
                   return (
@@ -575,8 +574,6 @@ export function ChatMessagesContainer({
                       data-testid="queue-status-row"
                     >
                       <QueueBadge
-                        queueStatus={queueStatus}
-                        queueBlockedReason={stats?.queueBlockedReason}
                         rawMessageId={stats?.rawMessageId}
                         sessionID={sessionID ?? null}
                       />
