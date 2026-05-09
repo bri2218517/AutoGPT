@@ -39,26 +39,30 @@ export function QueueBadge({
   const { mutate: cancelTask, isPending: isCancelling } =
     useDeleteV2CancelQueuedTask({
       mutation: {
-        onSuccess: (response) => {
-          if (response.status === 204) {
-            if (sessionID) {
-              queryClient.invalidateQueries({
-                queryKey: getGetV2GetSessionQueryKey(sessionID),
-              });
-            }
+        onSuccess: () => {
+          if (sessionID) {
             queryClient.invalidateQueries({
-              queryKey: ["/api/chat/queued-tasks"],
+              queryKey: getGetV2GetSessionQueryKey(sessionID),
             });
-          } else if (response.status === 404) {
-            // Already promoted / not owned — refetch to sync UI with reality.
-            if (sessionID) {
-              queryClient.invalidateQueries({
-                queryKey: getGetV2GetSessionQueryKey(sessionID),
-              });
-            }
           }
+          queryClient.invalidateQueries({
+            queryKey: ["/api/chat/queued-tasks"],
+          });
         },
         onError: (error) => {
+          // 404 means the task was already promoted / not owned — sync the UI
+          // with reality (the badge has stopped meaning what we thought) and
+          // suppress the toast since this is expected, not an actual failure.
+          const status = (error as { response?: { status?: number } })?.response
+            ?.status;
+          if (status === 404) {
+            if (sessionID) {
+              queryClient.invalidateQueries({
+                queryKey: getGetV2GetSessionQueryKey(sessionID),
+              });
+            }
+            return;
+          }
           Sentry.captureException(error);
           toast({
             variant: "destructive",
