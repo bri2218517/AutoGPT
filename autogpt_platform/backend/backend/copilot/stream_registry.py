@@ -865,6 +865,15 @@ async def mark_session_completed(
         logger.debug(f"Session {session_id} already completed/failed, skipping")
         return False
 
+    # Release the per-user concurrent-turn slot now that this turn is no longer
+    # in flight. user_id may be empty for anonymous sessions; release_turn_slot
+    # is a no-op in that case (no slot was ever acquired).
+    user_id = (meta.get("user_id") or "") if meta else ""
+    if user_id:
+        from backend.copilot.active_turns import release_turn_slot
+
+        await release_turn_slot(user_id, session_id)
+
     # Force-release the executor's cluster lock so the next enqueued turn can
     # acquire it immediately. The lock holder's on_run_done will also release
     # (idempotent delete); doing it here unblocks cases where the task hangs

@@ -13,6 +13,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.copilot import service as chat_service
 from backend.copilot import stream_registry
+from backend.copilot.active_turns import (
+    CONCURRENT_TURN_LIMIT_MESSAGE,
+    MAX_CONCURRENT_TURNS_PER_USER,
+    release_turn_slot,
+    try_acquire_turn_slot,
+)
 from backend.copilot.builder_context import resolve_session_permissions
 from backend.copilot.config import ChatConfig, CopilotLlmModel, CopilotMode
 from backend.copilot.db import get_chat_messages_paginated
@@ -902,7 +908,10 @@ def _empty_ui_message_stream_response() -> StreamingResponse:
     "/sessions/{session_id}/stream",
     responses={
         404: {"description": "Session not found or access denied"},
-        429: {"description": "Cost rate-limit or call-frequency cap exceeded"},
+        429: {
+            "description": "Cost rate-limit, call-frequency cap, or "
+            "per-user concurrent-turn limit exceeded"
+        },
         503: {
             "description": "Chat service degraded (Redis unavailable for rate "
             "limit or stream registry); client should honour the Retry-After "
@@ -1073,15 +1082,34 @@ async def stream_chat_post(
     # in-progress executor output rather than an empty stream.
     turn_id = "" if is_duplicate_message else str(uuid4())
     if turn_id:
+        # Per-user concurrent-turn cap (SECRT-2335). Blocks API abuse where a
+        # single user (or compromised key) spawns hundreds of concurrent turns
+        # before cost-based rate limiting catches up. Slot is released by
+        # ``mark_session_completed`` when the turn finishes / fails / cancels,
+        # or by the stale-cutoff sweep on the next acquire if a turn crashes
+        # without a clean completion event.
+        if user_id and not await try_acquire_turn_slot(
+            user_id=user_id,
+            session_id=session_id,
+            limit=MAX_CONCURRENT_TURNS_PER_USER,
+        ):
+            raise HTTPException(status_code=429, detail=CONCURRENT_TURN_LIMIT_MESSAGE)
+
         log_meta["turn_id"] = turn_id
         session_create_start = time.perf_counter()
-        await stream_registry.create_session(
-            session_id=session_id,
-            user_id=user_id,
-            tool_call_id="chat_stream",
-            tool_name="chat",
-            turn_id=turn_id,
-        )
+        try:
+            await stream_registry.create_session(
+                session_id=session_id,
+                user_id=user_id,
+                tool_call_id="chat_stream",
+                tool_name="chat",
+                turn_id=turn_id,
+            )
+        except Exception:
+            # Don't keep the slot if we couldn't even register the session.
+            if user_id:
+                await release_turn_slot(user_id, session_id)
+            raise
         logger.info(
             f"[TIMING] create_session completed in {(time.perf_counter() - session_create_start) * 1000:.1f}ms",
             extra={
