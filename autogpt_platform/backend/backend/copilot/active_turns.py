@@ -51,24 +51,49 @@ MAX_TURN_LIFETIME_SECONDS = 6 * 60 * 60
 _USER_ACTIVE_TURNS_KEY_PREFIX = "copilot:user_active_turns:"
 
 
-def get_concurrent_turn_limit() -> int:
-    """Resolve the configured per-user concurrent-turn cap at call time.
+def get_running_turn_limit() -> int:
+    """Configured soft cap on concurrently *running* turns per user.
 
-    Reading at call time (rather than module load) lets operators retune
-    the cap by editing the env-backed Settings without redeploying the
-    code that imports this module.
+    Tasks submitted while the user is at this cap are queued (up to
+    :func:`get_inflight_turn_limit`). Reading at call time so operators
+    can retune via env-backed Settings without a redeploy.
+    """
+    return Settings().config.max_running_copilot_turns_per_user
+
+
+def get_inflight_turn_limit() -> int:
+    """Configured hard cap on in-flight (running + queued) turns per user.
+
+    Once total in-flight hits this, :class:`InflightTurnLimitError` is
+    raised on new submissions and the API returns HTTP 429.
     """
     return Settings().config.max_concurrent_copilot_turns_per_user
 
 
-def concurrent_turn_limit_message(limit: int | None = None) -> str:
-    """User-facing 429 detail string. Pass ``limit`` if you already
-    resolved it; otherwise we read the configured value."""
-    resolved = get_concurrent_turn_limit() if limit is None else limit
+def inflight_turn_limit_message(limit: int | None = None) -> str:
+    """User-facing 429 detail when the in-flight cap is hit. Includes
+    queued tasks in the count to match the user's mental model
+    ('15 active = 5 running + 10 queued')."""
+    resolved = get_inflight_turn_limit() if limit is None else limit
     return (
-        f"You've reached the limit of {resolved} active tasks. Please wait "
-        f"for one of your current tasks to finish before starting a new one."
+        f"You've reached the limit of {resolved} active tasks (running + queued). "
+        f"Please wait for one of your current tasks to finish before starting a new one."
     )
+
+
+def queued_turn_message() -> str:
+    """User-facing message rendered when a turn is queued instead of
+    starting immediately because the running cap is full."""
+    return (
+        "Your task has been queued and will start automatically when one of "
+        "your current tasks finishes."
+    )
+
+
+# Back-compat shims — older module name. Prefer the explicit running/inflight
+# variants in new code.
+get_concurrent_turn_limit = get_running_turn_limit
+concurrent_turn_limit_message = inflight_turn_limit_message
 
 
 class ConcurrentTurnLimitError(Exception):
@@ -112,6 +137,26 @@ async def _try_admit_user_turn(user_id: str, session_id: str) -> SlotAdmission:
             exc,
         )
         return SlotAdmission.ADMITTED
+
+
+async def count_running_turns(user_id: str) -> int:
+    """Return the user's current running-turn count, after sweeping stale
+    entries. Used by the queue layer to compute in-flight = running +
+    queued for the hard cap. Best-effort — returns 0 if Redis is
+    unreachable so the queue path stays available.
+    """
+    try:
+        redis = await get_redis_async()
+        key = _user_pool_key(user_id)
+        await redis.zremrangebyscore(
+            key, "-inf", time.time() - MAX_TURN_LIFETIME_SECONDS
+        )
+        return await redis.zcard(key)
+    except (RedisError, RedisClusterException, ConnectionError, OSError) as exc:
+        logger.warning(
+            "count_running_turns: Redis unavailable for user=%s: %s", user_id, exc
+        )
+        return 0
 
 
 async def release_turn_slot(user_id: str, session_id: str) -> None:

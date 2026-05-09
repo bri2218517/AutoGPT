@@ -83,6 +83,13 @@ class ChatMessage(BaseModel):
     duration_ms: int | None = None
     created_at: datetime | None = None
 
+    # SECRT-2339 queue lifecycle. NULL on every immediately-dispatched
+    # message; populated only when the turn is queued / blocked /
+    # cancelled. Frontend renders a 'Queued' badge / blocked-reason
+    # tooltip based on these.
+    queue_status: str | None = None
+    queue_blocked_reason: str | None = None
+
     @staticmethod
     def from_db(prisma_message: PrismaChatMessage) -> "ChatMessage":
         """Convert a Prisma ChatMessage to a Pydantic ChatMessage."""
@@ -98,6 +105,8 @@ class ChatMessage(BaseModel):
             sequence=prisma_message.sequence,
             duration_ms=prisma_message.durationMs,
             created_at=prisma_message.createdAt,
+            queue_status=prisma_message.queueStatus,
+            queue_blocked_reason=prisma_message.queueBlockedReason,
         )
 
 

@@ -3,7 +3,8 @@
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
-from typing import Annotated
+from datetime import datetime
+from typing import Annotated, Any
 from uuid import uuid4
 
 from autogpt_libs import auth
@@ -12,10 +13,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.copilot import service as chat_service
-from backend.copilot import stream_registry
+from backend.copilot import stream_registry, turn_queue
 from backend.copilot.active_turns import (
     ConcurrentTurnLimitError,
-    concurrent_turn_limit_message,
+    get_inflight_turn_limit,
+    inflight_turn_limit_message,
 )
 from backend.copilot.builder_context import resolve_session_permissions
 from backend.copilot.config import ChatConfig, CopilotLlmModel, CopilotMode
@@ -38,6 +40,7 @@ from backend.copilot.pending_message_helpers import (
     queue_pending_for_http,
 )
 from backend.copilot.pending_messages import peek_pending_messages
+from backend.copilot.permissions import CopilotPermissions
 from backend.copilot.rate_limit import (
     CoPilotUsagePublic,
     RateLimitExceeded,
@@ -122,6 +125,47 @@ async def _validate_and_get_session(
     if not session:
         raise NotFoundError(f"Session {session_id} not found.")
     return session
+
+
+async def _enqueue_chat_turn(
+    *,
+    request: "StreamChatRequest",
+    session_id: str,
+    user_id: str,
+    sanitized_file_ids: list[str] | None,
+    builder_permissions: CopilotPermissions | None,
+    request_arrival_at: float,
+) -> None:
+    """Persist a user message that hit the running cap into the queue.
+
+    The next-sequence lookup uses the same chat-db path as
+    ``append_and_save_message`` so the queued row sits at the end of
+    the conversation. We rely on the ``ChatMessage.id`` PK uniqueness
+    for retransmit dedup (caller passes ``request.message_id`` if the
+    frontend supplied one).
+    """
+    from backend.data.db_accessors import chat_db
+
+    next_sequence = await chat_db().get_next_sequence(session_id)
+    permissions_payload = (
+        builder_permissions.model_dump(exclude_none=True)
+        if builder_permissions
+        else None
+    )
+    await turn_queue.enqueue_turn(
+        user_id=user_id,
+        session_id=session_id,
+        message=request.message,
+        message_id=request.message_id,
+        is_user_message=request.is_user_message,
+        sequence=next_sequence,
+        context=request.context,
+        file_ids=sanitized_file_ids,
+        mode=request.mode,
+        model=request.model,
+        permissions=permissions_payload,
+        request_arrival_at=request_arrival_at,
+    )
 
 
 router = APIRouter(
@@ -611,6 +655,100 @@ async def get_session(
     )
 
 
+# =====================================================================
+# SECRT-2339 — queued-task surface
+# =====================================================================
+
+
+class QueuedTaskItem(BaseModel):
+    """One queued or blocked AutoPilot task. Frontend renders these in
+    the 'your queued tasks' panel + per-message badge in the chat view."""
+
+    id: str = Field(description="ChatMessage id; pass to DELETE to cancel")
+    session_id: str
+    created_at: datetime
+    message: str | None = Field(default=None, max_length=500)
+    queue_status: str = Field(description="queued | blocked")
+    blocked_reason: str | None = None
+
+
+class QueuedTaskList(BaseModel):
+    """Response shape for ``GET /chat/queued-tasks``. ``running`` is the
+    user's current active-turn count (Redis); ``queued`` are the FIFO
+    waiting tasks; ``blocked`` are tasks the dispatcher gave up on
+    (paywall lapsed, USD cap hit). Caps are echoed so the frontend can
+    render '5/5 running, 2 queued, room for 8 more' without a second
+    settings fetch."""
+
+    running: int
+    queued: list[QueuedTaskItem]
+    blocked: list[QueuedTaskItem]
+    running_cap: int
+    inflight_cap: int
+
+
+@router.get(
+    "/queued-tasks",
+    summary="List the user's queued + recently-blocked AutoPilot tasks",
+)
+async def list_queued_tasks(
+    user_id: Annotated[str, Security(auth.get_user_id)],
+) -> QueuedTaskList:
+    """Both queued (waiting for a running slot) and blocked (re-validation
+    failed; preserved instead of silently dropped) tasks. Ordered FIFO
+    for queued, newest-first for blocked."""
+    from backend.copilot.active_turns import count_running_turns, get_running_turn_limit
+
+    queued = await turn_queue.list_queued_turns(user_id)
+    blocked = await turn_queue.list_blocked_turns(user_id)
+    running = await count_running_turns(user_id)
+
+    def _to_item(row: Any, status: str) -> QueuedTaskItem:
+        return QueuedTaskItem(
+            id=row.id,
+            session_id=row.sessionId,
+            created_at=row.createdAt,
+            message=(row.content or "")[:500] if row.content else None,
+            queue_status=status,
+            blocked_reason=row.queueBlockedReason,
+        )
+
+    return QueuedTaskList(
+        running=running,
+        queued=[_to_item(r, "queued") for r in queued],
+        blocked=[_to_item(r, "blocked") for r in blocked],
+        running_cap=get_running_turn_limit(),
+        inflight_cap=get_inflight_turn_limit(),
+    )
+
+
+@router.delete(
+    "/queued-tasks/{message_id}",
+    status_code=204,
+    responses={404: {"description": "Queued task not found or not owned by user"}},
+)
+async def cancel_queued_task(
+    message_id: str,
+    user_id: Annotated[str, Security(auth.get_user_id)],
+) -> Response:
+    """Cancel a queued task before the dispatcher claims it.
+
+    No-op (404) if the row was already promoted to running, blocked,
+    cancelled, or doesn't belong to this user — the cancel transition
+    is gated on ``queueStatus='queued'`` AND ``Session.userId=user_id``
+    in a single atomic update.
+    """
+    cancelled = await turn_queue.cancel_queued_turn(
+        user_id=user_id, message_id=message_id
+    )
+    if not cancelled:
+        raise HTTPException(
+            status_code=404,
+            detail="Queued task not found, already running, or not owned by you.",
+        )
+    return Response(status_code=204)
+
+
 @router.get(
     "/usage",
 )
@@ -1075,10 +1213,33 @@ async def stream_chat_post(
             permissions=builder_permissions,
             request_arrival_at=request_arrival_at,
         )
-    except ConcurrentTurnLimitError as exc:
-        raise HTTPException(
-            status_code=429, detail=concurrent_turn_limit_message()
-        ) from exc
+    except ConcurrentTurnLimitError:
+        # Soft running cap (default 5) hit. Fall through to the queue:
+        # if total in-flight (running + queued) is still under the hard
+        # cap (default 15), persist the user's message with
+        # ``queueStatus='queued'`` and return the empty UI stream — the
+        # dispatcher will promote it when a running slot frees. Past
+        # the hard cap the user is blocked at HTTP 429.
+        inflight = await turn_queue.count_inflight_turns(user_id)
+        inflight_cap = get_inflight_turn_limit()
+        if inflight >= inflight_cap:
+            raise HTTPException(
+                status_code=429,
+                detail=inflight_turn_limit_message(inflight_cap),
+            )
+        await _enqueue_chat_turn(
+            request=request,
+            session_id=session_id,
+            user_id=user_id,
+            sanitized_file_ids=sanitized_file_ids,
+            builder_permissions=builder_permissions,
+            request_arrival_at=request_arrival_at,
+        )
+        logger.info(
+            f"[STREAM] Queued turn for session={session_id} "
+            f"(running cap reached; inflight={inflight + 1}/{inflight_cap})"
+        )
+        return _empty_ui_message_stream_response()
 
     if turn_id is None:
         logger.info(
