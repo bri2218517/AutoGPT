@@ -307,8 +307,8 @@ async def schedule_turn(
       ``mark_session_completed``, which releases it when the turn ends.
 
     Centralised here so the chat HTTP route, the AutoPilotBlock session
-    waiter, and the future SECRT-2339 queue dispatcher all fan in to one
-    code path instead of repeating the slot/create/enqueue dance.
+    waiter, and the future queue dispatcher all fan in to one code path
+    instead of repeating the slot/create/enqueue dance.
     """
     # Local imports to keep the cold-start path of this module light and
     # avoid importing copilot.active_turns / stream_registry into modules

@@ -123,7 +123,7 @@ async def test_count_active_turns_returns_zero_on_redis_error(
 
 
 def test_default_limit_constant_is_15() -> None:
-    """SECRT-2335 hard cap. If you change this, update the user-facing
+    """Hard cap. If you change this, update the user-facing
     error message and the linear ticket."""
     assert MAX_CONCURRENT_TURNS_PER_USER == 15
 

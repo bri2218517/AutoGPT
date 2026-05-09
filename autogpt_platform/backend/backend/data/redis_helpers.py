@@ -67,23 +67,24 @@ redis.call('EXPIRE', KEYS[2], tonumber(ARGV[5]))
 return redis.call('LLEN', KEYS[2])
 """
 
-# Atomically: sweep stale members, refresh existing member or add new
-# member iff under cap, then set the key's TTL. Returns 1 when the member
-# is in the set on exit, 0 when admission was refused (count >= limit and
-# member wasn't already present).
+# Atomically: sweep stale slots, refresh an existing slot's claim or add
+# a new slot iff the pool is under capacity, then set the pool key's TTL.
+# Returns 1 when the slot is reserved on exit, 0 when reservation was
+# refused (pool full and slot wasn't already held).
 #
-# Used for per-actor concurrency caps where a sorted set's members are
-# active "slots" and the score is the slot's start time. Stale members
-# (slots whose owner crashed without cleanup) are reclaimed by the sweep
-# so a one-time leak can't permanently consume the cap.
+# Used for distributed per-actor concurrency caps. A "pool" is a Redis
+# sorted set whose members are active slot ids and whose scores are the
+# slot's reservation timestamp. Stale slots (owner crashed without
+# release) are reclaimed by the sweep so a one-time leak cannot
+# permanently consume capacity.
 #
-#   KEYS[1]  sorted set key
-#   ARGV[1]  member
-#   ARGV[2]  score for the new entry (typically now)
-#   ARGV[3]  stale-cutoff score (entries with score <= this are dropped)
-#   ARGV[4]  limit (max members allowed before admission is refused)
-#   ARGV[5]  TTL seconds applied to the key on every successful admit
-_TRY_ZADD_UNDER_LIMIT_LUA = """
+#   KEYS[1]  pool key (sorted set)
+#   ARGV[1]  slot id (member)
+#   ARGV[2]  reservation score (typically now)
+#   ARGV[3]  stale-cutoff score (slots with score <= this are dropped)
+#   ARGV[4]  capacity (max concurrent slots before reservation is refused)
+#   ARGV[5]  TTL seconds applied to the pool key on every successful reserve
+_TRY_RESERVE_SLOT_LUA = """
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[3])
 local existing = redis.call('ZSCORE', KEYS[1], ARGV[1])
 if existing then
@@ -216,52 +217,55 @@ async def capped_rpush_if_hash_field(
     return None if length < 0 else length
 
 
-async def try_zadd_under_limit(
+async def try_reserve_slot(
     redis: AsyncRedisClient,
     *,
-    key: str,
-    member: str,
+    pool_key: str,
+    slot_id: str,
     score: float,
-    limit: int,
-    stale_cutoff_score: float,
+    capacity: int,
+    stale_before_score: float,
     ttl_seconds: int,
 ) -> bool:
-    """Atomically reserve one of *limit* "slots" in a sorted set.
+    """Atomically reserve one of *capacity* slots in a Redis-backed pool.
 
-    The set's members are active reservations; the score is each slot's
-    creation timestamp. On every call we:
+    Use this whenever you need a distributed concurrency cap — "this
+    actor may have at most N of X in flight at the same time". The pool
+    is a sorted set whose members are active slot ids and whose scores
+    are reservation timestamps; on every call we:
 
-    1. Sweep entries with ``score <= stale_cutoff_score`` — slots whose
-       owner crashed without cleanup don't permanently consume the cap.
-    2. If ``member`` already exists, refresh its score (re-acquisition is
-       idempotent — same caller for the same logical reservation) and
-       admit.
-    3. Otherwise, admit only if the post-sweep ``ZCARD < limit``.
-    4. On admit, set ``ttl_seconds`` on the key as a belt-and-braces TTL
-       in case the sweep ever stops running.
+    1. Sweep slots with ``score <= stale_before_score`` — slots whose
+       holder crashed without releasing don't permanently consume capacity.
+    2. If ``slot_id`` is already in the pool, refresh its score
+       (re-reservation is idempotent — same holder, same logical slot)
+       and return success.
+    3. Otherwise, reserve only if the post-sweep slot count is below
+       ``capacity``.
+    4. On a successful reserve, set ``ttl_seconds`` on the pool key as a
+       belt-and-braces TTL for the case where the sweep ever stops.
 
-    Returns ``True`` if *member* is in the set on return (admitted or
-    already-present and refreshed), ``False`` if admission was refused.
+    Returns ``True`` if ``slot_id`` is reserved on return (newly admitted
+    or already held and refreshed), ``False`` if the pool is full.
 
-    Genuinely needs Lua: the ZADD is conditional on the ZCARD result,
-    and ``MULTI/EXEC`` cannot branch on intermediate replies. Without
-    atomicity, two concurrent callers both read ``count = limit - 1``
-    and both add, ending up over the limit.
+    Why a Lua script: the reservation is conditional on the post-sweep
+    count, and ``MULTI/EXEC`` cannot branch on intermediate replies.
+    Without atomicity, two concurrent callers both read ``count =
+    capacity - 1`` and both add, ending up over capacity.
 
-    Redis Cluster: only ``KEYS[1]`` is touched, so any caller is free to
-    use a single hash-tag in *key* (e.g. ``foo:{user_id}``) to colocate
-    the set on one shard without CROSSSLOT issues.
+    Redis Cluster: only ``KEYS[1]`` is touched, so callers are free to
+    hash-tag *pool_key* (e.g. ``foo:{user_id}``) to colocate the pool
+    on one shard without CROSSSLOT issues.
     """
     result = await cast(
         "Any",
         redis.eval(
-            _TRY_ZADD_UNDER_LIMIT_LUA,
+            _TRY_RESERVE_SLOT_LUA,
             1,
-            key,
-            member,
+            pool_key,
+            slot_id,
             str(score),
-            str(stale_cutoff_score),
-            str(limit),
+            str(stale_before_score),
+            str(capacity),
             str(ttl_seconds),
         ),
     )

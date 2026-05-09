@@ -31,14 +31,14 @@ from typing import AsyncIterator
 from redis.exceptions import RedisClusterException, RedisError
 
 from backend.data.redis_client import AsyncRedisClient, get_redis_async
-from backend.data.redis_helpers import try_zadd_under_limit
+from backend.data.redis_helpers import try_reserve_slot
 
 logger = logging.getLogger(__name__)
 
 
-# Default cap; can be overridden by the ``copilot_max_inflight_turns_per_user``
-# setting once SECRT-2339 lands the configurable queue. For the hotfix this
-# is the single in-flight gate.
+# Hard cap on concurrent in-flight chat turns per user. Single gate today;
+# the upcoming queue feature will layer a soft "running" cap underneath
+# this with overflow turns waiting in a queue, but this hard ceiling stays.
 MAX_CONCURRENT_TURNS_PER_USER = 15
 
 # Upper bound on a single AutoPilot turn's wall-clock duration. Beyond this
@@ -100,13 +100,13 @@ async def try_acquire_turn_slot(
     try:
         redis = await get_redis_async()
         now = time.time()
-        return await try_zadd_under_limit(
+        return await try_reserve_slot(
             redis,
-            key=_user_key(user_id),
-            member=session_id,
+            pool_key=_user_key(user_id),
+            slot_id=session_id,
             score=now,
-            limit=limit,
-            stale_cutoff_score=now - STALE_TURN_CUTOFF_SECONDS,
+            capacity=limit,
+            stale_before_score=now - STALE_TURN_CUTOFF_SECONDS,
             ttl_seconds=STALE_TURN_CUTOFF_SECONDS,
         )
     except (RedisError, RedisClusterException, ConnectionError, OSError) as exc:
