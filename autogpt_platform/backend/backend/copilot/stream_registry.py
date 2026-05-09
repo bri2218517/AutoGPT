@@ -876,21 +876,6 @@ async def mark_session_completed(
     user_id = meta.get("user_id") or ""
     if user_id:
         await release_turn_slot(user_id, session_id)
-        # Slot freed → promote the user's oldest queued turn (if any).
-        # Best-effort: dispatcher errors are logged inside turn_queue;
-        # we never let a queue hiccup break the completion path. Local
-        # import: turn_queue → executor.utils → stream_registry would
-        # be circular at module load.
-        try:
-            from backend.copilot.turn_queue import dispatch_next_for_user
-
-            await dispatch_next_for_user(user_id)
-        except Exception as exc:
-            logger.warning(
-                "queue dispatch after session=%s completion failed: %s",
-                session_id,
-                exc,
-            )
 
     # Force-release the executor's cluster lock so the next enqueued turn can
     # acquire it immediately. The lock holder's on_run_done will also release
@@ -909,6 +894,25 @@ async def mark_session_completed(
         await redis.delete(f"{STREAM_LOCK_PREFIX}{session_id}")
     except RedisError as e:
         logger.warning(f"Failed to release stream lock for session {session_id}: {e}")
+
+    # Promote the user's oldest queued turn (if any) AFTER the executor
+    # cluster lock and SDK stream lock are cleared — otherwise the
+    # promoted turn races against the just-finished turn's stale locks
+    # and stalls until TTL. Best-effort: dispatcher errors are logged
+    # inside turn_queue; we never let a queue hiccup break the
+    # completion path. Local import: turn_queue → executor.utils →
+    # stream_registry would be circular at module load.
+    if user_id:
+        try:
+            from backend.copilot.turn_queue import dispatch_next_for_user
+
+            await dispatch_next_for_user(user_id)
+        except Exception as exc:
+            logger.warning(
+                "queue dispatch after session=%s completion failed: %s",
+                session_id,
+                exc,
+            )
 
     if error_message and not skip_error_publish:
         try:

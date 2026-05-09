@@ -31,10 +31,11 @@ Caps are configured via:
 """
 
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from prisma import Json
-from prisma.errors import RecordNotFoundError
 from prisma.models import ChatMessage
 from prisma.types import ChatMessageWhereInput
 
@@ -72,8 +73,16 @@ async def count_queued_turns(user_id: str) -> int:
 
 
 async def count_inflight_turns(user_id: str) -> int:
-    """Running (Redis) + queued (DB). Hard cap is enforced against this."""
-    return await count_running_turns(user_id) + await count_queued_turns(user_id)
+    """Running (Redis) + queued (DB). Hard cap is enforced against this.
+
+    Counts queued first, then running: a concurrent ``queued → running``
+    promotion between the two reads can be double-counted (safe — caller
+    rejects an extra task) but never missed entirely. The cap may
+    therefore briefly read high under burst load, but never low.
+    """
+    queued = await count_queued_turns(user_id)
+    running = await count_running_turns(user_id)
+    return queued + running
 
 
 async def list_queued_turns(user_id: str) -> list[ChatMessage]:
@@ -105,9 +114,70 @@ async def list_blocked_turns(user_id: str) -> list[ChatMessage]:
 # ============================================================================
 
 
-async def enqueue_turn(
+class InflightCapExceeded(Exception):
+    """User's running + queued total has reached the configured hard cap.
+
+    Raised by :func:`try_enqueue_turn` so the route can map to HTTP 429.
+    """
+
+
+async def try_enqueue_turn(
     *,
     user_id: str,
+    inflight_cap: int,
+    session_id: str,
+    message: str,
+    message_id: str | None = None,
+    is_user_message: bool = True,
+    context: Mapping[str, str] | None = None,
+    file_ids: list[str] | None = None,
+    mode: str | None = None,
+    model: str | None = None,
+    permissions: Mapping[str, Any] | None = None,
+    request_arrival_at: float = 0.0,
+) -> ChatMessage:
+    """Atomically admit a queued turn against the user's hard cap.
+
+    Optimistic protocol with post-insert recount: a concurrent submit
+    that races past the pre-check is detected by the recount and one of
+    the in-flight inserts is rolled back. The losing caller sees
+    :class:`InflightCapExceeded` and the route maps to HTTP 429.
+
+    The dispatcher race (claim between insert and recount) is handled
+    by gating the rollback delete on ``queueStatus='queued'`` — a row
+    already claimed by a concurrent dispatcher survives, and that
+    caller is admitted (the message is now running).
+    """
+    if await count_inflight_turns(user_id) >= inflight_cap:
+        raise InflightCapExceeded()
+
+    row = await enqueue_turn(
+        session_id=session_id,
+        message=message,
+        message_id=message_id,
+        is_user_message=is_user_message,
+        context=context,
+        file_ids=file_ids,
+        mode=mode,
+        model=model,
+        permissions=permissions,
+        request_arrival_at=request_arrival_at,
+    )
+
+    if await count_inflight_turns(user_id) > inflight_cap:
+        deleted = await ChatMessage.prisma().delete_many(
+            where={"id": row.id, "queueStatus": STATUS_QUEUED},
+        )
+        if deleted > 0:
+            from backend.copilot.model import invalidate_session_cache
+
+            await invalidate_session_cache(session_id)
+            raise InflightCapExceeded()
+    return row
+
+
+async def enqueue_turn(
+    *,
     session_id: str,
     message: str,
     message_id: str | None = None,
@@ -121,8 +191,8 @@ async def enqueue_turn(
 ) -> ChatMessage:
     """Persist a user message that couldn't dispatch immediately because
     the user is at the running cap. Caller is responsible for the
-    in-flight cap check upstream — once the row is committed the
-    dispatcher owns it.
+    in-flight cap check AND session-ownership check upstream — once the
+    row is committed the dispatcher owns it.
 
     The row is a regular ChatMessage (with ``role='user'``) plus the
     queue lifecycle columns. When the dispatcher claims it the queue
@@ -191,18 +261,20 @@ async def cancel_queued_turn(*, user_id: str, message_id: str) -> bool:
 
 async def mark_queued_turn_blocked(*, message_id: str, reason: str) -> None:
     """Pre-start re-validation failed at dispatch time; preserve the
-    row so the user sees why their queued task didn't run."""
-    try:
-        await ChatMessage.prisma().update(
-            where={"id": message_id},
-            data={
-                "queueStatus": STATUS_BLOCKED,
-                "queueBlockedReason": reason,
-            },
-        )
-    except RecordNotFoundError:
-        # Cancelled in parallel; nothing to do.
-        return
+    row so the user sees why their queued task didn't run.
+
+    Gated on ``queueStatus='queued'`` so a parallel cancel (user clicked
+    the cancel button between the dispatcher's gate check and this call)
+    isn't silently overwritten with ``blocked``. Also a no-op if the row
+    was already claimed by a concurrent dispatcher.
+    """
+    await ChatMessage.prisma().update_many(
+        where={"id": message_id, "queueStatus": STATUS_QUEUED},
+        data={
+            "queueStatus": STATUS_BLOCKED,
+            "queueBlockedReason": reason,
+        },
+    )
 
 
 async def claim_next_queued_turn(user_id: str) -> ChatMessage | None:
@@ -226,7 +298,7 @@ async def claim_next_queued_turn(user_id: str) -> ChatMessage | None:
 
     claimed = await ChatMessage.prisma().update_many(
         where={"id": head.id, "queueStatus": STATUS_QUEUED},
-        data={"queueStatus": None, "queueStartedAt": _utcnow()},
+        data={"queueStatus": None, "queueStartedAt": datetime.now(timezone.utc)},
     )
     if claimed == 0:
         # Lost the race; caller should retry the loop or wait for the
@@ -255,8 +327,6 @@ async def dispatch_next_for_user(user_id: str) -> bool:
     # Local imports to keep the cold-start path light and avoid pulling
     # the rate-limit + executor pipeline into modules that just want
     # queue counts.
-    import uuid
-
     from backend.copilot.active_turns import acquire_turn_slot
     from backend.copilot.config import ChatConfig
     from backend.copilot.executor.utils import dispatch_turn
@@ -283,7 +353,7 @@ async def dispatch_next_for_user(user_id: str) -> bool:
         await mark_queued_turn_blocked(
             message_id=head.id,
             reason=(
-                "Subscription required to run AutoPilot tasks. Upgrade to " "continue."
+                "Subscription required to run AutoPilot tasks. " "Upgrade to continue."
             ),
         )
         return False
@@ -382,12 +452,4 @@ def _generate_id() -> str:
     """Match :func:`backend.copilot.model.append_and_save_message`'s id
     generation — the column is the same primary key the chat history
     uses, so the same source of uniqueness applies."""
-    import uuid
-
     return str(uuid.uuid4())
-
-
-def _utcnow():
-    from datetime import datetime, timezone
-
-    return datetime.now(timezone.utc)

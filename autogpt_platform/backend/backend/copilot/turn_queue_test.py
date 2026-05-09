@@ -24,6 +24,7 @@ class _NoopAsyncCM:
     async def __aexit__(self, *exc):
         return None
 
+
 # ── enqueue_turn payload encoding ──────────────────────────────────────
 
 
@@ -54,7 +55,6 @@ async def test_enqueue_turn_packs_metadata_into_queue_metadata_json() -> None:
         ),
     ):
         await turn_queue.enqueue_turn(
-            user_id="u1",
             session_id="s1",
             message="hello",
             message_id="msg-1",
@@ -107,7 +107,6 @@ async def test_enqueue_turn_omits_null_fields_from_metadata() -> None:
         ),
     ):
         await turn_queue.enqueue_turn(
-            user_id="u1",
             session_id="s1",
             message="hello",
         )
@@ -157,12 +156,12 @@ async def test_dispatch_marks_blocked_when_user_paywalled() -> None:
     slot for a turn that would immediately 402."""
     head = MagicMock(id="msg-1")
     find_first = AsyncMock(return_value=head)
-    update = AsyncMock()
+    update_many = AsyncMock(return_value=1)
     with (
         patch.object(
             turn_queue.ChatMessage,
             "prisma",
-            return_value=MagicMock(find_first=find_first, update=update),
+            return_value=MagicMock(find_first=find_first, update_many=update_many),
         ),
         patch(
             "backend.copilot.rate_limit.is_user_paywalled",
@@ -171,9 +170,10 @@ async def test_dispatch_marks_blocked_when_user_paywalled() -> None:
     ):
         promoted = await turn_queue.dispatch_next_for_user("u1")
     assert promoted is False
-    update.assert_awaited_once()
-    args, kwargs = update.call_args
-    assert kwargs["where"] == {"id": "msg-1"}
+    update_many.assert_awaited_once()
+    args, kwargs = update_many.call_args
+    assert kwargs["where"]["id"] == "msg-1"
+    assert kwargs["where"]["queueStatus"] == turn_queue.STATUS_QUEUED
     assert kwargs["data"]["queueStatus"] == turn_queue.STATUS_BLOCKED
     assert "Subscription required" in kwargs["data"]["queueBlockedReason"]
 

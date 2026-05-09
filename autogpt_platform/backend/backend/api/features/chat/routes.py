@@ -127,29 +127,31 @@ async def _validate_and_get_session(
     return session
 
 
-async def _enqueue_chat_turn(
+async def _try_enqueue_chat_turn(
     *,
     request: "StreamChatRequest",
     session_id: str,
     user_id: str,
+    inflight_cap: int,
     sanitized_file_ids: list[str] | None,
     builder_permissions: CopilotPermissions | None,
     request_arrival_at: float,
 ) -> None:
-    """Persist a user message that hit the running cap into the queue.
+    """Atomic admission against the user's inflight cap, then persist.
 
-    ``turn_queue.enqueue_turn`` takes the Redis NX session lock + reads
-    the next sequence inside it, matching ``append_and_save_message``'s
-    ordering guarantee — concurrent submits to the same session cannot
-    PK-collide on ``(sessionId, sequence)``.
+    ``turn_queue.try_enqueue_turn`` does an optimistic count → insert →
+    recount sequence with rollback on a concurrent admission that
+    pushed us over the cap. Raises ``InflightCapExceeded`` so the
+    caller can map to HTTP 429.
     """
     permissions_payload = (
         builder_permissions.model_dump(exclude_none=True)
         if builder_permissions
         else None
     )
-    await turn_queue.enqueue_turn(
+    await turn_queue.try_enqueue_turn(
         user_id=user_id,
+        inflight_cap=inflight_cap,
         session_id=session_id,
         message=request.message,
         message_id=request.message_id,
@@ -1215,24 +1217,25 @@ async def stream_chat_post(
         # ``queueStatus='queued'`` and return the empty UI stream — the
         # dispatcher will promote it when a running slot frees. Past
         # the hard cap the user is blocked at HTTP 429.
-        inflight = await turn_queue.count_inflight_turns(user_id)
         inflight_cap = get_inflight_turn_limit()
-        if inflight >= inflight_cap:
+        try:
+            await _try_enqueue_chat_turn(
+                request=request,
+                session_id=session_id,
+                user_id=user_id,
+                inflight_cap=inflight_cap,
+                sanitized_file_ids=sanitized_file_ids,
+                builder_permissions=builder_permissions,
+                request_arrival_at=request_arrival_at,
+            )
+        except turn_queue.InflightCapExceeded:
             raise HTTPException(
                 status_code=429,
                 detail=inflight_turn_limit_message(inflight_cap),
             )
-        await _enqueue_chat_turn(
-            request=request,
-            session_id=session_id,
-            user_id=user_id,
-            sanitized_file_ids=sanitized_file_ids,
-            builder_permissions=builder_permissions,
-            request_arrival_at=request_arrival_at,
-        )
         logger.info(
             f"[STREAM] Queued turn for session={session_id} "
-            f"(running cap reached; inflight={inflight + 1}/{inflight_cap})"
+            f"(running cap reached; inflight cap={inflight_cap})"
         )
         return _empty_ui_message_stream_response()
 
