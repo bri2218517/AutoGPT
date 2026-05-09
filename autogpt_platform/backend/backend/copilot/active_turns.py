@@ -32,14 +32,10 @@ from redis.exceptions import RedisClusterException, RedisError
 
 from backend.data.redis_client import AsyncRedisClient, get_redis_async
 from backend.data.redis_helpers import SlotReservation, try_reserve_slot
+from backend.util.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-
-# Hard cap on concurrent in-flight chat turns per user. Single gate today;
-# the upcoming queue feature will layer a soft "running" cap underneath
-# this with overflow turns waiting in a queue, but this hard ceiling stays.
-MAX_CONCURRENT_TURNS_PER_USER = 15
 
 # Upper bound on a single AutoPilot turn's wall-clock duration. Beyond this
 # we treat the turn as abandoned: the slot is reclaimed by the stale-cutoff
@@ -54,21 +50,36 @@ MAX_TURN_LIFETIME_SECONDS = 6 * 60 * 60
 # in case future tuning wants different bounds for the two consumers.
 STALE_TURN_CUTOFF_SECONDS = MAX_TURN_LIFETIME_SECONDS
 
-CONCURRENT_TURN_LIMIT_MESSAGE = (
-    f"You've reached the limit of {MAX_CONCURRENT_TURNS_PER_USER} active tasks. "
-    f"Please wait for one of your current tasks to finish before starting a new one."
-)
-
 _USER_ACTIVE_TURNS_KEY_PREFIX = "copilot:user_active_turns:"
 
 
+def get_concurrent_turn_limit() -> int:
+    """Resolve the configured per-user concurrent-turn cap at call time.
+
+    Reading at call time (rather than module load) lets operators retune
+    the cap by editing the env-backed Settings without redeploying the
+    code that imports this module.
+    """
+    return Settings().config.max_concurrent_copilot_turns_per_user
+
+
+def concurrent_turn_limit_message(limit: int | None = None) -> str:
+    """User-facing 429 detail string. Pass ``limit`` if you already
+    resolved it; otherwise we read the configured value."""
+    return (
+        f"You've reached the limit of {limit or get_concurrent_turn_limit()} "
+        f"active tasks. Please wait for one of your current tasks to finish "
+        f"before starting a new one."
+    )
+
+
 class ConcurrentTurnLimitError(Exception):
-    """User has reached :data:`MAX_CONCURRENT_TURNS_PER_USER` in-flight
-    AutoPilot turns. Maps to HTTP 429 in the API layer.
+    """User has reached the configured concurrent in-flight AutoPilot
+    turn cap. Maps to HTTP 429 in the API layer.
     """
 
-    def __init__(self, message: str = CONCURRENT_TURN_LIMIT_MESSAGE) -> None:
-        super().__init__(message)
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(message or concurrent_turn_limit_message())
 
 
 def _user_key(user_id: str) -> str:
@@ -81,7 +92,7 @@ def _user_key(user_id: str) -> str:
 async def try_acquire_turn_slot(
     user_id: str,
     session_id: str,
-    limit: int = MAX_CONCURRENT_TURNS_PER_USER,
+    limit: int | None = None,
 ) -> SlotReservation:
     """Atomically reserve a turn slot for ``user_id``.
 
@@ -104,6 +115,7 @@ async def try_acquire_turn_slot(
     wraps the acquire/release lifecycle in a context manager so the slot
     can't leak on a downstream failure.
     """
+    capacity = limit if limit is not None else get_concurrent_turn_limit()
     try:
         redis = await get_redis_async()
         now = time.time()
@@ -112,7 +124,7 @@ async def try_acquire_turn_slot(
             pool_key=_user_key(user_id),
             slot_id=session_id,
             score=now,
-            capacity=limit,
+            capacity=capacity,
             stale_before_score=now - STALE_TURN_CUTOFF_SECONDS,
             ttl_seconds=STALE_TURN_CUTOFF_SECONDS,
         )
@@ -197,7 +209,7 @@ class TurnSlot:
 async def acquire_turn_slot(
     user_id: str | None,
     session_id: str,
-    limit: int = MAX_CONCURRENT_TURNS_PER_USER,
+    limit: int | None = None,
 ) -> AsyncIterator[TurnSlot]:
     """Reserve a turn slot for the duration of the ``async with`` block.
 

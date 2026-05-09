@@ -14,10 +14,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from backend.copilot import service as chat_service
 from backend.copilot import stream_registry
 from backend.copilot.active_turns import (
-    CONCURRENT_TURN_LIMIT_MESSAGE,
-    MAX_CONCURRENT_TURNS_PER_USER,
     ConcurrentTurnLimitError,
     acquire_turn_slot,
+    concurrent_turn_limit_message,
 )
 from backend.copilot.builder_context import resolve_session_permissions
 from backend.copilot.config import ChatConfig, CopilotLlmModel, CopilotMode
@@ -1070,7 +1069,6 @@ async def stream_chat_post(
         async with acquire_turn_slot(
             user_id=user_id,
             session_id=session_id,
-            limit=MAX_CONCURRENT_TURNS_PER_USER,
         ) as slot:
             if request.message:
                 message = ChatMessage(
@@ -1129,7 +1127,7 @@ async def stream_chat_post(
             # the context manager releases it on exit.
     except ConcurrentTurnLimitError as exc:
         raise HTTPException(
-            status_code=429, detail=CONCURRENT_TURN_LIMIT_MESSAGE
+            status_code=429, detail=concurrent_turn_limit_message()
         ) from exc
 
     if is_duplicate_message:

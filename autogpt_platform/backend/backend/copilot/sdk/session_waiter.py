@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from backend.copilot import stream_registry
-from backend.copilot.executor.utils import enqueue_copilot_turn
 from backend.copilot.pending_message_helpers import (
     is_turn_in_flight,
     queue_user_message,
@@ -195,52 +194,34 @@ async def run_copilot_turn_via_queue(
         observed.pending_buffer_length = state.buffer_length
         return outcome, observed
 
-    # Apply the same per-user concurrent-turn cap as the HTTP chat route.
-    # Without this, a graph spawning N AutoPilotBlocks or a tool-loop
-    # firing run_sub_session can fan out unbounded copilot turns even
-    # when the user is at their cap on the chat side. The
-    # acquire_turn_slot context manager admits/refreshes the slot, the
-    # body schedules the turn and calls slot.keep() to hand ownership to
-    # mark_session_completed, and any failure between acquire and keep
-    # auto-releases — same lifecycle as the chat route.
-    # Local import to avoid a copilot.active_turns -> copilot.sdk cycle if
-    # active_turns ever needs anything from this module.
-    from backend.copilot.active_turns import (
-        MAX_CONCURRENT_TURNS_PER_USER,
-        ConcurrentTurnLimitError,
-        acquire_turn_slot,
-    )
+    # Apply the same per-user concurrent-turn cap as the HTTP chat route
+    # via the shared ``schedule_turn`` helper. Without this, a graph
+    # spawning N AutoPilotBlocks or a tool-loop firing run_sub_session
+    # could fan out unbounded copilot turns even when the user is already
+    # at their cap on the chat side.
+    # Local import: schedule_turn lives next to this module under
+    # copilot.executor and is only needed on the dispatch branch — keep
+    # the cold-start path light.
+    from backend.copilot.active_turns import ConcurrentTurnLimitError
+    from backend.copilot.executor.utils import schedule_turn
 
     turn_id = str(uuid.uuid4())
     try:
-        async with acquire_turn_slot(
-            user_id=user_id,
+        await schedule_turn(
             session_id=session_id,
-            limit=MAX_CONCURRENT_TURNS_PER_USER,
-        ) as slot:
-            await stream_registry.create_session(
-                session_id=session_id,
-                user_id=user_id,
-                tool_call_id=tool_call_id,
-                tool_name=tool_name,
-                turn_id=turn_id,
-            )
-            await enqueue_copilot_turn(
-                session_id=session_id,
-                user_id=user_id,
-                message=message,
-                turn_id=turn_id,
-                permissions=permissions,
-            )
-            slot.keep()
+            user_id=user_id,
+            turn_id=turn_id,
+            message=message,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            permissions=permissions,
+        )
     except ConcurrentTurnLimitError:
         # Sub-AutoPilot / run_sub_session caller is at the cap (this is
         # the graph-block / tool path, not the HTTP route). Surface as
         # the existing "failed" SessionOutcome — callers already handle
-        # that branch (it's the same shape as a normal turn that
-        # errored mid-stream), so AutoPilotBlock / run_sub_session
-        # propagate the cap rejection to the parent turn without a new
-        # branch.
+        # that branch, so AutoPilotBlock / run_sub_session propagate the
+        # cap rejection to the parent turn without a new branch.
         logger.warning(
             "[queue] session=%s user=%s rejected by concurrent-turn cap (tool=%s)",
             session_id[:12],
