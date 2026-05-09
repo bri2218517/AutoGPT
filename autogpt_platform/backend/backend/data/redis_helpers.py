@@ -20,6 +20,7 @@ application code, add a helper here first — callers should not touch
 this module can cover.
 """
 
+from enum import IntEnum
 from typing import Any, cast
 
 from backend.data.redis_client import AsyncRedisClient, RedisClient
@@ -69,8 +70,16 @@ return redis.call('LLEN', KEYS[2])
 
 # Atomically: sweep stale slots, refresh an existing slot's claim or add
 # a new slot iff the pool is under capacity, then set the pool key's TTL.
-# Returns 1 when the slot is reserved on exit, 0 when reservation was
-# refused (pool full and slot wasn't already held).
+# Returns 1 when a NEW slot was admitted, 2 when an EXISTING slot's claim
+# was refreshed (no change to slot count), 0 when reservation was refused
+# (pool full and slot wasn't already held).
+#
+# The new-vs-refreshed distinction lets callers tell apart a "fresh
+# admission" (caller now owns the slot's release) from a "re-entrant
+# touch" (someone else owns the release, caller is just bumping the
+# heartbeat). Without it, a refresh path would `release_turn_slot` on
+# context-manager exit and prematurely free a slot held by another
+# concurrent caller for the same session_id.
 #
 # Used for distributed per-actor concurrency caps. A "pool" is a Redis
 # sorted set whose members are active slot ids and whose scores are the
@@ -90,7 +99,7 @@ local existing = redis.call('ZSCORE', KEYS[1], ARGV[1])
 if existing then
     redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
     redis.call('EXPIRE', KEYS[1], ARGV[5])
-    return 1
+    return 2
 end
 local count = redis.call('ZCARD', KEYS[1])
 if count >= tonumber(ARGV[4]) then
@@ -217,6 +226,19 @@ async def capped_rpush_if_hash_field(
     return None if length < 0 else length
 
 
+class SlotReservation(IntEnum):
+    """Result of :func:`try_reserve_slot`.
+
+    Distinguishes a fresh admission from a re-entrant refresh so callers
+    that automatically release on exit (e.g. context managers) only do
+    so for slots they actually admitted, not slots they just touched.
+    """
+
+    REJECTED = 0  # pool was full and slot wasn't already held
+    ADMITTED = 1  # slot newly added to the pool
+    REFRESHED = 2  # slot was already in the pool; score bumped only
+
+
 async def try_reserve_slot(
     redis: AsyncRedisClient,
     *,
@@ -226,7 +248,7 @@ async def try_reserve_slot(
     capacity: int,
     stale_before_score: float,
     ttl_seconds: int,
-) -> bool:
+) -> SlotReservation:
     """Atomically reserve one of *capacity* slots in a Redis-backed pool.
 
     Use this whenever you need a distributed concurrency cap — "this
@@ -238,14 +260,15 @@ async def try_reserve_slot(
        holder crashed without releasing don't permanently consume capacity.
     2. If ``slot_id`` is already in the pool, refresh its score
        (re-reservation is idempotent — same holder, same logical slot)
-       and return success.
+       and return :attr:`SlotReservation.REFRESHED`.
     3. Otherwise, reserve only if the post-sweep slot count is below
-       ``capacity``.
+       ``capacity`` and return :attr:`SlotReservation.ADMITTED`.
     4. On a successful reserve, set ``ttl_seconds`` on the pool key as a
        belt-and-braces TTL for the case where the sweep ever stops.
 
-    Returns ``True`` if ``slot_id`` is reserved on return (newly admitted
-    or already held and refreshed), ``False`` if the pool is full.
+    Returns the :class:`SlotReservation` outcome — ``ADMITTED`` (newly
+    added), ``REFRESHED`` (already held, score bumped), or ``REJECTED``
+    (pool full).
 
     Why a Lua script: the reservation is conditional on the post-sweep
     count, and ``MULTI/EXEC`` cannot branch on intermediate replies.
@@ -269,7 +292,7 @@ async def try_reserve_slot(
             str(ttl_seconds),
         ),
     )
-    return int(result) == 1
+    return SlotReservation(int(result))
 
 
 async def hash_compare_and_set(

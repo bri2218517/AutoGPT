@@ -13,51 +13,68 @@ from backend.copilot.active_turns import (
     release_turn_slot,
     try_acquire_turn_slot,
 )
+from backend.data.redis_helpers import SlotReservation
 
 
 @pytest.mark.asyncio
-async def test_try_acquire_returns_true_when_under_limit(
+async def test_try_acquire_returns_admitted_when_under_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Lua returns 1 → caller gets True (slot acquired)."""
+    """Lua returns 1 → caller gets ADMITTED (slot newly added)."""
     redis_mock = MagicMock()
     redis_mock.eval = AsyncMock(return_value=1)
     monkeypatch.setattr(
         active_turns_module, "get_redis_async", AsyncMock(return_value=redis_mock)
     )
 
-    acquired = await try_acquire_turn_slot("user-1", "session-a", limit=15)
-    assert acquired is True
+    outcome = await try_acquire_turn_slot("user-1", "session-a", limit=15)
+    assert outcome is SlotReservation.ADMITTED
 
 
 @pytest.mark.asyncio
-async def test_try_acquire_returns_false_when_at_limit(
+async def test_try_acquire_returns_refreshed_when_already_held(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Lua returns 0 (limit reached) → caller gets False."""
+    """Lua returns 2 → caller gets REFRESHED (slot was already in pool)."""
+    redis_mock = MagicMock()
+    redis_mock.eval = AsyncMock(return_value=2)
+    monkeypatch.setattr(
+        active_turns_module, "get_redis_async", AsyncMock(return_value=redis_mock)
+    )
+
+    outcome = await try_acquire_turn_slot("user-1", "session-a", limit=15)
+    assert outcome is SlotReservation.REFRESHED
+
+
+@pytest.mark.asyncio
+async def test_try_acquire_returns_rejected_when_at_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lua returns 0 (limit reached) → caller gets REJECTED."""
     redis_mock = MagicMock()
     redis_mock.eval = AsyncMock(return_value=0)
     monkeypatch.setattr(
         active_turns_module, "get_redis_async", AsyncMock(return_value=redis_mock)
     )
 
-    acquired = await try_acquire_turn_slot("user-1", "session-a", limit=15)
-    assert acquired is False
+    outcome = await try_acquire_turn_slot("user-1", "session-a", limit=15)
+    assert outcome is SlotReservation.REJECTED
 
 
 @pytest.mark.asyncio
 async def test_try_acquire_fails_open_on_redis_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Redis errors return True (fail-open) so a brown-out doesn't 429 every user."""
+    """Redis errors return ADMITTED (fail-open) so a brown-out doesn't 429
+    every user."""
     monkeypatch.setattr(
         active_turns_module,
         "get_redis_async",
         AsyncMock(side_effect=ConnectionError("down")),
     )
 
-    acquired = await try_acquire_turn_slot("user-1", "session-a", limit=15)
-    assert acquired is True
+    outcome = await try_acquire_turn_slot("user-1", "session-a", limit=15)
+    assert outcome is SlotReservation.ADMITTED
 
 
 @pytest.mark.asyncio
@@ -137,7 +154,7 @@ async def test_acquire_turn_slot_releases_on_exception(
 ) -> None:
     """Slot is auto-released when the with-body raises before ``slot.keep()``."""
     redis_mock = MagicMock()
-    redis_mock.eval = AsyncMock(return_value=1)
+    redis_mock.eval = AsyncMock(return_value=1)  # ADMITTED
     redis_mock.zrem = AsyncMock(return_value=1)
     monkeypatch.setattr(
         active_turns_module, "get_redis_async", AsyncMock(return_value=redis_mock)
@@ -156,7 +173,7 @@ async def test_acquire_turn_slot_keeps_when_kept(
 ) -> None:
     """``slot.keep()`` transfers ownership — slot is NOT released on exit."""
     redis_mock = MagicMock()
-    redis_mock.eval = AsyncMock(return_value=1)
+    redis_mock.eval = AsyncMock(return_value=1)  # ADMITTED
     redis_mock.zrem = AsyncMock(return_value=1)
     monkeypatch.setattr(
         active_turns_module, "get_redis_async", AsyncMock(return_value=redis_mock)
@@ -175,7 +192,7 @@ async def test_acquire_turn_slot_releases_on_clean_exit_without_keep(
     """Forgetting ``slot.keep()`` on a clean exit releases the slot — the
     caller hasn't transferred ownership, so we must not leak it."""
     redis_mock = MagicMock()
-    redis_mock.eval = AsyncMock(return_value=1)
+    redis_mock.eval = AsyncMock(return_value=1)  # ADMITTED
     redis_mock.zrem = AsyncMock(return_value=1)
     monkeypatch.setattr(
         active_turns_module, "get_redis_async", AsyncMock(return_value=redis_mock)
@@ -192,7 +209,7 @@ async def test_acquire_turn_slot_raises_concurrent_limit_when_full(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     redis_mock = MagicMock()
-    redis_mock.eval = AsyncMock(return_value=0)
+    redis_mock.eval = AsyncMock(return_value=0)  # REJECTED
     redis_mock.zrem = AsyncMock(return_value=0)
     monkeypatch.setattr(
         active_turns_module, "get_redis_async", AsyncMock(return_value=redis_mock)
@@ -203,6 +220,47 @@ async def test_acquire_turn_slot_raises_concurrent_limit_when_full(
             pytest.fail("body should not run when acquire fails")  # pragma: no cover
 
     # Reject path didn't acquire — must not release.
+    redis_mock.zrem.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_acquire_turn_slot_refresh_does_not_release_on_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refresh path (slot was already held by another caller) must NOT
+    release on exit — the original holder still owns the slot."""
+    redis_mock = MagicMock()
+    redis_mock.eval = AsyncMock(return_value=2)  # REFRESHED
+    redis_mock.zrem = AsyncMock(return_value=1)
+    monkeypatch.setattr(
+        active_turns_module, "get_redis_async", AsyncMock(return_value=redis_mock)
+    )
+
+    async with acquire_turn_slot("user-1", "session-a", limit=15):
+        pass  # exit without keep()
+
+    # Critical: refreshed reservation -> we don't own release ->
+    # context manager must NOT zrem.
+    redis_mock.zrem.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_acquire_turn_slot_refresh_with_exception_does_not_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refresh + exception in body still must not release — the same-
+    session retry's failure shouldn't tear down the original turn's slot."""
+    redis_mock = MagicMock()
+    redis_mock.eval = AsyncMock(return_value=2)  # REFRESHED
+    redis_mock.zrem = AsyncMock(return_value=1)
+    monkeypatch.setattr(
+        active_turns_module, "get_redis_async", AsyncMock(return_value=redis_mock)
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async with acquire_turn_slot("user-1", "session-a", limit=15):
+            raise RuntimeError("boom")
+
     redis_mock.zrem.assert_not_called()
 
 

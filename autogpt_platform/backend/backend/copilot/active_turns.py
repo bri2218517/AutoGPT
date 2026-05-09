@@ -31,7 +31,7 @@ from typing import AsyncIterator
 from redis.exceptions import RedisClusterException, RedisError
 
 from backend.data.redis_client import AsyncRedisClient, get_redis_async
-from backend.data.redis_helpers import try_reserve_slot
+from backend.data.redis_helpers import SlotReservation, try_reserve_slot
 
 logger = logging.getLogger(__name__)
 
@@ -82,20 +82,27 @@ async def try_acquire_turn_slot(
     user_id: str,
     session_id: str,
     limit: int = MAX_CONCURRENT_TURNS_PER_USER,
-) -> bool:
+) -> SlotReservation:
     """Atomically reserve a turn slot for ``user_id``.
 
-    Returns ``True`` if a slot was acquired (or the same ``session_id`` was
-    already present and got its score refreshed), ``False`` if the user is at
-    or above ``limit`` active turns.
+    Returns the :class:`SlotReservation` outcome:
 
-    Fails open on Redis errors — the route continues but logs a warning.
-    Failing closed here would 429 every user during a Redis brown-out, which
-    is worse than the abuse-protection brief gap.
+    * ``ADMITTED`` — a fresh slot was added; caller owns its release.
+    * ``REFRESHED`` — ``session_id`` was already in the pool; the score
+      was bumped but the slot count is unchanged. Some other caller
+      already owns this slot's release; the current caller MUST NOT
+      release it on exit.
+    * ``REJECTED`` — pool was at ``limit`` and the slot wasn't already
+      held (typically maps to HTTP 429 in the API layer).
 
-    Most callers should use :func:`acquire_turn_slot` instead, which wraps
-    the acquire/release lifecycle in a context manager so the slot can't
-    leak on a downstream failure.
+    Fails open on Redis errors — returns ``ADMITTED`` so the route
+    continues but logs a warning. Failing closed here would 429 every
+    user during a Redis brown-out, which is worse than the abuse-
+    protection brief gap.
+
+    Most callers should use :func:`acquire_turn_slot` instead, which
+    wraps the acquire/release lifecycle in a context manager so the slot
+    can't leak on a downstream failure.
     """
     try:
         redis = await get_redis_async()
@@ -115,7 +122,7 @@ async def try_acquire_turn_slot(
             user_id,
             exc,
         )
-        return True
+        return SlotReservation.ADMITTED
 
 
 async def release_turn_slot(user_id: str, session_id: str) -> None:
@@ -159,18 +166,24 @@ class TurnSlot:
     the turn has been successfully scheduled to transfer ownership of the
     slot to ``mark_session_completed`` (which releases it on turn end).
 
+    Only slots in the ``ADMITTED`` state (newly added to the pool) can be
+    released by this context manager; ``REFRESHED`` reservations indicate
+    another caller already owns the release path, so dropping out of this
+    ``async with`` without ``keep()`` is a no-op for them.
+
     If :meth:`keep` is never called — because acquisition was refused, the
-    user_id was empty, or the with-block exits with or without an
-    exception before reaching the call — the context manager releases the
-    slot itself on ``__aexit__``.
+    user_id was empty, the slot was a refresh of an existing reservation,
+    or the with-block exits with or without an exception before reaching
+    the call — the context manager only releases the slot when this
+    caller actually admitted it.
     """
 
-    __slots__ = ("user_id", "session_id", "acquired", "_kept")
+    __slots__ = ("user_id", "session_id", "admitted", "_kept")
 
     def __init__(self, user_id: str, session_id: str) -> None:
         self.user_id = user_id
         self.session_id = session_id
-        self.acquired = False
+        self.admitted = False  # True only when this caller newly admitted the slot
         self._kept = False
 
     def keep(self) -> None:
@@ -188,26 +201,37 @@ async def acquire_turn_slot(
 ) -> AsyncIterator[TurnSlot]:
     """Reserve a turn slot for the duration of the ``async with`` block.
 
-    On entry, raises :class:`ConcurrentTurnLimitError` if the user is at or
-    above ``limit`` (caller maps this to HTTP 429). Anonymous sessions
-    (``user_id`` falsy) bypass the gate and yield a no-op handle.
+    On entry, raises :class:`ConcurrentTurnLimitError` if the user is at
+    ``limit`` AND ``session_id`` isn't already in the pool. A re-entrant
+    reservation for an already-active ``session_id`` (e.g. a same-
+    session network retry) just refreshes the existing slot's score —
+    this branch never raises and never claims release ownership, since
+    some earlier caller is still holding the slot for the original turn.
+
+    Anonymous sessions (``user_id`` falsy) bypass the gate and yield a
+    no-op handle.
 
     On exit:
 
     * if the body called :meth:`TurnSlot.keep`, the slot is held — the
       caller has handed off ownership to a downstream completion path.
-    * otherwise (clean exit *or* exception), the slot is released
-      immediately so failed schedules don't leak a slot until the
-      stale-cutoff sweep.
+    * if this caller newly admitted the slot but did not call ``keep``
+      (clean exit *or* exception), the slot is released immediately so
+      failed schedules don't leak a slot until the stale-cutoff sweep.
+    * if this caller only refreshed an existing reservation, exiting
+      without ``keep`` is a no-op — the slot stays held for whoever
+      originally admitted it.
     """
     handle = TurnSlot(user_id or "", session_id)
     if user_id:
-        if not await try_acquire_turn_slot(user_id, session_id, limit):
+        outcome = await try_acquire_turn_slot(user_id, session_id, limit)
+        if outcome is SlotReservation.REJECTED:
             raise ConcurrentTurnLimitError()
-        handle.acquired = True
+        if outcome is SlotReservation.ADMITTED:
+            handle.admitted = True
 
     try:
         yield handle
     finally:
-        if handle.acquired and not handle._kept:
+        if handle.admitted and not handle._kept:
             await release_turn_slot(handle.user_id, handle.session_id)
