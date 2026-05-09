@@ -6,7 +6,7 @@ into ``DatabaseManager``. Patching the accessor avoids reaching for
 Prisma directly while still exercising the queue's branching.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -296,6 +296,193 @@ async def test_dispatch_skips_busy_session() -> None:
         promoted = await turn_queue.dispatch_next_for_user("u1")
     assert promoted is False
     db.mark_queued_turn_blocked_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_marks_blocked_on_rate_limit_exceeded() -> None:
+    """Rate-limit exceeded at dispatch time → row marked blocked with a
+    usage-limit reason so the user sees why their queued task didn't run."""
+    from backend.copilot.rate_limit import RateLimitExceeded
+
+    head = _pyd_message()
+    db = MagicMock()
+    db.find_oldest_queued_turn_for_user = AsyncMock(return_value=head)
+    db.mark_queued_turn_blocked_db = AsyncMock(return_value="s1")
+    resets_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    with (
+        patch.object(turn_queue, "chat_db", return_value=db),
+        patch(
+            "backend.copilot.rate_limit.is_user_paywalled",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "backend.copilot.rate_limit.get_global_rate_limits",
+            new=AsyncMock(return_value=(100, 1000, None)),
+        ),
+        patch(
+            "backend.copilot.rate_limit.check_rate_limit",
+            new=AsyncMock(side_effect=RateLimitExceeded("daily", resets_at)),
+        ),
+        patch(
+            "backend.copilot.active_turns.get_running_session_ids",
+            new=AsyncMock(return_value=set()),
+        ),
+        patch(
+            "backend.copilot.model.invalidate_session_cache",
+            new=AsyncMock(),
+        ),
+    ):
+        promoted = await turn_queue.dispatch_next_for_user("u1")
+    assert promoted is False
+    kwargs = db.mark_queued_turn_blocked_db.call_args.kwargs
+    assert "current usage limit" in kwargs["reason"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_defers_on_rate_limit_unavailable() -> None:
+    """Rate-limit service degraded → leave row queued for the next
+    slot-free tick, no block transition."""
+    from backend.copilot.rate_limit import RateLimitUnavailable
+
+    head = _pyd_message()
+    db = MagicMock()
+    db.find_oldest_queued_turn_for_user = AsyncMock(return_value=head)
+    db.mark_queued_turn_blocked_db = AsyncMock()
+    db.claim_queued_turn_by_id_db = AsyncMock()
+    with (
+        patch.object(turn_queue, "chat_db", return_value=db),
+        patch(
+            "backend.copilot.rate_limit.is_user_paywalled",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "backend.copilot.rate_limit.get_global_rate_limits",
+            new=AsyncMock(side_effect=RateLimitUnavailable()),
+        ),
+        patch(
+            "backend.copilot.active_turns.get_running_session_ids",
+            new=AsyncMock(return_value=set()),
+        ),
+    ):
+        promoted = await turn_queue.dispatch_next_for_user("u1")
+    assert promoted is False
+    db.mark_queued_turn_blocked_db.assert_not_awaited()
+    db.claim_queued_turn_by_id_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_happy_path_claims_and_dispatches() -> None:
+    """All gates pass → claim the validated row by id, acquire the slot,
+    dispatch_turn, invalidate session cache, return True."""
+    head = _pyd_message(queue_metadata={"mode": "extended_thinking"})
+    claimed = _pyd_message(
+        queue_status=None, queue_metadata={"mode": "extended_thinking"}
+    )
+    db = MagicMock()
+    db.find_oldest_queued_turn_for_user = AsyncMock(return_value=head)
+    db.claim_queued_turn_by_id_db = AsyncMock(return_value=claimed)
+    db.restore_claimed_turn_to_queued = AsyncMock()
+    dispatch_turn_mock = AsyncMock()
+    invalidate = AsyncMock()
+
+    class _SlotCM:
+        async def __aenter__(self):
+            return MagicMock()
+
+        async def __aexit__(self, *exc):
+            return None
+
+    with (
+        patch.object(turn_queue, "chat_db", return_value=db),
+        patch(
+            "backend.copilot.rate_limit.is_user_paywalled",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "backend.copilot.rate_limit.get_global_rate_limits",
+            new=AsyncMock(return_value=(100, 1000, None)),
+        ),
+        patch(
+            "backend.copilot.rate_limit.check_rate_limit",
+            new=AsyncMock(),
+        ),
+        patch(
+            "backend.copilot.active_turns.get_running_session_ids",
+            new=AsyncMock(return_value=set()),
+        ),
+        patch(
+            "backend.copilot.active_turns.acquire_turn_slot",
+            return_value=_SlotCM(),
+        ),
+        patch(
+            "backend.copilot.executor.utils.dispatch_turn",
+            new=dispatch_turn_mock,
+        ),
+        patch(
+            "backend.copilot.model.invalidate_session_cache",
+            new=invalidate,
+        ),
+    ):
+        promoted = await turn_queue.dispatch_next_for_user("u1")
+    assert promoted is True
+    dispatch_turn_mock.assert_awaited_once()
+    invalidate.assert_awaited_once_with("s1")
+    db.restore_claimed_turn_to_queued.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rolls_claim_back_on_dispatch_failure() -> None:
+    """If dispatch_turn raises after the claim, the claim must be rolled
+    back so the row can be re-promoted on the next slot-free tick."""
+    head = _pyd_message()
+    claimed = _pyd_message(queue_status=None)
+    db = MagicMock()
+    db.find_oldest_queued_turn_for_user = AsyncMock(return_value=head)
+    db.claim_queued_turn_by_id_db = AsyncMock(return_value=claimed)
+    db.restore_claimed_turn_to_queued = AsyncMock()
+    dispatch_turn_mock = AsyncMock(side_effect=RuntimeError("RabbitMQ blip"))
+
+    class _SlotCM:
+        async def __aenter__(self):
+            return MagicMock()
+
+        async def __aexit__(self, *exc):
+            return None
+
+    with (
+        patch.object(turn_queue, "chat_db", return_value=db),
+        patch(
+            "backend.copilot.rate_limit.is_user_paywalled",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "backend.copilot.rate_limit.get_global_rate_limits",
+            new=AsyncMock(return_value=(100, 1000, None)),
+        ),
+        patch(
+            "backend.copilot.rate_limit.check_rate_limit",
+            new=AsyncMock(),
+        ),
+        patch(
+            "backend.copilot.active_turns.get_running_session_ids",
+            new=AsyncMock(return_value=set()),
+        ),
+        patch(
+            "backend.copilot.active_turns.acquire_turn_slot",
+            return_value=_SlotCM(),
+        ),
+        patch(
+            "backend.copilot.executor.utils.dispatch_turn",
+            new=dispatch_turn_mock,
+        ),
+        patch(
+            "backend.copilot.model.invalidate_session_cache",
+            new=AsyncMock(),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="RabbitMQ blip"):
+            await turn_queue.dispatch_next_for_user("u1")
+    db.restore_claimed_turn_to_queued.assert_awaited_once_with(message_id="msg-1")
 
 
 # ── status constants pinned ────────────────────────────────────────────

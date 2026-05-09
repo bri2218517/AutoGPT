@@ -615,3 +615,271 @@ async def test_update_message_content_by_sequence_sanitizes_content():
 # ``get_chat_messages_paginated`` directly — see ``model._get_session_from_db``.
 # Cap-hit + tool-pair boundary behaviour is now covered by the paginated tests
 # above and the integration coverage in ``model_test.py``.
+
+
+# ============================================================================
+# SECRT-2339 — running-turn tracking + queue ops.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_count_running_turns_for_user_filters_by_stale_cutoff() -> None:
+    from backend.copilot.db import count_running_turns_for_user
+
+    cutoff = datetime.now(UTC)
+    count = AsyncMock(return_value=3)
+    with patch.object(PrismaChatSession, "prisma", return_value=AsyncMock(count=count)):
+        result = await count_running_turns_for_user("u1", cutoff)
+    assert result == 3
+    where = count.call_args.kwargs["where"]
+    assert where["userId"] == "u1"
+    assert where["currentTurnStartedAt"] == {"gt": cutoff}
+
+
+@pytest.mark.asyncio
+async def test_list_running_session_ids_for_user_returns_ids() -> None:
+    from backend.copilot.db import list_running_session_ids_for_user
+
+    rows = [AsyncMock(id="s1"), AsyncMock(id="s2")]
+    find_many = AsyncMock(return_value=rows)
+    with patch.object(
+        PrismaChatSession, "prisma", return_value=AsyncMock(find_many=find_many)
+    ):
+        ids = await list_running_session_ids_for_user("u1", datetime.now(UTC))
+    assert ids == ["s1", "s2"]
+
+
+@pytest.mark.asyncio
+async def test_get_session_current_turn_started_at_returns_none_when_missing() -> None:
+    from backend.copilot.db import get_session_current_turn_started_at
+
+    find_unique = AsyncMock(return_value=None)
+    with patch.object(
+        PrismaChatSession, "prisma", return_value=AsyncMock(find_unique=find_unique)
+    ):
+        result = await get_session_current_turn_started_at("missing")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_session_current_turn_started_at_returns_timestamp() -> None:
+    from backend.copilot.db import get_session_current_turn_started_at
+
+    when = datetime.now(UTC)
+    row = AsyncMock(currentTurnStartedAt=when)
+    find_unique = AsyncMock(return_value=row)
+    with patch.object(
+        PrismaChatSession, "prisma", return_value=AsyncMock(find_unique=find_unique)
+    ):
+        result = await get_session_current_turn_started_at("s1")
+    assert result == when
+
+
+@pytest.mark.asyncio
+async def test_stamp_session_current_turn_writes_with_userid_guard() -> None:
+    from backend.copilot.db import stamp_session_current_turn
+
+    when = datetime.now(UTC)
+    update_many = AsyncMock(return_value=1)
+    with patch.object(
+        PrismaChatSession, "prisma", return_value=AsyncMock(update_many=update_many)
+    ):
+        await stamp_session_current_turn("s1", "u1", when)
+    kwargs = update_many.call_args.kwargs
+    assert kwargs["where"] == {"id": "s1", "userId": "u1"}
+    assert kwargs["data"] == {"currentTurnStartedAt": when}
+
+
+@pytest.mark.asyncio
+async def test_clear_session_current_turn_sets_null() -> None:
+    from backend.copilot.db import clear_session_current_turn
+
+    update_many = AsyncMock(return_value=1)
+    with patch.object(
+        PrismaChatSession, "prisma", return_value=AsyncMock(update_many=update_many)
+    ):
+        await clear_session_current_turn("s1", "u1")
+    kwargs = update_many.call_args.kwargs
+    assert kwargs["where"] == {"id": "s1", "userId": "u1"}
+    assert kwargs["data"] == {"currentTurnStartedAt": None}
+
+
+@pytest.mark.asyncio
+async def test_count_queued_turns_for_user_filters_by_status() -> None:
+    from backend.copilot.db import count_queued_turns_for_user
+
+    count = AsyncMock(return_value=2)
+    with patch.object(PrismaChatMessage, "prisma", return_value=AsyncMock(count=count)):
+        result = await count_queued_turns_for_user("u1")
+    assert result == 2
+    where = count.call_args.kwargs["where"]
+    assert where["queueStatus"] == "queued"
+    assert where["Session"] == {"is": {"userId": "u1"}}
+
+
+@pytest.mark.asyncio
+async def test_find_oldest_queued_turn_returns_none_when_empty() -> None:
+    from backend.copilot.db import find_oldest_queued_turn_for_user
+
+    find_first = AsyncMock(return_value=None)
+    with patch.object(
+        PrismaChatMessage, "prisma", return_value=AsyncMock(find_first=find_first)
+    ):
+        result = await find_oldest_queued_turn_for_user("u1")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_insert_queued_turn_serialises_metadata_via_safejson() -> None:
+    from backend.copilot.db import insert_queued_turn
+
+    create = AsyncMock(return_value=_make_msg(sequence=1))
+    with patch.object(
+        PrismaChatMessage, "prisma", return_value=AsyncMock(create=create)
+    ):
+        await insert_queued_turn(
+            message_id="m1",
+            session_id="s1",
+            role="user",
+            content="hi",
+            sequence=1,
+            queue_metadata={"mode": "extended_thinking"},
+        )
+    data = create.call_args.kwargs["data"]
+    assert data["id"] == "m1"
+    assert data["queueStatus"] == "queued"
+    metadata = data["queueMetadata"]
+    inner = getattr(metadata, "data", metadata)
+    assert inner == {"mode": "extended_thinking"}
+
+
+@pytest.mark.asyncio
+async def test_insert_queued_turn_omits_metadata_when_none() -> None:
+    from backend.copilot.db import insert_queued_turn
+
+    create = AsyncMock(return_value=_make_msg(sequence=1))
+    with patch.object(
+        PrismaChatMessage, "prisma", return_value=AsyncMock(create=create)
+    ):
+        await insert_queued_turn(
+            message_id="m1",
+            session_id="s1",
+            role="user",
+            content="hi",
+            sequence=1,
+            queue_metadata=None,
+        )
+    data = create.call_args.kwargs["data"]
+    assert "queueMetadata" not in data
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_turn_for_user_returns_session_id_on_success() -> None:
+    from backend.copilot.db import cancel_queued_turn_for_user
+
+    update_many = AsyncMock(return_value=1)
+    find_unique = AsyncMock(return_value=AsyncMock(sessionId="s1"))
+    with patch.object(
+        PrismaChatMessage,
+        "prisma",
+        return_value=AsyncMock(update_many=update_many, find_unique=find_unique),
+    ):
+        result = await cancel_queued_turn_for_user(user_id="u1", message_id="m1")
+    assert result == "s1"
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_turn_for_user_returns_none_when_not_owned() -> None:
+    from backend.copilot.db import cancel_queued_turn_for_user
+
+    update_many = AsyncMock(return_value=0)
+    with patch.object(
+        PrismaChatMessage,
+        "prisma",
+        return_value=AsyncMock(update_many=update_many),
+    ):
+        result = await cancel_queued_turn_for_user(user_id="u1", message_id="m1")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_mark_queued_turn_blocked_db_returns_session_id_on_success() -> None:
+    from backend.copilot.db import mark_queued_turn_blocked_db
+
+    update_many = AsyncMock(return_value=1)
+    find_unique = AsyncMock(return_value=AsyncMock(sessionId="s1"))
+    with patch.object(
+        PrismaChatMessage,
+        "prisma",
+        return_value=AsyncMock(update_many=update_many, find_unique=find_unique),
+    ):
+        result = await mark_queued_turn_blocked_db(message_id="m1", reason="paywall")
+    assert result == "s1"
+    where = update_many.call_args.kwargs["where"]
+    assert where["queueStatus"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_mark_queued_turn_blocked_db_returns_none_when_not_queued() -> None:
+    from backend.copilot.db import mark_queued_turn_blocked_db
+
+    update_many = AsyncMock(return_value=0)
+    with patch.object(
+        PrismaChatMessage,
+        "prisma",
+        return_value=AsyncMock(update_many=update_many),
+    ):
+        result = await mark_queued_turn_blocked_db(message_id="m1", reason="paywall")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_claim_queued_turn_by_id_db_returns_row_when_claimed() -> None:
+    from backend.copilot.db import claim_queued_turn_by_id_db
+
+    claimed_row = _make_msg(sequence=1)
+    update_many = AsyncMock(return_value=1)
+    find_unique = AsyncMock(return_value=claimed_row)
+    with patch.object(
+        PrismaChatMessage,
+        "prisma",
+        return_value=AsyncMock(update_many=update_many, find_unique=find_unique),
+    ):
+        result = await claim_queued_turn_by_id_db(message_id="m1")
+    assert result is not None
+    assert result.id == claimed_row.id
+
+
+@pytest.mark.asyncio
+async def test_claim_queued_turn_by_id_db_returns_none_when_lost_race() -> None:
+    from backend.copilot.db import claim_queued_turn_by_id_db
+
+    update_many = AsyncMock(return_value=0)
+    with patch.object(
+        PrismaChatMessage,
+        "prisma",
+        return_value=AsyncMock(update_many=update_many),
+    ):
+        result = await claim_queued_turn_by_id_db(message_id="m1")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_restore_claimed_turn_to_queued_gates_on_null_status() -> None:
+    """Rollback after a dispatch failure must only fire on rows whose
+    queueStatus is currently NULL (i.e. claimed). A successful concurrent
+    dispatch shouldn't get its status stomped back to queued."""
+    from backend.copilot.db import restore_claimed_turn_to_queued
+
+    update_many = AsyncMock(return_value=1)
+    with patch.object(
+        PrismaChatMessage,
+        "prisma",
+        return_value=AsyncMock(update_many=update_many),
+    ):
+        await restore_claimed_turn_to_queued(message_id="m1")
+    where = update_many.call_args.kwargs["where"]
+    assert where["queueStatus"] is None
+    data = update_many.call_args.kwargs["data"]
+    assert data["queueStatus"] == "queued"
+    assert data["queueStartedAt"] is None
