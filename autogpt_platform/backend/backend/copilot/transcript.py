@@ -1032,7 +1032,14 @@ async def extract_context_messages(
     current user turn at ``session_messages[-1]`` is excluded — callers append
     it themselves.
     """
-    session_messages = [m for m in session_messages if m.role != "reasoning"]
+    # Drop reasoning rows (their content lives in transcript paths, not the
+    # public turn list) and queue-stale rows (queued = not yet dispatched,
+    # cancelled = user dropped it). The LLM should see neither — including
+    # the cancelled text would confuse the model with a message the user
+    # explicitly retracted.
+    session_messages = [
+        m for m in session_messages if m.role != "reasoning" and m.queue_status is None
+    ]
     prior = session_messages[:-1]
 
     if download is None:
