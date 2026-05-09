@@ -66,10 +66,10 @@ def get_concurrent_turn_limit() -> int:
 def concurrent_turn_limit_message(limit: int | None = None) -> str:
     """User-facing 429 detail string. Pass ``limit`` if you already
     resolved it; otherwise we read the configured value."""
+    resolved = get_concurrent_turn_limit() if limit is None else limit
     return (
-        f"You've reached the limit of {limit or get_concurrent_turn_limit()} "
-        f"active tasks. Please wait for one of your current tasks to finish "
-        f"before starting a new one."
+        f"You've reached the limit of {resolved} active tasks. Please wait "
+        f"for one of your current tasks to finish before starting a new one."
     )
 
 
