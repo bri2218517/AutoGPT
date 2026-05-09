@@ -246,6 +246,9 @@ async def cancel_queued_turn(*, user_id: str, message_id: str) -> bool:
     AND owned by the user (via session). The user-ownership check is
     via the session relation — both guards in a single update so
     cancel/dispatch races resolve in one round trip.
+
+    Invalidates the session cache on success so the frontend stops
+    rendering the 'Queued' badge for this message on its next refetch.
     """
     where: ChatMessageWhereInput = {
         "id": message_id,
@@ -256,7 +259,14 @@ async def cancel_queued_turn(*, user_id: str, message_id: str) -> bool:
         where=where,
         data={"queueStatus": STATUS_CANCELLED},
     )
-    return updated > 0
+    if updated > 0:
+        from backend.copilot.model import invalidate_session_cache
+
+        row = await ChatMessage.prisma().find_unique(where={"id": message_id})
+        if row is not None:
+            await invalidate_session_cache(row.sessionId)
+        return True
+    return False
 
 
 async def mark_queued_turn_blocked(*, message_id: str, reason: str) -> None:
@@ -267,14 +277,23 @@ async def mark_queued_turn_blocked(*, message_id: str, reason: str) -> None:
     the cancel button between the dispatcher's gate check and this call)
     isn't silently overwritten with ``blocked``. Also a no-op if the row
     was already claimed by a concurrent dispatcher.
+
+    Invalidates the session cache on success so the frontend transitions
+    from 'Queued' to 'Blocked' on its next refetch.
     """
-    await ChatMessage.prisma().update_many(
+    updated = await ChatMessage.prisma().update_many(
         where={"id": message_id, "queueStatus": STATUS_QUEUED},
         data={
             "queueStatus": STATUS_BLOCKED,
             "queueBlockedReason": reason,
         },
     )
+    if updated > 0:
+        from backend.copilot.model import invalidate_session_cache
+
+        row = await ChatMessage.prisma().find_unique(where={"id": message_id})
+        if row is not None:
+            await invalidate_session_cache(row.sessionId)
 
 
 async def claim_next_queued_turn(user_id: str) -> ChatMessage | None:

@@ -122,10 +122,17 @@ async def test_cancel_queued_turn_returns_true_on_atomic_update() -> None:
     """Update_many returning >0 rows means the cancel transition was
     applied (was queued AND owned by user)."""
     update_many = AsyncMock(return_value=1)
-    with patch.object(
-        turn_queue.ChatMessage,
-        "prisma",
-        return_value=MagicMock(update_many=update_many),
+    find_unique = AsyncMock(return_value=MagicMock(sessionId="s1"))
+    with (
+        patch.object(
+            turn_queue.ChatMessage,
+            "prisma",
+            return_value=MagicMock(update_many=update_many, find_unique=find_unique),
+        ),
+        patch(
+            "backend.copilot.model.invalidate_session_cache",
+            new=AsyncMock(),
+        ),
     ):
         ok = await turn_queue.cancel_queued_turn(user_id="u1", message_id="msg-1")
     assert ok is True
@@ -157,15 +164,28 @@ async def test_dispatch_marks_blocked_when_user_paywalled() -> None:
     head = MagicMock(id="msg-1")
     find_first = AsyncMock(return_value=head)
     update_many = AsyncMock(return_value=1)
+    find_unique = AsyncMock(return_value=MagicMock(sessionId="s1"))
     with (
         patch.object(
             turn_queue.ChatMessage,
             "prisma",
-            return_value=MagicMock(find_first=find_first, update_many=update_many),
+            return_value=MagicMock(
+                find_first=find_first,
+                update_many=update_many,
+                find_unique=find_unique,
+            ),
         ),
         patch(
             "backend.copilot.rate_limit.is_user_paywalled",
             new=AsyncMock(return_value=True),
+        ),
+        patch(
+            "backend.copilot.active_turns.get_running_session_ids",
+            new=AsyncMock(return_value=set()),
+        ),
+        patch(
+            "backend.copilot.model.invalidate_session_cache",
+            new=AsyncMock(),
         ),
     ):
         promoted = await turn_queue.dispatch_next_for_user("u1")
@@ -184,10 +204,16 @@ async def test_dispatch_returns_false_when_queue_empty() -> None:
     raising — the slot-free hook fires for every completion regardless
     of queue state."""
     find_first = AsyncMock(return_value=None)
-    with patch.object(
-        turn_queue.ChatMessage,
-        "prisma",
-        return_value=MagicMock(find_first=find_first),
+    with (
+        patch.object(
+            turn_queue.ChatMessage,
+            "prisma",
+            return_value=MagicMock(find_first=find_first),
+        ),
+        patch(
+            "backend.copilot.active_turns.get_running_session_ids",
+            new=AsyncMock(return_value=set()),
+        ),
     ):
         promoted = await turn_queue.dispatch_next_for_user("u1")
     assert promoted is False

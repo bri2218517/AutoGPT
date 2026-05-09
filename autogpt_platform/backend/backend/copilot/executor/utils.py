@@ -10,9 +10,11 @@ import logging
 from pydantic import BaseModel
 
 from backend.copilot.active_turns import (
+    ConcurrentTurnLimitError,
     TurnSlot,
     acquire_turn_slot,
     get_inflight_turn_limit,
+    inflight_turn_limit_message,
 )
 from backend.copilot.config import CopilotLlmModel, CopilotMode
 from backend.copilot.permissions import CopilotPermissions
@@ -326,7 +328,19 @@ async def schedule_turn(
     ``AutoPilotBlock``) have no FIFO queue fallback, so applying the
     soft running cap here would regress concurrency below the prior
     SECRT-2335 hotfix behaviour.
+
+    The user's queued turns from the chat HTTP route DO count against
+    the inflight cap — pre-check ``running + queued`` here so a user
+    with 5 running + 10 queued can't slip a 16th task through this
+    path; ``acquire_turn_slot`` only sees the running pool.
     """
+    if user_id:
+        from backend.copilot.turn_queue import count_inflight_turns
+
+        inflight_cap = get_inflight_turn_limit()
+        if await count_inflight_turns(user_id) >= inflight_cap:
+            raise ConcurrentTurnLimitError(inflight_turn_limit_message(inflight_cap))
+
     async with acquire_turn_slot(
         user_id, session_id, capacity=get_inflight_turn_limit()
     ) as slot:
