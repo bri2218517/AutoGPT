@@ -27,7 +27,10 @@ vi.mock("@/app/api/__generated__/endpoints/chat/chat", () => ({
 }));
 
 vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn() }));
-vi.mock("@/components/molecules/Toast/use-toast", () => ({ toast: vi.fn() }));
+vi.mock("@/components/molecules/Toast/use-toast", () => ({
+  toast: vi.fn(),
+  useToast: () => ({ toast: vi.fn(), dismiss: vi.fn(), toasts: [] }),
+}));
 
 afterEach(() => {
   cleanup();
