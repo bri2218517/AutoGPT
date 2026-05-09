@@ -67,6 +67,39 @@ redis.call('EXPIRE', KEYS[2], tonumber(ARGV[5]))
 return redis.call('LLEN', KEYS[2])
 """
 
+# Atomically: sweep stale members, refresh existing member or add new
+# member iff under cap, then set the key's TTL. Returns 1 when the member
+# is in the set on exit, 0 when admission was refused (count >= limit and
+# member wasn't already present).
+#
+# Used for per-actor concurrency caps where a sorted set's members are
+# active "slots" and the score is the slot's start time. Stale members
+# (slots whose owner crashed without cleanup) are reclaimed by the sweep
+# so a one-time leak can't permanently consume the cap.
+#
+#   KEYS[1]  sorted set key
+#   ARGV[1]  member
+#   ARGV[2]  score for the new entry (typically now)
+#   ARGV[3]  stale-cutoff score (entries with score <= this are dropped)
+#   ARGV[4]  limit (max members allowed before admission is refused)
+#   ARGV[5]  TTL seconds applied to the key on every successful admit
+_TRY_ZADD_UNDER_LIMIT_LUA = """
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[3])
+local existing = redis.call('ZSCORE', KEYS[1], ARGV[1])
+if existing then
+    redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
+    redis.call('EXPIRE', KEYS[1], ARGV[5])
+    return 1
+end
+local count = redis.call('ZCARD', KEYS[1])
+if count >= tonumber(ARGV[4]) then
+    return 0
+end
+redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
+redis.call('EXPIRE', KEYS[1], ARGV[5])
+return 1
+"""
+
 
 async def incr_with_ttl(
     redis: AsyncRedisClient,
@@ -181,6 +214,58 @@ async def capped_rpush_if_hash_field(
     )
     length = int(result)
     return None if length < 0 else length
+
+
+async def try_zadd_under_limit(
+    redis: AsyncRedisClient,
+    *,
+    key: str,
+    member: str,
+    score: float,
+    limit: int,
+    stale_cutoff_score: float,
+    ttl_seconds: int,
+) -> bool:
+    """Atomically reserve one of *limit* "slots" in a sorted set.
+
+    The set's members are active reservations; the score is each slot's
+    creation timestamp. On every call we:
+
+    1. Sweep entries with ``score <= stale_cutoff_score`` — slots whose
+       owner crashed without cleanup don't permanently consume the cap.
+    2. If ``member`` already exists, refresh its score (re-acquisition is
+       idempotent — same caller for the same logical reservation) and
+       admit.
+    3. Otherwise, admit only if the post-sweep ``ZCARD < limit``.
+    4. On admit, set ``ttl_seconds`` on the key as a belt-and-braces TTL
+       in case the sweep ever stops running.
+
+    Returns ``True`` if *member* is in the set on return (admitted or
+    already-present and refreshed), ``False`` if admission was refused.
+
+    Genuinely needs Lua: the ZADD is conditional on the ZCARD result,
+    and ``MULTI/EXEC`` cannot branch on intermediate replies. Without
+    atomicity, two concurrent callers both read ``count = limit - 1``
+    and both add, ending up over the limit.
+
+    Redis Cluster: only ``KEYS[1]`` is touched, so any caller is free to
+    use a single hash-tag in *key* (e.g. ``foo:{user_id}``) to colocate
+    the set on one shard without CROSSSLOT issues.
+    """
+    result = await cast(
+        "Any",
+        redis.eval(
+            _TRY_ZADD_UNDER_LIMIT_LUA,
+            1,
+            key,
+            member,
+            str(score),
+            str(stale_cutoff_score),
+            str(limit),
+            str(ttl_seconds),
+        ),
+    )
+    return int(result) == 1
 
 
 async def hash_compare_and_set(
