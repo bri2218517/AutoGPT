@@ -361,7 +361,7 @@ function removeTranscriptPrefixReplays(messages: UIMessage[]): UIMessage[] {
   const fingerprints = messages.map(messageReplayFingerprint);
   const dropped = new Set<number>();
 
-  for (let i = 1; i < messages.length; i++) {
+  for (let i = MIN_PREFIX_REPLAY_MESSAGES; i < messages.length; i++) {
     if (dropped.has(i)) continue;
 
     let replayLength = 0;
