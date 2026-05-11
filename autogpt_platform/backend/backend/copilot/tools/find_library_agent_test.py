@@ -5,10 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from backend.copilot.tools.find_library_agent import FindLibraryAgentTool
-from backend.copilot.tools.models import (
-    AgentsFoundResponse,
-    NoResultsResponse,
-)
+from backend.copilot.tools.models import AgentsFoundResponse, NoResultsResponse
 from backend.util.exceptions import DatabaseError
 
 from ._test_data import make_session
