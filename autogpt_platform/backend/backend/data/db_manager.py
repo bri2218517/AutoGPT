@@ -397,20 +397,19 @@ class DatabaseManager(AppService):
     update_message_content_by_sequence = _(chat_db.update_message_content_by_sequence)
     update_chat_session_title = _(chat_db.update_chat_session_title)
     set_turn_duration = _(chat_db.set_turn_duration)
-    # SECRT-2339 — running-turn tracking + queue ops. Callable from the
-    # CoPilotExecutor subprocess where Prisma isn't connected; HTTP path
-    # also routes through here for consistency via ``chat_db()``.
+    # Running-turn tracking on ChatSession + generic ChatMessage
+    # lifecycle primitives. Callable from the CoPilotExecutor subprocess
+    # where Prisma isn't connected; HTTP path also routes through here
+    # for consistency via ``chat_db()``.
     count_running_turns_for_user = _(chat_db.count_running_turns_for_user)
     list_running_session_ids_for_user = _(chat_db.list_running_session_ids_for_user)
     get_session_current_turn_started_at = _(chat_db.get_session_current_turn_started_at)
     stamp_session_current_turn = _(chat_db.stamp_session_current_turn)
     clear_session_current_turn = _(chat_db.clear_session_current_turn)
-    count_queued_turns_for_user = _(chat_db.count_queued_turns_for_user)
-    list_queued_turns_for_user = _(chat_db.list_queued_turns_for_user)
-    insert_queued_turn = _(chat_db.insert_queued_turn)
-    cancel_queued_turn_for_user = _(chat_db.cancel_queued_turn_for_user)
-    claim_queued_turn_by_id_db = _(chat_db.claim_queued_turn_by_id_db)
-    restore_claimed_turn_to_queued = _(chat_db.restore_claimed_turn_to_queued)
+    count_chat_messages_by_status = _(chat_db.count_chat_messages_by_status)
+    list_chat_messages_by_status = _(chat_db.list_chat_messages_by_status)
+    insert_chat_message = _(chat_db.insert_chat_message)
+    transition_chat_message_status = _(chat_db.transition_chat_message_status)
 
 
 class DatabaseManagerClient(AppServiceClient):
@@ -642,9 +641,7 @@ class DatabaseManagerAsyncClient(AppServiceClient):
     get_session_current_turn_started_at = d.get_session_current_turn_started_at
     stamp_session_current_turn = d.stamp_session_current_turn
     clear_session_current_turn = d.clear_session_current_turn
-    count_queued_turns_for_user = d.count_queued_turns_for_user
-    list_queued_turns_for_user = d.list_queued_turns_for_user
-    insert_queued_turn = d.insert_queued_turn
-    cancel_queued_turn_for_user = d.cancel_queued_turn_for_user
-    claim_queued_turn_by_id_db = d.claim_queued_turn_by_id_db
-    restore_claimed_turn_to_queued = d.restore_claimed_turn_to_queued
+    count_chat_messages_by_status = d.count_chat_messages_by_status
+    list_chat_messages_by_status = d.list_chat_messages_by_status
+    insert_chat_message = d.insert_chat_message
+    transition_chat_message_status = d.transition_chat_message_status

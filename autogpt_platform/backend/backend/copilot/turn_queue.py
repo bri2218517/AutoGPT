@@ -2,23 +2,31 @@
 running cap.
 
 Storage is the existing :class:`prisma.models.ChatMessage` table with
-a sparse ``queueStatus`` column — a queued task IS the user's message
-in the conversation, just one waiting for a running slot. NULL on every
-chat-history row (the 99% case); set to one of:
+a ``chatStatus`` text enum capturing the row's queue lifecycle:
 
-* ``"queued"``    — waiting for the running cap to drop below 5
-* ``"cancelled"`` — user dropped it before the dispatcher claimed it.
+* ``"idle"``      — DEFAULT, normal row (history or immediately dispatched)
+* ``"queued"``    — user row waiting for a running slot
+* ``"cancelled"`` — user dropped the queued row before promotion (terminal)
 
-When the dispatcher promotes a row to running, ``queueStatus`` is
-cleared back to NULL — the row becomes a normal chat message.
+State transitions:
+
+* (insert)     → ``"queued"`` via ``enqueue_turn``
+* ``"queued"`` → ``"idle"`` via ``claim_queued_turn_by_id`` (dispatcher)
+* ``"queued"`` → ``"cancelled"`` via ``cancel_queued_turn`` (user)
+* ``"idle"``   → ``"queued"`` via dispatch-failure restore path
+
+Cancelled rows stay in the conversation as orphan user bubbles — the
+frontend renders a "Cancelled" indicator from ``chat_status`` so the
+user can tell what happened.
+
+Per-session "is a turn running?" is tracked separately on
+``ChatSession.currentTurnStartedAt`` and drives the per-user soft cap.
+We don't duplicate that signal onto ChatMessage rows.
 
 If the dispatcher finds the user paywalled / rate-limited at promote
-time, the row stays ``queued`` and the next slot-free hook re-validates
-— the row gets dispatched once eligibility returns, or the user can
-cancel manually. We don't have a separate "blocked" state because (a)
-paywall is already enforced at submit time so a queued+paywalled user
-is the rare mid-queue-lapse case, and (b) leaving the row queued lets
-it auto-recover when the user re-subscribes.
+time, the row stays ``"queued"`` and the next slot-free hook re-validates
+— the row gets dispatched once eligibility returns, or the user cancels
+manually.
 
 Layered on top of:
 
@@ -46,26 +54,24 @@ import uuid
 from typing import Any, Mapping
 
 from backend.copilot.active_turns import count_running_turns
-from backend.copilot.model import ChatMessage
+from backend.copilot.model import (
+    CHAT_STATUS_CANCELLED,
+    CHAT_STATUS_IDLE,
+    CHAT_STATUS_QUEUED,
+    ChatMessage,
+    _get_session_lock,
+    invalidate_session_cache,
+)
 from backend.data.db_accessors import chat_db
 
 logger = logging.getLogger(__name__)
 
 
-# ChatMessage.queueStatus values. Strings (not an enum) so adding a new
-# state is code-only with no Prisma migration.
-STATUS_QUEUED = "queued"
-STATUS_CANCELLED = "cancelled"
-
-
-# ============================================================================
-# Counts & queries
-# ============================================================================
-
-
 async def count_queued_turns(user_id: str) -> int:
-    """Number of ``queueStatus='queued'`` ChatMessage rows for ``user_id``."""
-    return await chat_db().count_queued_turns_for_user(user_id)
+    """Number of ``chatStatus='queued'`` ChatMessage rows for ``user_id``."""
+    return await chat_db().count_chat_messages_by_status(
+        user_id=user_id, status=CHAT_STATUS_QUEUED
+    )
 
 
 async def count_inflight_turns(user_id: str) -> int:
@@ -84,12 +90,9 @@ async def count_inflight_turns(user_id: str) -> int:
 async def list_queued_turns(user_id: str) -> list[ChatMessage]:
     """User's queued tasks, oldest-first (FIFO order). UX surface for the
     'your queued tasks' panel."""
-    return await chat_db().list_queued_turns_for_user(user_id)
-
-
-# ============================================================================
-# Mutations
-# ============================================================================
+    return await chat_db().list_chat_messages_by_status(
+        user_id=user_id, status=CHAT_STATUS_QUEUED
+    )
 
 
 class InflightCapExceeded(Exception):
@@ -180,63 +183,61 @@ async def enqueue_turn(
     # ``sequence`` and PK-collide on ``(sessionId, sequence)``. The caller's
     # ``get_next_sequence`` was an optimistic read; re-fetch inside the
     # lock so the authoritative value is whatever the lock holder sees now.
-    from backend.copilot.model import _get_session_lock, invalidate_session_cache
-
     db = chat_db()
     async with _get_session_lock(session_id):
         live_sequence = await db.get_next_sequence(session_id)
-        row = await db.insert_queued_turn(
-            message_id=message_id or _generate_id(),
+        row = await db.insert_chat_message(
+            message_id=message_id or str(uuid.uuid4()),
             session_id=session_id,
             role="user" if is_user_message else "assistant",
             content=message,
             sequence=live_sequence,
-            queue_metadata=metadata or None,
+            chat_status=CHAT_STATUS_QUEUED,
+            metadata=metadata or None,
         )
     # The chat-session cache holds the message list; invalidate so the
     # next /chat read picks up the queued row (frontend renders a
-    # 'Queued' badge based on ``queueStatus``).
+    # 'Queued' badge based on ``chatStatus``).
     await invalidate_session_cache(session_id)
     return row
 
 
 async def cancel_queued_turn(*, user_id: str, message_id: str) -> bool:
-    """Mark a queued row as cancelled. Returns True iff it was queued
-    AND owned by the user (via session). The user-ownership check is
-    via the session relation — both guards in a single update so
-    cancel/dispatch races resolve in one round trip.
+    """Mark a queued row as cancelled (``chatStatus`` ``"queued"`` →
+    ``"cancelled"``). Returns True iff the CAS matched AND the row is
+    owned by the user (via session).  Cancel/dispatch races resolve in
+    a single atomic update.
 
     Invalidates the session cache on success so the frontend stops
-    rendering the 'Queued' badge for this message on its next refetch.
+    rendering the 'Queued' badge on its next refetch.
     """
-    session_id = await chat_db().cancel_queued_turn_for_user(
-        user_id=user_id, message_id=message_id
+    row = await chat_db().transition_chat_message_status(
+        message_id=message_id,
+        from_status=CHAT_STATUS_QUEUED,
+        to_status=CHAT_STATUS_CANCELLED,
+        user_id=user_id,
     )
-    if session_id is None:
+    if row is None or row.session_id is None:
         return False
-    from backend.copilot.model import invalidate_session_cache
-
-    await invalidate_session_cache(session_id)
+    await invalidate_session_cache(row.session_id)
     return True
 
 
 async def claim_queued_turn_by_id(message_id: str) -> ChatMessage | None:
-    """Atomically claim the specific queued row identified by
-    ``message_id`` (clear ``queueStatus`` and stamp ``queueStartedAt``).
-    Returns the claimed row, or ``None`` if it was cancelled / blocked /
-    already claimed by a concurrent dispatcher between the gate check
-    and this call.
+    """Atomically claim the queued row identified by ``message_id`` by
+    transitioning ``chatStatus`` ``"queued"`` → ``"idle"``.  Returns
+    the claimed row, or ``None`` if it was cancelled / already claimed
+    by a concurrent dispatcher between the gate check and this call.
 
     The caller passes the exact ``message_id`` they validated (paywall,
     rate-limit) so a parallel cancel of the validated head doesn't
     silently promote a *different* — unvalidated — queued row.
     """
-    return await chat_db().claim_queued_turn_by_id_db(message_id=message_id)
-
-
-# ============================================================================
-# Dispatch
-# ============================================================================
+    return await chat_db().transition_chat_message_status(
+        message_id=message_id,
+        from_status=CHAT_STATUS_QUEUED,
+        to_status=CHAT_STATUS_IDLE,
+    )
 
 
 async def dispatch_next_for_user(user_id: str) -> bool:
@@ -247,9 +248,10 @@ async def dispatch_next_for_user(user_id: str) -> bool:
     Returns ``True`` iff a row was actually promoted.
 
     Pre-start re-validation runs *before* claiming the row so a
-    paywalled user's queue head is marked ``blocked`` (with a reason)
-    rather than consuming a running slot for a turn that would
-    immediately 402.
+    paywalled user's queue head stays queued (rather than consuming a
+    running slot for a turn that would immediately 402).  The row will
+    auto-recover on the next dispatch tick once eligibility returns,
+    or the user can cancel manually.
     """
     # Local imports to keep the cold-start path light and avoid pulling
     # the rate-limit + executor pipeline into modules that just want
@@ -257,7 +259,6 @@ async def dispatch_next_for_user(user_id: str) -> bool:
     from backend.copilot.active_turns import acquire_turn_slot, get_running_session_ids
     from backend.copilot.config import ChatConfig
     from backend.copilot.executor.utils import dispatch_turn
-    from backend.copilot.model import invalidate_session_cache
     from backend.copilot.rate_limit import (
         RateLimitExceeded,
         RateLimitUnavailable,
@@ -276,7 +277,9 @@ async def dispatch_next_for_user(user_id: str) -> bool:
     # ordering is loosened, which matches the intent — sessions are
     # independent conversation contexts.
     busy_sessions = await get_running_session_ids(user_id)
-    queued = await chat_db().list_queued_turns_for_user(user_id)
+    queued = await chat_db().list_chat_messages_by_status(
+        user_id=user_id, status=CHAT_STATUS_QUEUED
+    )
     head_id: str | None = None
     head_session_id: str | None = None
     for r in queued:
@@ -334,12 +337,11 @@ async def dispatch_next_for_user(user_id: str) -> bool:
     # queue.
     row = await claim_queued_turn_by_id(head_id)
     if row is None or row.id is None or row.session_id is None:
-        # ``head`` was cancelled / blocked / claimed by a concurrent
-        # dispatcher. Caller's loop decides whether to retry; the next
-        # slot-free event will fire this again anyway.
+        # Head was cancelled or claimed by a concurrent dispatcher.
+        # The next slot-free event will fire this again anyway.
         return False
 
-    metadata = row.queue_metadata or {}
+    metadata = row.metadata or {}
     turn_id = str(uuid.uuid4())
     try:
         # The user's message is already persisted in ``ChatMessage``
@@ -365,38 +367,29 @@ async def dispatch_next_for_user(user_id: str) -> bool:
             )
     except Exception:
         # Roll the claim back so a missed-dispatch tick or the next
-        # slot-free event can retry. We re-set queueStatus rather than
-        # leaving the row half-promoted with stale metadata. The
-        # restore call has its own try/except so a transient DB error
-        # there doesn't swallow the original dispatch exception or
-        # leave the operator with no signal — at minimum we log loudly
-        # so the orphaned row is recoverable from logs + DB inspection.
+        # slot-free event can retry. The restore call has its own
+        # try/except so a transient DB error there doesn't swallow the
+        # original dispatch exception or leave the operator with no
+        # signal — at minimum we log loudly so the orphaned row is
+        # recoverable from logs + DB inspection.
         try:
-            await chat_db().restore_claimed_turn_to_queued(message_id=row.id)
+            await chat_db().transition_chat_message_status(
+                message_id=row.id,
+                from_status=CHAT_STATUS_IDLE,
+                to_status=CHAT_STATUS_QUEUED,
+            )
         except Exception as restore_exc:
             logger.error(
                 "dispatch_next_for_user: failed to restore claim for "
                 "message=%s session=%s after dispatch failure; row left "
-                "with queueStatus=NULL and will need manual recovery: %s",
+                "with chatStatus='idle' and will need manual recovery: %s",
                 row.id,
                 row.session_id,
                 restore_exc,
             )
         raise
-    # The promoted row's queueStatus was cleared by claim_queued_turn_by_id;
-    # refresh the chat-session cache so the frontend stops rendering the
-    # 'Queued' badge for this message.
+    # The promoted row's chatStatus was cleared to 'idle' by the claim;
+    # refresh the chat-session cache so the frontend stops rendering
+    # the 'Queued' badge for this message.
     await invalidate_session_cache(row.session_id)
     return True
-
-
-# ============================================================================
-# Helpers
-# ============================================================================
-
-
-def _generate_id() -> str:
-    """Match :func:`backend.copilot.model.append_and_save_message`'s id
-    generation — the column is the same primary key the chat history
-    uses, so the same source of uniqueness applies."""
-    return str(uuid.uuid4())

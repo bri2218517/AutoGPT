@@ -44,6 +44,16 @@ def _get_session_cache_key(session_id: str) -> str:
     return f"{CHAT_SESSION_CACHE_PREFIX}{session_id}"
 
 
+# ChatMessage.chatStatus lifecycle values for the queue feature.  Open
+# enum: future states can be added without a migration.  Per-session
+# running state lives on ``ChatSession.currentTurnStartedAt`` — it's
+# scoped to the session, not the message, and serves the cap-count
+# query directly.
+CHAT_STATUS_IDLE = "idle"
+CHAT_STATUS_QUEUED = "queued"
+CHAT_STATUS_CANCELLED = "cancelled"
+
+
 # ===================== Chat data models ===================== #
 
 
@@ -83,17 +93,17 @@ class ChatMessage(BaseModel):
     duration_ms: int | None = None
     created_at: datetime | None = None
 
-    # SECRT-2339 queue lifecycle. NULL on every immediately-dispatched
-    # message; populated only when the turn is queued / blocked /
-    # cancelled. Frontend renders a 'Queued' badge / blocked-reason
-    # tooltip based on these.
-    queue_status: str | None = None
-    queue_blocked_reason: str | None = None
-    # Owning session id and queue dispatch payload — needed when the
-    # dispatcher (running in the CoPilotExecutor subprocess where Prisma
-    # is not connected) loads queued rows over RPC and replays them.
+    # Row lifecycle: ``"idle"`` (default) | ``"queued"`` | ``"running"``
+    # | ``"cancelled"``.  Open enum: future states can be added without
+    # a migration.  See ``backend.copilot.db`` for the CHAT_STATUS_* constants.
+    chat_status: str = "idle"
+    # Owning session id and generic per-row JSONB bag.  Today the
+    # dispatcher uses ``metadata`` to preserve submit-time payload
+    # (file_ids / mode / model / permissions / context / arrival_at);
+    # generic so future per-row state can land here without another
+    # migration.
     session_id: str | None = None
-    queue_metadata: dict | None = None
+    metadata: dict | None = None
 
     @staticmethod
     def from_db(prisma_message: PrismaChatMessage) -> "ChatMessage":
@@ -110,10 +120,9 @@ class ChatMessage(BaseModel):
             sequence=prisma_message.sequence,
             duration_ms=prisma_message.durationMs,
             created_at=prisma_message.createdAt,
-            queue_status=prisma_message.queueStatus,
-            queue_blocked_reason=prisma_message.queueBlockedReason,
+            chat_status=prisma_message.chatStatus,
             session_id=prisma_message.sessionId,
-            queue_metadata=_parse_json_field(prisma_message.queueMetadata),
+            metadata=_parse_json_field(prisma_message.metadata),
         )
 
 

@@ -541,13 +541,13 @@ describe("ChatMessagesContainer — queue badges on user messages", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders a QueueBadge when the user message has queueStatus='queued'", () => {
+  it("renders a QueueBadge when the user message has chatStatus='queued'", () => {
     const userId = "user-q1";
     const turnStats = new Map([
       [
         userId,
         {
-          queueStatus: "queued" as const,
+          chatStatus: "queued",
           rawMessageId: "uuid-q1",
         },
       ],

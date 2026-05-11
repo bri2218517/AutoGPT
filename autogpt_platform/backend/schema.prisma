@@ -267,9 +267,9 @@ model ChatSession {
   totalPromptTokens     Int @default(0)
   totalCompletionTokens Int @default(0)
 
-  // SECRT-2339 — running-turn tracking. Set when a turn is admitted and
-  // cleared on completion. NULL = no active turn. Stale cleanup is
-  // implicit via the ``> now() - MAX_TURN_LIFETIME`` filter on reads.
+  // Running-turn tracking for the per-user cap. Set when a turn is
+  // admitted and cleared on completion. NULL = no active turn. Stale
+  // cleanup is implicit via the ``> now() - MAX_TURN_LIFETIME`` filter.
   currentTurnStartedAt DateTime?
 
   Messages ChatMessage[]
@@ -301,30 +301,28 @@ model ChatMessage {
   sequence   Int
   durationMs Int? // Wall-clock milliseconds for this assistant turn
 
-  // SECRT-2339 queue lifecycle. NULL on every existing row and on
-  // immediately-dispatched turns (the 99% case). Populated only on
-  // user-message rows that hit the soft running cap and were enqueued
-  // for later dispatch:
-  //   * "queued"   — waiting for a running slot
-  //   * "blocked"  — pre-start re-validation failed; kept visible with
-  //                  ``queueBlockedReason`` instead of silently dropped
-  //   * "cancelled" — user dropped it before the dispatcher claimed it
-  // When the dispatcher promotes the row to "running", the column is
-  // cleared back to NULL — the message becomes an ordinary chat row.
-  queueStatus        String?
-  queueBlockedReason String?
-  // Turn-dispatch payload preserved for the dispatcher: file_ids, mode,
-  // model, permissions, context, request_arrival_at. Cleared when the
-  // turn actually starts. JSON instead of separate columns to keep the
-  // hot ``ChatMessage`` schema lean.
-  queueMetadata      Json?
-  queueStartedAt     DateTime?
+  // Row lifecycle.  ``"idle"`` on every existing row and on
+  // immediately-dispatched turns (the 99% case).  Queue lifecycle
+  // states (only on rows that hit the soft running cap):
+  //   * ``"queued"``    — waiting for a running slot
+  //   * ``"running"``   — dispatcher claimed it, turn is processing
+  //   * ``"cancelled"`` — user dropped it before promotion (terminal)
+  // After the turn completes, ``"running"`` is cleared back to
+  // ``"idle"``.  Open enum: future states (``"errored"``, ``"paused"``)
+  // can land here without a migration.
+  chatStatus String @default("idle")
+  // Per-row JSONB metadata bag.  Currently holds the dispatcher's
+  // submit-time payload on queued rows (file_ids, mode, model,
+  // permissions, context, request_arrival_at) so a promotion later
+  // replays the turn faithfully.  Generic so future per-row state can
+  // land here without another migration.
+  metadata   Json?
 
   @@unique([sessionId, sequence])
-  // Partial index: only queued rows count toward the dispatcher's
-  // FIFO scan. ``WHERE queueStatus = 'queued'`` keeps the index tiny
-  // since the column is NULL on every chat-history row.
-  @@index([queueStatus, createdAt], name: "ChatMessage_queue_dispatch_idx")
+  // Partial index for the dispatcher's FIFO scan: only non-idle rows
+  // count, so the index stays tiny on a hot table where every
+  // chat-history row is ``"idle"``.
+  @@index([chatStatus, createdAt], name: "ChatMessage_queue_dispatch_idx")
 }
 
 // This model describes the Agent Graph/Flow (Multi Agent System).

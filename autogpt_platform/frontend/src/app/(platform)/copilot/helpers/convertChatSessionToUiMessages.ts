@@ -5,11 +5,12 @@ export interface TurnStats {
   durationMs?: number;
   createdAt?: string;
   /**
-   * Queue lifecycle for the user-row that initiated this turn. Populated
-   * only on user messages whose ChatMessage row carries ``queueStatus``.
-   * Surfaces a "Queued" badge + cancel button in the chat view.
+   * Queue lifecycle of the user-row that initiated this turn — mirrors
+   * the backend ``ChatMessage.chatStatus``.  Open enum: only ``"queued"``
+   * and ``"cancelled"`` drive any UI today; everything else is treated
+   * as ``"idle"`` (no badge).
    */
-  queueStatus?: "queued" | "cancelled" | null;
+  chatStatus?: string;
   /** Raw ChatMessage.id (UUID). Required to call DELETE /chat/queued-tasks/{id}. */
   rawMessageId?: string | null;
 }
@@ -25,7 +26,7 @@ interface SessionChatMessage {
   sequence: number | null;
   duration_ms: number | null;
   created_at: string | null;
-  queue_status: "queued" | "cancelled" | null;
+  chat_status: string;
 }
 
 function coerceSessionChatMessages(
@@ -39,12 +40,6 @@ function coerceSessionChatMessages(
       const role = typeof msg.role === "string" ? msg.role : null;
       if (!role) return null;
 
-      const rawQueueStatus =
-        typeof msg.queue_status === "string" ? msg.queue_status : null;
-      const queueStatus: SessionChatMessage["queue_status"] =
-        rawQueueStatus === "queued" || rawQueueStatus === "cancelled"
-          ? rawQueueStatus
-          : null;
       return {
         id: typeof msg.id === "string" ? msg.id : null,
         role,
@@ -72,7 +67,8 @@ function coerceSessionChatMessages(
             : msg.created_at instanceof Date
               ? msg.created_at.toISOString()
               : null,
-        queue_status: queueStatus,
+        chat_status:
+          typeof msg.chat_status === "string" ? msg.chat_status : "idle",
       };
     })
     .filter((m): m is SessionChatMessage => m !== null);
@@ -267,10 +263,10 @@ export function convertChatSessionMessagesToUiMessages(
     )
       return;
 
-    // Cancelled queued messages stay in the DB for audit but should NOT
-    // clutter the conversation view — the user already saw them disappear
-    // when they clicked the cancel button.
-    if (msg.queue_status === "cancelled") return;
+    // Cancelled rows stay visible in the conversation as orphan user
+    // bubbles (no AI follow-up after them).  We don't emit a separate
+    // "Cancelled" indicator — the row's lack of a response, combined
+    // with the user remembering they just clicked X, communicates it.
 
     // Role=="reasoning" rows carry extended_thinking content.  Treat them as
     // contributing a reasoning part to the surrounding assistant bubble —
@@ -414,7 +410,7 @@ export function convertChatSessionMessagesToUiMessages(
     if (uiRole === "user") {
       // Queue badge + cancel button consume these via
       // ``turnStats.get(message.id)`` in ChatMessagesContainer.
-      patch.queueStatus = msg.queue_status;
+      patch.chatStatus = msg.chat_status;
       patch.rawMessageId = msg.id;
     }
     if (Object.keys(patch).length > 0) patchStats(msgId, patch);

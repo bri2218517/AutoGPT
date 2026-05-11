@@ -653,11 +653,6 @@ async def get_session(
     )
 
 
-# =====================================================================
-# SECRT-2339 — queued-task surface
-# =====================================================================
-
-
 class QueuedTaskItem(BaseModel):
     """One queued AutoPilot task. Frontend renders these in the 'your
     queued tasks' panel + per-message badge in the chat view."""
@@ -721,9 +716,9 @@ async def cancel_queued_task(
 ) -> Response:
     """Cancel a queued task before the dispatcher claims it.
 
-    No-op (404) if the row was already promoted to running, blocked,
+    No-op (404) if the row was already promoted to running, already
     cancelled, or doesn't belong to this user — the cancel transition
-    is gated on ``queueStatus='queued'`` AND ``Session.userId=user_id``
+    is gated on ``chatStatus='queued'`` AND ``Session.userId=user_id``
     in a single atomic update.
     """
     cancelled = await turn_queue.cancel_queued_turn(
@@ -1205,7 +1200,7 @@ async def stream_chat_post(
         # Soft running cap (default 5) hit. Fall through to the queue:
         # if total in-flight (running + queued) is still under the hard
         # cap (default 15), persist the user's message with
-        # ``queueStatus='queued'`` and return the empty UI stream — the
+        # ``isQueued=true`` and return the empty UI stream — the
         # dispatcher will promote it when a running slot frees. Past
         # the hard cap the user is blocked at HTTP 429.
         inflight_cap = get_inflight_turn_limit()

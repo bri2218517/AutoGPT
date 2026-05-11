@@ -55,19 +55,31 @@ afterEach(() => {
 
 describe("QueueBadge", () => {
   it("renders the queued badge with the cancel button when a raw id is present", () => {
-    render(<QueueBadge rawMessageId="msg-1" sessionID="sess-1" />);
+    render(
+      <QueueBadge
+        chatStatus="queued"
+        rawMessageId="msg-1"
+        sessionID="sess-1"
+      />,
+    );
     expect(screen.getByTestId("queue-badge-queued")).toBeDefined();
     expect(screen.getByTestId("queue-cancel-button")).toBeDefined();
   });
 
   it("invokes the cancel mutation with the raw message id on click", () => {
-    render(<QueueBadge rawMessageId="msg-42" sessionID="sess-1" />);
+    render(
+      <QueueBadge
+        chatStatus="queued"
+        rawMessageId="msg-42"
+        sessionID="sess-1"
+      />,
+    );
     fireEvent.click(screen.getByTestId("queue-cancel-button"));
     expect(cancelMock).toHaveBeenCalledWith({ messageId: "msg-42" });
   });
 
   it("hides the cancel button when no raw id is available", () => {
-    render(<QueueBadge sessionID="sess-1" />);
+    render(<QueueBadge chatStatus="queued" sessionID="sess-1" />);
     expect(screen.getByTestId("queue-badge-queued")).toBeDefined();
     expect(screen.queryByTestId("queue-cancel-button")).toBeNull();
   });
@@ -76,7 +88,13 @@ describe("QueueBadge", () => {
     // 404 = task already promoted / not owned: not a real failure, the
     // UI just needs to resync. The destructive toast must NOT fire.
     errorResponse = { response: { status: 404 } };
-    render(<QueueBadge rawMessageId="msg-x" sessionID="sess-1" />);
+    render(
+      <QueueBadge
+        chatStatus="queued"
+        rawMessageId="msg-x"
+        sessionID="sess-1"
+      />,
+    );
     fireEvent.click(screen.getByTestId("queue-cancel-button"));
     expect(toastMock).not.toHaveBeenCalled();
     expect(captureExceptionMock).not.toHaveBeenCalled();
@@ -84,7 +102,13 @@ describe("QueueBadge", () => {
 
   it("shows the destructive toast and reports to Sentry on a real cancel error", () => {
     errorResponse = { response: { status: 500 } };
-    render(<QueueBadge rawMessageId="msg-y" sessionID="sess-1" />);
+    render(
+      <QueueBadge
+        chatStatus="queued"
+        rawMessageId="msg-y"
+        sessionID="sess-1"
+      />,
+    );
     fireEvent.click(screen.getByTestId("queue-cancel-button"));
     expect(toastMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -99,7 +123,13 @@ describe("QueueBadge", () => {
     // No `.response` on the error → the `status === 404` check should
     // be false, so we fall through to the toast + Sentry path.
     errorResponse = {};
-    render(<QueueBadge rawMessageId="msg-z" sessionID="sess-1" />);
+    render(
+      <QueueBadge
+        chatStatus="queued"
+        rawMessageId="msg-z"
+        sessionID="sess-1"
+      />,
+    );
     fireEvent.click(screen.getByTestId("queue-cancel-button"));
     expect(toastMock).toHaveBeenCalled();
     expect(captureExceptionMock).toHaveBeenCalled();

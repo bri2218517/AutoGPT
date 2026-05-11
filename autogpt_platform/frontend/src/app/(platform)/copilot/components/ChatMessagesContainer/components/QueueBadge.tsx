@@ -11,10 +11,16 @@ import {
 } from "@/components/atoms/Tooltip/BaseTooltip";
 import { toast } from "@/components/molecules/Toast/use-toast";
 import * as Sentry from "@sentry/nextjs";
-import { HourglassIcon, XCircleIcon } from "@phosphor-icons/react";
+import {
+  HourglassIcon,
+  ProhibitIcon,
+  XCircleIcon,
+} from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 
 interface Props {
+  /** Backend ``ChatMessage.chatStatus`` value driving the rendered shape. */
+  chatStatus: string;
   /** Raw ChatMessage.id (UUID); required for the cancel endpoint. */
   rawMessageId?: string | null;
   sessionID: string | null;
@@ -22,8 +28,9 @@ interface Props {
 
 const QUEUED_TOOLTIP =
   "Will start automatically when one of your current tasks finishes.";
+const CANCELLED_TOOLTIP = "You cancelled this before it ran.";
 
-export function QueueBadge({ rawMessageId, sessionID }: Props) {
+export function QueueBadge({ chatStatus, rawMessageId, sessionID }: Props) {
   const queryClient = useQueryClient();
   const { mutate: cancelTask, isPending: isCancelling } =
     useDeleteV2CancelQueuedTask({
@@ -66,6 +73,28 @@ export function QueueBadge({ rawMessageId, sessionID }: Props) {
     if (!rawMessageId || isCancelling) return;
     cancelTask({ messageId: rawMessageId });
   }
+
+  // Terminal "Cancelled" state — neutral pill, no cancel button.
+  if (chatStatus === "cancelled") {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600"
+            data-testid="queue-badge-cancelled"
+          >
+            <ProhibitIcon size={12} weight="bold" />
+            Cancelled
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-xs whitespace-normal">
+          {CANCELLED_TOOLTIP}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  if (chatStatus !== "queued") return null;
 
   return (
     <span className="inline-flex items-center gap-1">
