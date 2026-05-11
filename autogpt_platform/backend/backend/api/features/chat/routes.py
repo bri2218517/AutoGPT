@@ -3,8 +3,8 @@
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
-from typing import Annotated
 from datetime import datetime, timezone
+from typing import Annotated
 from uuid import uuid4
 
 from autogpt_libs import auth
@@ -150,7 +150,13 @@ async def _try_release_orphan_running(session_id: str, user_id: str) -> bool:
     meta = await get_chat_session_metadata(session_id)
     if meta is None or meta.chat_status != CHAT_STATUS_RUNNING:
         return False
-    age = (datetime.now(timezone.utc) - meta.updated_at).total_seconds()
+    # Prisma returns tz-aware UTC for ``DateTime`` columns today, but
+    # treat a naive value as UTC defensively so an accidental schema
+    # change can't make this subtraction raise ``TypeError``.
+    updated_at = meta.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - updated_at).total_seconds()
     if age <= _ORPHAN_RUNNING_RESET_THRESHOLD_SECONDS:
         return False
     await active_turns.release_turn_slot(user_id, session_id)
