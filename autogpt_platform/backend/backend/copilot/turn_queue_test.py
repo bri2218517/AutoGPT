@@ -320,6 +320,7 @@ async def test_dispatch_rolls_claim_back_on_dispatch_failure() -> None:
     db.update_chat_session_status = AsyncMock(side_effect=[True, True])
     db.get_latest_user_message_in_session = AsyncMock(return_value=pending)
     dispatch_turn_mock = AsyncMock(side_effect=RuntimeError("RabbitMQ blip"))
+    delete_meta_mock = AsyncMock()
     with (
         _patch_queued_list([head]),
         patch.object(turn_queue, "chat_db", return_value=db),
@@ -339,6 +340,10 @@ async def test_dispatch_rolls_claim_back_on_dispatch_failure() -> None:
             "backend.copilot.executor.utils.dispatch_turn",
             new=dispatch_turn_mock,
         ),
+        patch(
+            "backend.copilot.stream_registry.delete_session_meta",
+            new=delete_meta_mock,
+        ),
         patch.object(turn_queue, "invalidate_session_cache", new=AsyncMock()),
     ):
         with pytest.raises(RuntimeError, match="RabbitMQ blip"):
@@ -351,3 +356,6 @@ async def test_dispatch_rolls_claim_back_on_dispatch_failure() -> None:
     db.update_chat_session_status.assert_any_await(
         session_id="s1", expect_status="running", status="queued"
     )
+    # Redis meta the create_session left behind is cleaned up so the
+    # session doesn't keep tripping is_turn_in_flight until TTL.
+    delete_meta_mock.assert_awaited_once_with("s1")

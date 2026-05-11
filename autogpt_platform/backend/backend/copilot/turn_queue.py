@@ -352,6 +352,22 @@ async def dispatch_next_for_user(user_id: str) -> bool:
                 head.session_id,
                 restore_exc,
             )
+        # Drop the Redis meta entry that ``dispatch_turn`` left behind
+        # via ``create_session``.  Without this the session would keep
+        # tripping ``is_turn_in_flight`` even though no executor will
+        # pick it up — buffering new submits indefinitely until the
+        # meta key's TTL expires.
+        from backend.copilot.stream_registry import delete_session_meta
+
+        try:
+            await delete_session_meta(head.session_id)
+        except Exception as redis_exc:
+            logger.warning(
+                "dispatch_next_for_user: redis meta cleanup failed for "
+                "session=%s: %s",
+                head.session_id,
+                redis_exc,
+            )
         raise
 
     await invalidate_session_cache(head.session_id)
