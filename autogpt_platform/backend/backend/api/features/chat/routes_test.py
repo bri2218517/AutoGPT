@@ -1304,13 +1304,10 @@ def _mock_validate_session(
 
 
 def test_cancel_session_no_active_task(mocker: pytest_mock.MockerFixture) -> None:
-    """Cancel returns cancelled=True with reason when no stream is active
-    AND the session isn't queued — the cancel handler first tries the
-    queued-→-idle CAS via turn_queue.cancel_queued_turn, then falls
-    through to the running-stream cancel path.  Even on the
-    no-active-session branch we now defensively release any orphaned
-    DB ``chatStatus='running'`` so a previously-crashed executor doesn't
-    leave the sidebar showing a green dot forever."""
+    """Cancel returns ``reason="no_active_session"`` when no Redis
+    stream exists AND the orphan-reset age gate isn't satisfied (e.g.
+    DB ``chatStatus='idle'`` or a fresh admit racing this read).  The
+    separate test below covers the orphan-release branch."""
     _mock_validate_session(mocker)
     mocker.patch(
         "backend.copilot.turn_queue.cancel_queued_turn",
@@ -1319,6 +1316,65 @@ def test_cancel_session_no_active_task(mocker: pytest_mock.MockerFixture) -> Non
     mock_registry = MagicMock()
     mock_registry.get_active_session = AsyncMock(return_value=(None, None))
     mocker.patch("backend.api.features.chat.routes.stream_registry", mock_registry)
+    # No orphan release: metadata returns idle, so the age gate yields False.
+    from backend.copilot.model import ChatSessionInfo, ChatSessionMetadata
+
+    now = datetime.now(UTC)
+    mocker.patch(
+        "backend.api.features.chat.routes.get_chat_session_metadata",
+        new=AsyncMock(
+            return_value=ChatSessionInfo(
+                session_id="sess-1",
+                user_id=TEST_USER_ID,
+                usage=[],
+                started_at=now,
+                updated_at=now,
+                metadata=ChatSessionMetadata(),
+                chat_status="idle",
+            )
+        ),
+    )
+
+    response = client.post("/sessions/sess-1/cancel")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["cancelled"] is True
+    assert data["reason"] == "no_active_session"
+
+
+def test_cancel_session_releases_orphan_running(
+    mocker: pytest_mock.MockerFixture,
+) -> None:
+    """When the DB has been stuck at ``chatStatus='running'`` past the
+    age threshold and Redis has no live stream, cancel force-releases
+    the slot and returns ``reason='orphan_released'``."""
+    _mock_validate_session(mocker)
+    mocker.patch(
+        "backend.copilot.turn_queue.cancel_queued_turn",
+        new=AsyncMock(return_value=False),
+    )
+    mock_registry = MagicMock()
+    mock_registry.get_active_session = AsyncMock(return_value=(None, None))
+    mocker.patch("backend.api.features.chat.routes.stream_registry", mock_registry)
+    from backend.copilot.model import ChatSessionInfo, ChatSessionMetadata
+
+    # Session has been running for ~1 hour — past the 30s threshold.
+    stale = datetime.now(UTC) - timedelta(hours=1)
+    mocker.patch(
+        "backend.api.features.chat.routes.get_chat_session_metadata",
+        new=AsyncMock(
+            return_value=ChatSessionInfo(
+                session_id="sess-1",
+                user_id=TEST_USER_ID,
+                usage=[],
+                started_at=stale,
+                updated_at=stale,
+                metadata=ChatSessionMetadata(),
+                chat_status="running",
+            )
+        ),
+    )
     mock_release = AsyncMock()
     mocker.patch(
         "backend.api.features.chat.routes.active_turns.release_turn_slot",
@@ -1330,8 +1386,54 @@ def test_cancel_session_no_active_task(mocker: pytest_mock.MockerFixture) -> Non
     assert response.status_code == 200
     data = response.json()
     assert data["cancelled"] is True
-    assert data["reason"] == "no_active_session"
+    assert data["reason"] == "orphan_released"
     mock_release.assert_awaited_once()
+
+
+def test_cancel_session_skips_orphan_release_within_race_window(
+    mocker: pytest_mock.MockerFixture,
+) -> None:
+    """A session whose DB ``chatStatus='running'`` flip happened
+    sub-second ago is almost certainly a fresh admit racing
+    ``dispatch_turn.create_session`` — NOT an orphan.  The age gate
+    must skip the release so we don't stomp the in-flight dispatch."""
+    _mock_validate_session(mocker)
+    mocker.patch(
+        "backend.copilot.turn_queue.cancel_queued_turn",
+        new=AsyncMock(return_value=False),
+    )
+    mock_registry = MagicMock()
+    mock_registry.get_active_session = AsyncMock(return_value=(None, None))
+    mocker.patch("backend.api.features.chat.routes.stream_registry", mock_registry)
+    from backend.copilot.model import ChatSessionInfo, ChatSessionMetadata
+
+    fresh = datetime.now(UTC) - timedelta(seconds=1)
+    mocker.patch(
+        "backend.api.features.chat.routes.get_chat_session_metadata",
+        new=AsyncMock(
+            return_value=ChatSessionInfo(
+                session_id="sess-1",
+                user_id=TEST_USER_ID,
+                usage=[],
+                started_at=fresh,
+                updated_at=fresh,
+                metadata=ChatSessionMetadata(),
+                chat_status="running",
+            )
+        ),
+    )
+    mock_release = AsyncMock()
+    mocker.patch(
+        "backend.api.features.chat.routes.active_turns.release_turn_slot",
+        new=mock_release,
+    )
+
+    response = client.post("/sessions/sess-1/cancel")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["reason"] == "no_active_session"
+    mock_release.assert_not_awaited()
 
 
 def test_cancel_session_dequeues_when_queued(
@@ -1872,18 +1974,34 @@ def test_get_session_returns_backward_paginated(
 def test_get_session_releases_orphan_when_redis_empty_and_db_running(
     mocker: pytest_mock.MockerFixture,
 ) -> None:
-    """A session whose DB says ``chatStatus='running'`` but has no live
-    Redis stream is an orphan (executor crashed mid-turn, or the API
-    process died between ``acquire_turn_slot`` and ``dispatch_turn``).
-    Opening the chat must force-release the slot so the sidebar's
-    green dot stops showing immediately, rather than waiting for the
-    6h+5min inline stale-CAS or the user clicking Cancel."""
+    """A session whose DB says ``chatStatus='running'`` for longer than
+    the race-window threshold AND has no live Redis stream is an orphan
+    (executor crashed mid-turn).  Opening the chat must force-release
+    the slot so the sidebar's green dot stops showing."""
+    from backend.copilot.model import ChatSessionInfo, ChatSessionMetadata
+
+    stale = datetime.now(UTC) - timedelta(hours=1)
     page, _ = _make_paginated_messages(mocker)
     page.session.chat_status = "running"
+    page.session.updated_at = stale
     mocker.patch(
         "backend.api.features.chat.routes.stream_registry.get_active_session",
         new_callable=AsyncMock,
         return_value=(None, None),
+    )
+    mocker.patch(
+        "backend.api.features.chat.routes.get_chat_session_metadata",
+        new=AsyncMock(
+            return_value=ChatSessionInfo(
+                session_id="sess-1",
+                user_id=TEST_USER_ID,
+                usage=[],
+                started_at=stale,
+                updated_at=stale,
+                metadata=ChatSessionMetadata(),
+                chat_status="running",
+            )
+        ),
     )
     mock_release = AsyncMock()
     mocker.patch(

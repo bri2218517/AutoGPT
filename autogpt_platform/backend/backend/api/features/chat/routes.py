@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from typing import Annotated
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from autogpt_libs import auth
@@ -127,6 +128,33 @@ async def _validate_and_get_session(
     if not session:
         raise NotFoundError(f"Session {session_id} not found.")
     return session
+
+
+# Minimum age before the orphan-reset paths (``get_session`` and
+# ``cancel_session_task``) will touch a ``chatStatus='running'`` session
+# that has no live Redis stream.  Lower bound has to clear the
+# ``acquire_turn_slot``→``dispatch_turn.create_session`` window (a few
+# ms in practice).  30s is a generous safety margin — anything still
+# at ``running`` after that without a Redis stream is genuinely an
+# orphan, not an in-flight admit racing this read.
+_ORPHAN_RUNNING_RESET_THRESHOLD_SECONDS = 30
+
+
+async def _try_release_orphan_running(session_id: str, user_id: str) -> bool:
+    """Force-release a session if it's stuck in ``chatStatus='running'``
+    older than ``_ORPHAN_RUNNING_RESET_THRESHOLD_SECONDS`` (= the
+    ``acquire_turn_slot``→``create_session`` race window).  Returns
+    True iff a release happened — callers map that into their response
+    so the user can tell ``orphan_released`` apart from
+    ``no_active_session``."""
+    meta = await get_chat_session_metadata(session_id)
+    if meta is None or meta.chat_status != CHAT_STATUS_RUNNING:
+        return False
+    age = (datetime.now(timezone.utc) - meta.updated_at).total_seconds()
+    if age <= _ORPHAN_RUNNING_RESET_THRESHOLD_SECONDS:
+        return False
+    await active_turns.release_turn_slot(user_id, session_id)
+    return True
 
 
 router = APIRouter(
@@ -586,15 +614,12 @@ async def get_session(
                 started_at=active_session.created_at.isoformat(),
             )
         elif page.session.chat_status == CHAT_STATUS_RUNNING:
-            # DB says running but Redis has no live stream — the executor
-            # crashed mid-turn (or the dispatch race in ``schedule_turn``
-            # left ``chatStatus`` flipped without ``create_session``
-            # landing).  Without this fixup the sidebar's green dot would
-            # stay on until the 6h+5min stale-CAS or the user clicks
-            # Cancel.  Opening the chat is also a strong "I want to see
-            # the current state" signal, so reset here.
-            await active_turns.release_turn_slot(user_id, session_id)
-            page.session.chat_status = CHAT_STATUS_IDLE
+            # DB says running but Redis has no live stream — either the
+            # executor crashed mid-turn or a fresh admit is racing this
+            # read.  ``_try_release_orphan_running`` age-gates the
+            # cleanup so an in-flight ``dispatch_turn`` isn't stomped.
+            if await _try_release_orphan_running(session_id, user_id):
+                page.session.chat_status = CHAT_STATUS_IDLE
 
     # Skip session metadata on "load more" — frontend only needs messages
     if before_sequence is not None:
@@ -871,14 +896,19 @@ async def cancel_session_task(
 
     active_session, _ = await stream_registry.get_active_session(session_id, user_id)
     if not active_session:
-        # No Redis stream entry, but the DB might still say "running" — that
-        # happens when the executor crashed mid-turn (Redis meta TTL'd out
-        # while the DB ``chatStatus`` flip from ``running`` to ``idle``
-        # never landed because ``mark_session_completed`` never ran).
-        # Without this fixup the user clicks Cancel, gets ``cancelled: true``,
-        # but the sidebar keeps showing the green "running" dot until the
-        # CAS-on-read stale check finally fires (threshold: 6h+5min).
-        await active_turns.release_turn_slot(user_id, session_id)
+        # No Redis stream entry.  Two possibilities:
+        # (a) Executor crashed mid-turn — Redis meta TTL'd out while DB
+        #     ``chatStatus`` stayed ``running`` (the orphan case the user
+        #     wants cleaned up).
+        # (b) Sub-millisecond race against a fresh admit: ``acquire_turn_slot``
+        #     CAS'd DB ``idle → running`` and the route is about to call
+        #     ``dispatch_turn.create_session`` to write Redis.  Force-
+        #     releasing here would let the turn run while DB says idle,
+        #     orphaning the executor work in the opposite direction.
+        # Gate the cleanup on session age so a fresh admit isn't stomped.
+        # Anything older than the threshold is the real orphan.
+        if await _try_release_orphan_running(session_id, user_id):
+            return CancelSessionResponse(cancelled=True, reason="orphan_released")
         return CancelSessionResponse(cancelled=True, reason="no_active_session")
 
     await enqueue_cancel_task(session_id)
