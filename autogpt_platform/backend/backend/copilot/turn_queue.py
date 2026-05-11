@@ -253,7 +253,7 @@ async def dispatch_next_for_user(user_id: str) -> bool:
         logger.info(
             "dispatch_next_for_user: user=%s paywalled, leaving session=%s queued",
             user_id,
-            head.id,
+            head.session_id,
         )
         return False
 
@@ -274,7 +274,7 @@ async def dispatch_next_for_user(user_id: str) -> bool:
             "dispatch_next_for_user: user=%s rate-limited (%s), leaving session=%s queued",
             user_id,
             exc,
-            head.id,
+            head.session_id,
         )
         return False
     except RateLimitUnavailable:
@@ -288,20 +288,20 @@ async def dispatch_next_for_user(user_id: str) -> bool:
     # Claim by transitioning the session ``queued`` → ``running``.  A
     # parallel cancel between validation and claim rejects this
     # dispatch via the CAS returning False.
-    if not await claim_queued_session(head.id):
+    if not await claim_queued_session(head.session_id):
         return False
 
     # Find the pending user message in this session (the most recent
     # user-role row with no following assistant rows — i.e. the one
     # that triggered the queue).  Its ``metadata`` carries the
     # dispatcher payload.
-    pending = await chat_db().get_latest_user_message_in_session(head.id)
+    pending = await chat_db().get_latest_user_message_in_session(head.session_id)
     if pending is None or pending.content is None:
         # Shouldn't happen — enqueue_turn always persists a row before
         # flipping the session to queued.  If it does (corrupted
         # state), roll back to idle so the next tick doesn't loop.
         await chat_db().update_chat_session_status(
-            session_id=head.id,
+            session_id=head.session_id,
             expect_status=CHAT_STATUS_RUNNING,
             status=CHAT_STATUS_IDLE,
         )
@@ -319,11 +319,11 @@ async def dispatch_next_for_user(user_id: str) -> bool:
         # ``mark_session_completed`` → ``release_turn_slot``.
         from backend.copilot.active_turns import TurnSlot
 
-        slot = TurnSlot(user_id, head.id)
+        slot = TurnSlot(user_id, head.session_id)
         slot.admitted = True
         await dispatch_turn(
             slot,
-            session_id=head.id,
+            session_id=head.session_id,
             user_id=user_id,
             turn_id=turn_id,
             message=pending.content,
@@ -340,7 +340,7 @@ async def dispatch_next_for_user(user_id: str) -> bool:
         # slot-free event can retry.
         try:
             await chat_db().update_chat_session_status(
-                session_id=head.id,
+                session_id=head.session_id,
                 expect_status=CHAT_STATUS_RUNNING,
                 status=CHAT_STATUS_QUEUED,
             )
@@ -349,10 +349,38 @@ async def dispatch_next_for_user(user_id: str) -> bool:
                 "dispatch_next_for_user: failed to restore claim for "
                 "session=%s after dispatch failure; session left in "
                 "chatStatus='running' and will need manual recovery: %s",
-                head.id,
+                head.session_id,
                 restore_exc,
             )
         raise
 
-    await invalidate_session_cache(head.id)
+    await invalidate_session_cache(head.session_id)
     return True
+
+
+async def dispatch_for_all_queued_users() -> int:
+    """Periodic queue backfill.  Picks every user_id that currently has
+    at least one queued ChatSession and runs ``dispatch_next_for_user``
+    for each — recovers items left queued when ``mark_session_completed``
+    didn't fire (backend restart, slot-free hook swallowed an error, or
+    paywall/rate-limit eligibility cleared between events).
+
+    Per-user errors are logged and skipped so one user's bad state
+    can't stall the rest of the queue.  Returns the number of sessions
+    promoted on this tick.
+    """
+    user_ids = await chat_db().list_users_with_queued_sessions()
+    if not user_ids:
+        return 0
+    promoted = 0
+    for user_id in user_ids:
+        try:
+            if await dispatch_next_for_user(user_id):
+                promoted += 1
+        except Exception as exc:
+            logger.error(
+                "dispatch_for_all_queued_users: user=%s skipped (%s)",
+                user_id,
+                exc,
+            )
+    return promoted

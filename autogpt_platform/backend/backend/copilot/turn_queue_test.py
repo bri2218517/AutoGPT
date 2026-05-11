@@ -42,12 +42,12 @@ def _pyd_message(**overrides) -> PydanticChatMessage:
 
 
 def _mock_session(session_id: str = "s1", title: str | None = "T") -> MagicMock:
-    """Build a Prisma-ish ChatSession mock for list_chat_sessions_by_status
-    return values."""
+    """Build a ChatSessionInfo-ish mock for list_chat_sessions_by_status
+    return values.  Mirrors the Pydantic surface the dispatcher reads."""
     s = MagicMock()
-    s.id = session_id
+    s.session_id = session_id
     s.title = title
-    s.updatedAt = datetime.now(timezone.utc)
+    s.updated_at = datetime.now(timezone.utc)
     return s
 
 
@@ -342,3 +342,59 @@ async def test_dispatch_rolls_claim_back_on_dispatch_failure() -> None:
     db.update_chat_session_status.assert_any_await(
         session_id="s1", expect_status="running", status="queued"
     )
+
+
+# ── dispatch_for_all_queued_users (periodic backfill) ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_dispatch_for_all_queued_users_runs_per_user() -> None:
+    """Backfill iterates every user_id returned by
+    list_users_with_queued_sessions and calls dispatch_next_for_user
+    once per user.  Returns the number of promotions."""
+    db = MagicMock()
+    db.list_users_with_queued_sessions = AsyncMock(return_value=["u1", "u2", "u3"])
+    dispatch_mock = AsyncMock(side_effect=[True, False, True])
+    with (
+        patch.object(turn_queue, "chat_db", return_value=db),
+        patch.object(turn_queue, "dispatch_next_for_user", new=dispatch_mock),
+    ):
+        promoted = await turn_queue.dispatch_for_all_queued_users()
+    assert promoted == 2
+    assert dispatch_mock.await_count == 3
+    dispatch_mock.assert_any_await("u1")
+    dispatch_mock.assert_any_await("u2")
+    dispatch_mock.assert_any_await("u3")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_for_all_queued_users_skips_failing_user() -> None:
+    """One user blowing up must not stall the rest of the tick — failure
+    is logged, the loop continues, and the function returns the number
+    of users that succeeded."""
+    db = MagicMock()
+    db.list_users_with_queued_sessions = AsyncMock(return_value=["u_bad", "u_good"])
+    dispatch_mock = AsyncMock(side_effect=[RuntimeError("simulated brown-out"), True])
+    with (
+        patch.object(turn_queue, "chat_db", return_value=db),
+        patch.object(turn_queue, "dispatch_next_for_user", new=dispatch_mock),
+    ):
+        promoted = await turn_queue.dispatch_for_all_queued_users()
+    assert promoted == 1
+    assert dispatch_mock.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_dispatch_for_all_queued_users_no_op_when_empty() -> None:
+    """No users with queued sessions → return 0 without invoking the
+    per-user dispatcher."""
+    db = MagicMock()
+    db.list_users_with_queued_sessions = AsyncMock(return_value=[])
+    dispatch_mock = AsyncMock()
+    with (
+        patch.object(turn_queue, "chat_db", return_value=db),
+        patch.object(turn_queue, "dispatch_next_for_user", new=dispatch_mock),
+    ):
+        promoted = await turn_queue.dispatch_for_all_queued_users()
+    assert promoted == 0
+    dispatch_mock.assert_not_awaited()

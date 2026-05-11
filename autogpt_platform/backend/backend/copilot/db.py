@@ -726,12 +726,31 @@ async def count_chat_sessions_by_status(*, user_id: str, status: str) -> int:
 
 async def list_chat_sessions_by_status(
     *, user_id: str, status: str
-) -> list[PrismaChatSession]:
-    """User's ChatSession rows with the given status, oldest-first."""
-    return await PrismaChatSession.prisma().find_many(
+) -> list[ChatSessionInfo]:
+    """User's ChatSession rows with the given status, oldest-first.
+
+    Returns application-model :class:`ChatSessionInfo` instances (not
+    raw Prisma rows) so the function is RPC-safe when callers reach it
+    via :class:`DatabaseManagerAsyncClient` from a subprocess that
+    doesn't hold a direct Prisma connection (scheduler, CoPilotExecutor)."""
+    rows = await PrismaChatSession.prisma().find_many(
         where={"userId": user_id, "chatStatus": status},
         order={"updatedAt": "asc"},
     )
+    return [ChatSessionInfo.from_db(r) for r in rows]
+
+
+async def list_users_with_queued_sessions() -> list[str]:
+    """Distinct userIds that have at least one queued ChatSession.  Used
+    by the periodic queue-backfill job (see
+    :func:`backend.copilot.turn_queue.dispatch_for_all_queued_users`)
+    so it can call the per-user dispatcher once per user instead of
+    iterating every queued row."""
+    rows = await PrismaChatSession.prisma().find_many(
+        where={"chatStatus": "queued"},
+        distinct=["userId"],
+    )
+    return [r.userId for r in rows]
 
 
 async def get_latest_user_message_in_session(
