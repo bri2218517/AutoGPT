@@ -734,6 +734,20 @@ async def list_chat_sessions_by_status(
     )
 
 
+async def get_latest_user_message_in_session(
+    session_id: str,
+) -> ChatMessage | None:
+    """Return the most recent ``role='user'`` ChatMessage in the given
+    session, or ``None`` if there are none.  Used by the queue dispatcher
+    to recover the submit-time payload from ``metadata`` when promoting
+    a queued session."""
+    row = await PrismaChatMessage.prisma().find_first(
+        where={"sessionId": session_id, "role": "user"},
+        order={"sequence": "desc"},
+    )
+    return ChatMessage.from_db(row) if row else None
+
+
 async def update_chat_session_status(
     *,
     session_id: str,

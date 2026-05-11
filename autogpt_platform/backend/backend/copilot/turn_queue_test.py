@@ -267,15 +267,11 @@ async def test_dispatch_happy_path_claims_and_dispatches() -> None:
     db = MagicMock()
     db.list_chat_sessions_by_status = AsyncMock(return_value=[head])
     db.update_chat_session_status = AsyncMock(return_value=True)
+    db.get_latest_user_message_in_session = AsyncMock(return_value=pending)
     dispatch_turn_mock = AsyncMock()
     invalidate = AsyncMock()
     with (
         patch.object(turn_queue, "chat_db", return_value=db),
-        patch.object(
-            turn_queue,
-            "_find_pending_user_message",
-            new=AsyncMock(return_value=pending),
-        ),
         patch(
             "backend.copilot.rate_limit.is_user_paywalled",
             new=AsyncMock(return_value=False),
@@ -314,14 +310,10 @@ async def test_dispatch_rolls_claim_back_on_dispatch_failure() -> None:
     db.list_chat_sessions_by_status = AsyncMock(return_value=[head])
     # First call (claim) returns True; second call (restore) also True.
     db.update_chat_session_status = AsyncMock(side_effect=[True, True])
+    db.get_latest_user_message_in_session = AsyncMock(return_value=pending)
     dispatch_turn_mock = AsyncMock(side_effect=RuntimeError("RabbitMQ blip"))
     with (
         patch.object(turn_queue, "chat_db", return_value=db),
-        patch.object(
-            turn_queue,
-            "_find_pending_user_message",
-            new=AsyncMock(return_value=pending),
-        ),
         patch(
             "backend.copilot.rate_limit.is_user_paywalled",
             new=AsyncMock(return_value=False),

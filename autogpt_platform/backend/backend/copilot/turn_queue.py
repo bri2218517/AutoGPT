@@ -295,7 +295,7 @@ async def dispatch_next_for_user(user_id: str) -> bool:
     # user-role row with no following assistant rows — i.e. the one
     # that triggered the queue).  Its ``metadata`` carries the
     # dispatcher payload.
-    pending = await _find_pending_user_message(head.id)
+    pending = await chat_db().get_latest_user_message_in_session(head.id)
     if pending is None or pending.content is None:
         # Shouldn't happen — enqueue_turn always persists a row before
         # flipping the session to queued.  If it does (corrupted
@@ -356,17 +356,3 @@ async def dispatch_next_for_user(user_id: str) -> bool:
 
     await invalidate_session_cache(head.id)
     return True
-
-
-async def _find_pending_user_message(session_id: str) -> ChatMessage | None:
-    """Return the queued user message for ``session_id`` — the most
-    recent user-role ChatMessage in that session.  Used by the
-    dispatcher to recover the submit-time payload from ``metadata``
-    when promoting the queued session."""
-    from prisma.models import ChatMessage as PrismaChatMessage
-
-    row = await PrismaChatMessage.prisma().find_first(
-        where={"sessionId": session_id, "role": "user"},
-        order={"sequence": "desc"},
-    )
-    return ChatMessage.from_db(row) if row else None
