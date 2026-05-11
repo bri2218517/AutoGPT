@@ -1869,6 +1869,39 @@ def test_get_session_returns_backward_paginated(
     assert "newest_sequence" not in data
 
 
+def test_get_session_releases_orphan_when_redis_empty_and_db_running(
+    mocker: pytest_mock.MockerFixture,
+) -> None:
+    """A session whose DB says ``chatStatus='running'`` but has no live
+    Redis stream is an orphan (executor crashed mid-turn, or the API
+    process died between ``acquire_turn_slot`` and ``dispatch_turn``).
+    Opening the chat must force-release the slot so the sidebar's
+    green dot stops showing immediately, rather than waiting for the
+    6h+5min inline stale-CAS or the user clicking Cancel."""
+    page, _ = _make_paginated_messages(mocker)
+    page.session.chat_status = "running"
+    mocker.patch(
+        "backend.api.features.chat.routes.stream_registry.get_active_session",
+        new_callable=AsyncMock,
+        return_value=(None, None),
+    )
+    mock_release = AsyncMock()
+    mocker.patch(
+        "backend.api.features.chat.routes.active_turns.release_turn_slot",
+        new=mock_release,
+    )
+
+    response = client.get("/sessions/sess-1")
+
+    assert response.status_code == 200
+    data = response.json()
+    # Local fixup also flips the response's chat_status so the frontend
+    # doesn't render the green dot on the very response that triggered
+    # the reset.
+    assert data["chat_status"] == "idle"
+    mock_release.assert_awaited_once()
+
+
 # ─── POST /sessions with builder_graph_id (get-or-create) ──────────────
 
 
