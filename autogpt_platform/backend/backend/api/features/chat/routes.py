@@ -11,9 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, Security
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.copilot import active_turns
 from backend.copilot import service as chat_service
 from backend.copilot import stream_registry, turn_queue
-from backend.copilot import active_turns
 from backend.copilot.active_turns import (
     ConcurrentTurnLimitError,
     get_inflight_turn_limit,
