@@ -1,10 +1,14 @@
 -- Session-level lifecycle for the per-user soft running cap +
--- cross-session queue.  ``chatStatus`` is ``'idle'`` on every existing
--- row (the 99% case), ``'queued'`` while waiting for a running slot,
--- and ``'running'`` while a turn is being processed.  Open enum:
--- future states can be added without another migration.
+-- cross-session queue.  ``idle`` (DEFAULT, no turn in flight),
+-- ``queued`` (waiting for a running slot), ``running`` (a turn is
+-- being processed).  A Postgres enum is used (rather than TEXT) so
+-- typos and invalid values are rejected at the DB layer; adding a
+-- future state needs an ``ALTER TYPE ... ADD VALUE`` migration, which
+-- is cheap on PG 12+.
+CREATE TYPE "ChatSessionStatus" AS ENUM ('idle', 'queued', 'running');
+
 ALTER TABLE "ChatSession"
-    ADD COLUMN "chatStatus" TEXT NOT NULL DEFAULT 'idle';
+    ADD COLUMN "chatStatus" "ChatSessionStatus" NOT NULL DEFAULT 'idle';
 
 -- Single compound index covers all three ChatSession queries:
 --   * cap-count (count by userId + chatStatus)

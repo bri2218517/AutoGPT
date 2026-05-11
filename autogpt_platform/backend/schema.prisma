@@ -81,6 +81,12 @@ model User {
   PlatformUserLinks PlatformUserLink[]
 }
 
+enum ChatSessionStatus {
+  idle
+  queued
+  running
+}
+
 enum SubscriptionTier {
   NO_TIER
   BASIC
@@ -268,12 +274,11 @@ model ChatSession {
   totalCompletionTokens Int @default(0)
 
   // Session lifecycle for the per-user soft running cap + cross-session
-  // queue.  Values today: ``"idle"`` (DEFAULT, no turn in flight),
-  // ``"queued"`` (waiting for a running slot to free), ``"running"``
-  // (a turn is currently being processed).  Open enum: future states
-  // can be added without a migration.  ``updatedAt`` doubles as the
-  // status-change timestamp (every transition touches the row).
-  chatStatus String @default("idle")
+  // queue.  ``idle`` (DEFAULT, no turn in flight), ``queued`` (waiting
+  // for a running slot to free), ``running`` (a turn is currently
+  // being processed).  ``updatedAt`` doubles as the status-change
+  // timestamp (every transition touches the row).
+  chatStatus ChatSessionStatus @default(idle)
 
   Messages ChatMessage[]
 

@@ -724,6 +724,28 @@ async def count_chat_sessions_by_status(*, user_id: str, status: str) -> int:
     )
 
 
+async def list_stuck_running_sessions(*, max_age_seconds: int) -> list[ChatSessionInfo]:
+    """Sessions stuck in ``chatStatus='running'`` for longer than the
+    given age.  Used by the periodic stale-session sweep that finds
+    turns whose executor died mid-flight (no ``mark_session_completed``
+    ever ran) and unblocks the sidebar so it stops showing the green
+    dot indefinitely.
+
+    Returned in updatedAt-asc order (oldest first) — the sweep promotes
+    chronologically so a backlog drains in claim order."""
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+    rows = await PrismaChatSession.prisma().find_many(
+        where={
+            "chatStatus": "running",
+            "updatedAt": {"lt": cutoff},
+        },
+        order={"updatedAt": "asc"},
+    )
+    return [ChatSessionInfo.from_db(r) for r in rows]
+
+
 async def list_chat_sessions_by_status(
     *, user_id: str, status: str
 ) -> list[ChatSessionInfo]:

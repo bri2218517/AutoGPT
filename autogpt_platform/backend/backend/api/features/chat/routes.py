@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.copilot import service as chat_service
 from backend.copilot import stream_registry, turn_queue
+from backend.copilot import active_turns
 from backend.copilot.active_turns import (
     ConcurrentTurnLimitError,
     get_inflight_turn_limit,
@@ -23,6 +24,8 @@ from backend.copilot.config import ChatConfig, CopilotLlmModel, CopilotMode
 from backend.copilot.db import get_chat_messages_paginated
 from backend.copilot.executor.utils import enqueue_cancel_task, schedule_chat_turn
 from backend.copilot.model import (
+    CHAT_STATUS_IDLE,
+    CHAT_STATUS_RUNNING,
     ChatSessionInfo,
     ChatSessionMetadata,
     create_chat_session,
@@ -582,6 +585,16 @@ async def get_session(
                 last_message_id=last_message_id,
                 started_at=active_session.created_at.isoformat(),
             )
+        elif page.session.chat_status == CHAT_STATUS_RUNNING:
+            # DB says running but Redis has no live stream — the executor
+            # crashed mid-turn (or the dispatch race in ``schedule_turn``
+            # left ``chatStatus`` flipped without ``create_session``
+            # landing).  Without this fixup the sidebar's green dot would
+            # stay on until the 6h+5min stale-CAS or the user clicks
+            # Cancel.  Opening the chat is also a strong "I want to see
+            # the current state" signal, so reset here.
+            await active_turns.release_turn_slot(user_id, session_id)
+            page.session.chat_status = CHAT_STATUS_IDLE
 
     # Skip session metadata on "load more" — frontend only needs messages
     if before_sequence is not None:
@@ -858,6 +871,14 @@ async def cancel_session_task(
 
     active_session, _ = await stream_registry.get_active_session(session_id, user_id)
     if not active_session:
+        # No Redis stream entry, but the DB might still say "running" — that
+        # happens when the executor crashed mid-turn (Redis meta TTL'd out
+        # while the DB ``chatStatus`` flip from ``running`` to ``idle``
+        # never landed because ``mark_session_completed`` never ran).
+        # Without this fixup the user clicks Cancel, gets ``cancelled: true``,
+        # but the sidebar keeps showing the green "running" dot until the
+        # CAS-on-read stale check finally fires (threshold: 6h+5min).
+        await active_turns.release_turn_slot(user_id, session_id)
         return CancelSessionResponse(cancelled=True, reason="no_active_session")
 
     await enqueue_cancel_task(session_id)

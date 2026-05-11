@@ -405,20 +405,42 @@ async def dispatch_turn(
         tool_name=tool_name,
         turn_id=turn_id,
     )
-    await enqueue_copilot_turn(
-        session_id=session_id,
-        user_id=user_id,
-        message=message,
-        turn_id=turn_id,
-        is_user_message=is_user_message,
-        context=context,
-        file_ids=file_ids,
-        mode=mode,
-        model=model,
-        permissions=permissions,
-        request_arrival_at=request_arrival_at,
-    )
-    slot.keep()
+
+    # Once ``create_session`` has written Redis meta, EVERY exit path
+    # from this point on must either (a) commit the turn (``slot.keep()``
+    # + RabbitMQ message enqueued) or (b) tear the Redis meta down — or
+    # a future read will see ``status='running'`` with no consumer.
+    # ``finally`` catches CancelledError as well (which ``except
+    # Exception`` would miss); the ``committed`` flag distinguishes the
+    # happy path from any failure / cancellation.
+    committed = False
+    try:
+        await enqueue_copilot_turn(
+            session_id=session_id,
+            user_id=user_id,
+            message=message,
+            turn_id=turn_id,
+            is_user_message=is_user_message,
+            context=context,
+            file_ids=file_ids,
+            mode=mode,
+            model=model,
+            permissions=permissions,
+            request_arrival_at=request_arrival_at,
+        )
+        slot.keep()
+        committed = True
+    finally:
+        if not committed:
+            try:
+                await stream_registry.delete_session_meta(session_id)
+            except BaseException:
+                # Already in a failure path — log + swallow so the
+                # original exception/cancellation isn't masked.
+                logger.exception(
+                    "dispatch_turn: redis meta cleanup failed for session=%s",
+                    session_id,
+                )
 
 
 async def schedule_chat_turn(

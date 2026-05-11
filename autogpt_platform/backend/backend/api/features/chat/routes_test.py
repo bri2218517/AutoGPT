@@ -1307,7 +1307,10 @@ def test_cancel_session_no_active_task(mocker: pytest_mock.MockerFixture) -> Non
     """Cancel returns cancelled=True with reason when no stream is active
     AND the session isn't queued — the cancel handler first tries the
     queued-→-idle CAS via turn_queue.cancel_queued_turn, then falls
-    through to the running-stream cancel path."""
+    through to the running-stream cancel path.  Even on the
+    no-active-session branch we now defensively release any orphaned
+    DB ``chatStatus='running'`` so a previously-crashed executor doesn't
+    leave the sidebar showing a green dot forever."""
     _mock_validate_session(mocker)
     mocker.patch(
         "backend.copilot.turn_queue.cancel_queued_turn",
@@ -1316,6 +1319,11 @@ def test_cancel_session_no_active_task(mocker: pytest_mock.MockerFixture) -> Non
     mock_registry = MagicMock()
     mock_registry.get_active_session = AsyncMock(return_value=(None, None))
     mocker.patch("backend.api.features.chat.routes.stream_registry", mock_registry)
+    mock_release = AsyncMock()
+    mocker.patch(
+        "backend.api.features.chat.routes.active_turns.release_turn_slot",
+        new=mock_release,
+    )
 
     response = client.post("/sessions/sess-1/cancel")
 
@@ -1323,6 +1331,7 @@ def test_cancel_session_no_active_task(mocker: pytest_mock.MockerFixture) -> Non
     data = response.json()
     assert data["cancelled"] is True
     assert data["reason"] == "no_active_session"
+    mock_release.assert_awaited_once()
 
 
 def test_cancel_session_dequeues_when_queued(

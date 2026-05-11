@@ -188,6 +188,26 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
             "schedule_turn and share this cap."
         ),
     )
+    copilot_stuck_session_max_age_secs: int = Field(
+        default=30 * 60,  # 30 minutes
+        ge=60,
+        le=24 * 60 * 60,
+        description=(
+            "Sessions whose ``chatStatus='running'`` for longer than this "
+            "without an active Redis stream are considered stuck (executor "
+            "crashed mid-turn or the API process died between "
+            "``acquire_turn_slot`` and ``dispatch_turn``).  The periodic "
+            "sweep force-releases them so the sidebar stops showing the "
+            "green dot indefinitely."
+        ),
+    )
+    copilot_stuck_session_sweep_interval_secs: int = Field(
+        default=5 * 60,  # 5 minutes
+        ge=30,
+        le=60 * 60,
+        description="Interval for the stuck-running session cleanup sweep.",
+    )
+
     max_running_copilot_turns_per_user: int = Field(
         default=5,
         ge=1,

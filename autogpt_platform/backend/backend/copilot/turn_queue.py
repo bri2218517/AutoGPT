@@ -335,38 +335,28 @@ async def dispatch_next_for_user(user_id: str) -> bool:
             permissions=metadata.get("permissions"),
             request_arrival_at=float(metadata.get("request_arrival_at") or 0.0),
         )
-    except Exception:
+    except BaseException:
         # Roll the claim back so a missed-dispatch tick or the next
-        # slot-free event can retry.
+        # slot-free event can retry.  ``BaseException`` (not just
+        # ``Exception``) so a task cancellation that lands mid-dispatch
+        # still leaves the session in a recoverable ``queued`` state
+        # rather than a stuck ``running``.  Redis-side cleanup of the
+        # meta that ``dispatch_turn``'s ``create_session`` wrote is
+        # handled inside ``dispatch_turn`` itself (try/finally on its
+        # ``committed`` flag), so we only restore the DB side here.
         try:
             await chat_db().update_chat_session_status(
                 session_id=head.session_id,
                 expect_status=CHAT_STATUS_RUNNING,
                 status=CHAT_STATUS_QUEUED,
             )
-        except Exception as restore_exc:
+        except BaseException as restore_exc:
             logger.error(
                 "dispatch_next_for_user: failed to restore claim for "
                 "session=%s after dispatch failure; session left in "
                 "chatStatus='running' and will need manual recovery: %s",
                 head.session_id,
                 restore_exc,
-            )
-        # Drop the Redis meta entry that ``dispatch_turn`` left behind
-        # via ``create_session``.  Without this the session would keep
-        # tripping ``is_turn_in_flight`` even though no executor will
-        # pick it up — buffering new submits indefinitely until the
-        # meta key's TTL expires.
-        from backend.copilot.stream_registry import delete_session_meta
-
-        try:
-            await delete_session_meta(head.session_id)
-        except Exception as redis_exc:
-            logger.warning(
-                "dispatch_next_for_user: redis meta cleanup failed for "
-                "session=%s: %s",
-                head.session_id,
-                redis_exc,
             )
         raise
 
