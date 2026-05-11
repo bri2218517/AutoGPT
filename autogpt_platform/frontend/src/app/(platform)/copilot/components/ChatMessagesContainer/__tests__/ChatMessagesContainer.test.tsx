@@ -547,7 +547,7 @@ describe("ChatMessagesContainer — queue badges on user messages", () => {
       [
         userId,
         {
-          isLatestUserInQueuedSession: true,
+          isLatestUserMessage: true,
           rawMessageId: "uuid-q1",
         },
       ],
@@ -565,6 +565,7 @@ describe("ChatMessagesContainer — queue badges on user messages", () => {
         {...(baseProps as any)}
         messages={messages as any}
         turnStats={turnStats as any}
+        sessionChatStatus="queued"
       />,
     );
     const badge = screen.getByTestId("queue-badge");

@@ -278,8 +278,12 @@ model ChatSession {
   Messages ChatMessage[]
 
   @@index([userId, updatedAt])
-  // Index for the cap-count + queue-list queries by (userId, chatStatus).
-  @@index([userId, chatStatus], name: "ChatSession_user_status_idx")
+  // Covers BOTH the cap-count (count by userId + chatStatus) and the
+  // queue-list ORDER BY updatedAt asc in one B-tree. The 2-col
+  // [userId, updatedAt] above stays because the sidebar list filters
+  // on userId alone — Postgres can't use the 3-col index's sort
+  // ordering without a chatStatus filter in the WHERE clause.
+  @@index([userId, chatStatus, updatedAt], name: "ChatSession_user_status_idx")
 }
 
 model ChatMessage {

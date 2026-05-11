@@ -6,9 +6,12 @@
 ALTER TABLE "ChatSession"
     ADD COLUMN "chatStatus" TEXT NOT NULL DEFAULT 'idle';
 
--- Index for the cap-count + queue-list queries by (userId, chatStatus).
+-- Covers BOTH the cap-count (count by userId + chatStatus) and the
+-- queue-list ORDER BY updatedAt asc in one B-tree.  The pre-existing
+-- (userId, updatedAt) index handles the sidebar list which filters on
+-- userId alone.
 CREATE INDEX "ChatSession_user_status_idx"
-    ON "ChatSession" ("userId", "chatStatus");
+    ON "ChatSession" ("userId", "chatStatus", "updatedAt");
 
 -- ChatMessage carries an optional per-row JSONB metadata bag for the
 -- dispatcher's submit-time payload on the user row that triggered a

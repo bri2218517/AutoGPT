@@ -174,7 +174,7 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
         le=1000,
         description="Maximum number of concurrent graph executions allowed per user per graph.",
     )
-    max_concurrent_copilot_turns_per_user: int = Field(
+    max_inflight_copilot_turns_per_user: int = Field(
         default=15,
         ge=1,
         le=1000,
@@ -196,7 +196,7 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
             "Soft cap on concurrently *running* AutoPilot/CoPilot chat "
             "turns per user. Tasks submitted while the user is at this cap "
             "are queued in ``CopilotTaskQueue`` (FIFO) up to "
-            "``max_concurrent_copilot_turns_per_user`` total in-flight. "
+            "``max_inflight_copilot_turns_per_user`` total in-flight. "
             "Must be <= the in-flight cap; default 5 keeps shared-infra "
             "concurrency predictable while letting users batch-submit."
         ),

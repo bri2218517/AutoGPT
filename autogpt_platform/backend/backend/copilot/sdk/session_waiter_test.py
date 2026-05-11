@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from backend.copilot import active_turns
 from backend.copilot.sdk.session_waiter import SessionResult, run_copilot_turn_via_queue
 
 _QR = type(
@@ -132,8 +133,6 @@ async def test_queue_branch_positive_timeout_rides_inflight_turn():
 @pytest.mark.asyncio
 async def test_idle_session_enqueues_normally():
     """Idle session → registry session created, enqueued, drain waits."""
-    from backend.copilot import active_turns
-
     create_session = AsyncMock()
     enqueue = AsyncMock()
     wait_result = AsyncMock(return_value=("completed", SessionResult()))

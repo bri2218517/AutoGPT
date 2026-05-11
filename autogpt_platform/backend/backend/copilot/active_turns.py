@@ -58,7 +58,7 @@ def get_running_turn_limit() -> int:
 
 def get_inflight_turn_limit() -> int:
     """Configured hard cap on in-flight (running + queued) turns per user."""
-    return Settings().config.max_concurrent_copilot_turns_per_user
+    return Settings().config.max_inflight_copilot_turns_per_user
 
 
 def inflight_turn_limit_message(limit: int | None = None) -> str:

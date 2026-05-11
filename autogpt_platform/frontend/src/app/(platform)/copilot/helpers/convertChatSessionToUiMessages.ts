@@ -6,9 +6,10 @@ export interface TurnStats {
   createdAt?: string;
   /** Raw ChatMessage.id (UUID).  Carried for the badge's cancel handler. */
   rawMessageId?: string | null;
-  /** True iff this user row is the latest user message in a queued session
-   *  — the "Queued" badge renders on this row. */
-  isLatestUserInQueuedSession?: boolean;
+  /** True iff this is the latest user message in the session.  The
+   *  "Queued" badge anchors on this row whenever the OWNING session's
+   *  ``chat_status === "queued"`` (checked at render time). */
+  isLatestUserMessage?: boolean;
 }
 
 export type TurnStatsMap = Map<string, TurnStats>;
@@ -216,9 +217,6 @@ export function convertChatSessionMessagesToUiMessages(
     isComplete?: boolean;
     /** Tool outputs from adjacent pages, for cross-page tool_call matching. */
     extraToolOutputs?: Map<string, unknown>;
-    /** Session-level queue lifecycle ("idle" | "queued" | "running").
-     *  When ``"queued"``, the latest user message gets a "Queued" badge. */
-    sessionChatStatus?: string;
   },
 ): {
   messages: UIMessage<unknown, UIDataTypes, UITools>[];
@@ -234,7 +232,6 @@ export function convertChatSessionMessagesToUiMessages(
       break;
     }
   }
-  const sessionIsQueued = options?.sessionChatStatus === "queued";
   const toolOutputsByCallId = new Map<string, unknown>();
 
   // Seed with extra tool outputs from adjacent pages first;
@@ -414,13 +411,12 @@ export function convertChatSessionMessagesToUiMessages(
       patch.durationMs = msg.duration_ms;
     }
     if (uiRole === "user") {
-      // Queue badge consumes these via ``turnStats.get(message.id)``
-      // in ChatMessagesContainer.  The badge renders on the latest
-      // user message whenever the OWNING SESSION is in the queued
-      // state — not on the message itself.
+      // Queue badge consumes ``rawMessageId`` for its cancel handler and
+      // ``isLatestUserMessage`` to pick the anchor row.  The badge's
+      // gating on ``session.chat_status === "queued"`` is the consumer's
+      // (ChatMessagesContainer's) concern.
       patch.rawMessageId = msg.id;
-      patch.isLatestUserInQueuedSession =
-        sessionIsQueued && idx === latestUserMessageIndex;
+      patch.isLatestUserMessage = idx === latestUserMessageIndex;
     }
     if (Object.keys(patch).length > 0) patchStats(msgId, patch);
   });

@@ -110,11 +110,7 @@ export function useChatSession({ dryRun = false }: UseChatSessionOptions = {}) {
     const result = convertChatSessionMessagesToUiMessages(
       sessionId,
       freshSessionData.messages ?? [],
-      {
-        isComplete: !hasActiveStream,
-        sessionChatStatus:
-          (freshSessionData as { chat_status?: string }).chat_status ?? "idle",
-      },
+      { isComplete: !hasActiveStream },
     );
     return {
       hydratedMessages: result.messages,
@@ -191,6 +187,10 @@ export function useChatSession({ dryRun = false }: UseChatSessionOptions = {}) {
     [sessionQuery.data, freshSessionData],
   );
 
+  const sessionChatStatus = (
+    freshSessionData as { chat_status?: string } | undefined
+  )?.chat_status;
+
   return {
     sessionId,
     setSessionId,
@@ -211,5 +211,6 @@ export function useChatSession({ dryRun = false }: UseChatSessionOptions = {}) {
     isCreatingSession,
     refetchSession: sessionQuery.refetch,
     sessionDryRun,
+    sessionChatStatus,
   };
 }

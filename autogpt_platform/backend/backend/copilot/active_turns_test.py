@@ -175,4 +175,4 @@ def test_schema_default_concurrent_turn_limit_is_15() -> None:
     override (e.g. lower cap for development) doesn't break the test."""
     from backend.util.settings import Config
 
-    assert Config.model_fields["max_concurrent_copilot_turns_per_user"].default == 15
+    assert Config.model_fields["max_inflight_copilot_turns_per_user"].default == 15

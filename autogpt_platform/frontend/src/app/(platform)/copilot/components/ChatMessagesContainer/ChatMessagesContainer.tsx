@@ -50,6 +50,10 @@ interface Props {
    *  zero on every fresh mount. */
   activeStreamStartedAt?: string | null;
   sessionID?: string | null;
+  /** Session-level lifecycle: ``"idle" | "queued" | "running"``.
+   *  The Queued badge anchors on the latest user message iff this is
+   *  ``"queued"``. */
+  sessionChatStatus?: string;
   hasMoreMessages?: boolean;
   isLoadingMore?: boolean;
   onLoadMore?: () => void;
@@ -268,6 +272,7 @@ export function ChatMessagesContainer({
   restoreStatusMessage,
   activeStreamStartedAt,
   sessionID,
+  sessionChatStatus,
   hasMoreMessages,
   isLoadingMore,
   onLoadMore,
@@ -563,9 +568,10 @@ export function ChatMessagesContainer({
                 {isLastAssistant && showIndicator && indicator}
               </MessageContent>
               {message.role === "user" &&
+                sessionChatStatus === "queued" &&
                 (() => {
                   const stats = turnStats?.get(message.id);
-                  if (!stats?.isLatestUserInQueuedSession) {
+                  if (!stats?.isLatestUserMessage) {
                     return null;
                   }
                   return (
