@@ -1304,8 +1304,15 @@ def _mock_validate_session(
 
 
 def test_cancel_session_no_active_task(mocker: pytest_mock.MockerFixture) -> None:
-    """Cancel returns cancelled=True with reason when no stream is active."""
+    """Cancel returns cancelled=True with reason when no stream is active
+    AND the session isn't queued — the cancel handler first tries the
+    queued-→-idle CAS via turn_queue.cancel_queued_turn, then falls
+    through to the running-stream cancel path."""
     _mock_validate_session(mocker)
+    mocker.patch(
+        "backend.copilot.turn_queue.cancel_queued_turn",
+        new=AsyncMock(return_value=False),
+    )
     mock_registry = MagicMock()
     mock_registry.get_active_session = AsyncMock(return_value=(None, None))
     mocker.patch("backend.api.features.chat.routes.stream_registry", mock_registry)
@@ -1318,6 +1325,26 @@ def test_cancel_session_no_active_task(mocker: pytest_mock.MockerFixture) -> Non
     assert data["reason"] == "no_active_session"
 
 
+def test_cancel_session_dequeues_when_queued(
+    mocker: pytest_mock.MockerFixture,
+) -> None:
+    """A queued session is cancelled by flipping chatStatus → idle (no
+    executor cancel event needed).  ``reason='dequeued'`` distinguishes
+    this branch from the running-stream cancel."""
+    _mock_validate_session(mocker)
+    mocker.patch(
+        "backend.copilot.turn_queue.cancel_queued_turn",
+        new=AsyncMock(return_value=True),
+    )
+
+    response = client.post("/sessions/sess-1/cancel")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["cancelled"] is True
+    assert data["reason"] == "dequeued"
+
+
 def test_cancel_session_enqueues_cancel_and_confirms(
     mocker: pytest_mock.MockerFixture,
 ) -> None:
@@ -1325,6 +1352,11 @@ def test_cancel_session_enqueues_cancel_and_confirms(
     from backend.copilot.stream_registry import ActiveSession
 
     _mock_validate_session(mocker)
+    # Session isn't queued — fall through to the running-stream path.
+    mocker.patch(
+        "backend.copilot.turn_queue.cancel_queued_turn",
+        new=AsyncMock(return_value=False),
+    )
     active_session = ActiveSession(
         session_id="sess-1",
         user_id=TEST_USER_ID,

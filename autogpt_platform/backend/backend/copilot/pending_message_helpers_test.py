@@ -54,16 +54,43 @@ async def test_check_pending_call_rate_fails_open_on_redis_error(
 # ── is_turn_in_flight: fail-closed on Redis errors ────────────────────
 
 
+def _mock_chat_db(monkeypatch: pytest.MonkeyPatch, *, status: str | None = "idle") -> None:
+    """Stub ``chat_db()`` so the ``is_turn_in_flight`` fallthrough that
+    reads ``ChatSession.chatStatus`` doesn't hit a real DB connection."""
+    db = MagicMock()
+    db.get_chat_session_status = AsyncMock(return_value=status)
+    from backend.data import db_accessors
+
+    monkeypatch.setattr(db_accessors, "chat_db", lambda: db)
+
+
 @pytest.mark.asyncio
 async def test_is_turn_in_flight_returns_false_when_no_active_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Redis says no active stream AND ChatSession is idle → not in flight."""
     monkeypatch.setattr(
         helpers_module,
         "get_active_session_meta",
         AsyncMock(return_value=None),
     )
+    _mock_chat_db(monkeypatch, status="idle")
     assert await is_turn_in_flight("sess-1") is False
+
+
+@pytest.mark.asyncio
+async def test_is_turn_in_flight_returns_true_when_queued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Queued sessions are also in flight even though the Redis stream
+    registry has no entry — the dispatcher hasn't claimed the row yet."""
+    monkeypatch.setattr(
+        helpers_module,
+        "get_active_session_meta",
+        AsyncMock(return_value=None),
+    )
+    _mock_chat_db(monkeypatch, status="queued")
+    assert await is_turn_in_flight("sess-1") is True
 
 
 @pytest.mark.asyncio
@@ -77,6 +104,7 @@ async def test_is_turn_in_flight_returns_true_when_running(
         "get_active_session_meta",
         AsyncMock(return_value=active),
     )
+    _mock_chat_db(monkeypatch, status="running")
     assert await is_turn_in_flight("sess-1") is True
 
 

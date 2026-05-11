@@ -138,10 +138,12 @@ async def test_idle_session_enqueues_normally():
     enqueue = AsyncMock()
     wait_result = AsyncMock(return_value=("completed", SessionResult()))
     idle_db = MagicMock()
-    idle_db.get_session_current_turn_started_at = AsyncMock(return_value=None)
-    idle_db.count_running_turns_for_user = AsyncMock(return_value=0)
-    idle_db.stamp_session_current_turn = AsyncMock()
-    idle_db.clear_session_current_turn = AsyncMock()
+    # Session is idle → CAS idle → running succeeds; running count is 1
+    # after the flip (this caller is the only running session).
+    idle_db.update_chat_session_status = AsyncMock(return_value=True)
+    idle_db.count_chat_sessions_by_status = AsyncMock(return_value=1)
+    idle_db.list_chat_sessions_by_status = AsyncMock(return_value=[])
+    idle_db.get_chat_session_status = AsyncMock(return_value="idle")
 
     with (
         patch(
