@@ -110,7 +110,11 @@ export function useChatSession({ dryRun = false }: UseChatSessionOptions = {}) {
     const result = convertChatSessionMessagesToUiMessages(
       sessionId,
       freshSessionData.messages ?? [],
-      { isComplete: !hasActiveStream },
+      {
+        isComplete: !hasActiveStream,
+        sessionChatStatus:
+          (freshSessionData as { chat_status?: string }).chat_status ?? "idle",
+      },
     );
     return {
       hydratedMessages: result.messages,

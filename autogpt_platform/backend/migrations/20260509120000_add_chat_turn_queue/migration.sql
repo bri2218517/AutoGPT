@@ -1,26 +1,18 @@
--- ChatMessage: row lifecycle + generic per-row metadata bag.
--- ``chatStatus`` is ``'idle'`` on every existing row (the 99% case) and
--- ``'queued'`` only on user rows waiting for a running slot.  Open
--- enum: future states (``'errored'``, ``'paused'``, etc.) can be added
--- without another migration.  ``metadata`` carries the dispatcher's
--- submit-time payload on queued rows today and is generic so future
--- per-row state can land in it too.
-ALTER TABLE "ChatMessage"
-    ADD COLUMN "chatStatus" TEXT NOT NULL DEFAULT 'idle',
-    ADD COLUMN "metadata"   JSONB;
-
--- Partial index for the dispatcher's FIFO scan.  Only non-idle rows
--- carry an entry, so the index stays tiny on a hot table.
-CREATE INDEX "ChatMessage_queue_dispatch_idx"
-    ON "ChatMessage" ("chatStatus", "createdAt")
-    WHERE "chatStatus" <> 'idle';
-
--- ChatSession: running-turn tracker for the per-user cap count.
+-- Session-level lifecycle for the per-user soft running cap +
+-- cross-session queue.  ``chatStatus`` is ``'idle'`` on every existing
+-- row (the 99% case), ``'queued'`` while waiting for a running slot,
+-- and ``'running'`` while a turn is being processed.  Open enum:
+-- future states can be added without another migration.
 ALTER TABLE "ChatSession"
-    ADD COLUMN "currentTurnStartedAt" TIMESTAMP(3);
+    ADD COLUMN "chatStatus" TEXT NOT NULL DEFAULT 'idle';
 
--- Partial index for the per-user running-turn count.  Stays tiny since
--- currentTurnStartedAt is NULL on every idle session (the 99% case).
-CREATE INDEX "ChatSession_running_turns_idx"
-    ON "ChatSession" ("userId", "currentTurnStartedAt")
-    WHERE "currentTurnStartedAt" IS NOT NULL;
+-- Index for the cap-count + queue-list queries by (userId, chatStatus).
+CREATE INDEX "ChatSession_user_status_idx"
+    ON "ChatSession" ("userId", "chatStatus");
+
+-- ChatMessage carries an optional per-row JSONB metadata bag for the
+-- dispatcher's submit-time payload on the user row that triggered a
+-- queued turn (file_ids, mode, model, permissions, context,
+-- request_arrival_at).  Cleared / unused on every history row.
+ALTER TABLE "ChatMessage"
+    ADD COLUMN "metadata" JSONB;

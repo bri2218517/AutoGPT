@@ -267,18 +267,19 @@ model ChatSession {
   totalPromptTokens     Int @default(0)
   totalCompletionTokens Int @default(0)
 
-  // Running-turn tracking for the per-user cap. Set when a turn is
-  // admitted and cleared on completion. NULL = no active turn. Stale
-  // cleanup is implicit via the ``> now() - MAX_TURN_LIFETIME`` filter.
-  currentTurnStartedAt DateTime?
+  // Session lifecycle for the per-user soft running cap + cross-session
+  // queue.  Values today: ``"idle"`` (DEFAULT, no turn in flight),
+  // ``"queued"`` (waiting for a running slot to free), ``"running"``
+  // (a turn is currently being processed).  Open enum: future states
+  // can be added without a migration.  ``updatedAt`` doubles as the
+  // status-change timestamp (every transition touches the row).
+  chatStatus String @default("idle")
 
   Messages ChatMessage[]
 
   @@index([userId, updatedAt])
-  // Partial index for the per-user running-turn count on the cap path.
-  // ``WHERE currentTurnStartedAt IS NOT NULL`` keeps it tiny since the
-  // column is NULL on every idle session (the 99% case).
-  @@index([userId, currentTurnStartedAt], name: "ChatSession_running_turns_idx")
+  // Index for the cap-count + queue-list queries by (userId, chatStatus).
+  @@index([userId, chatStatus], name: "ChatSession_user_status_idx")
 }
 
 model ChatMessage {
@@ -301,28 +302,14 @@ model ChatMessage {
   sequence   Int
   durationMs Int? // Wall-clock milliseconds for this assistant turn
 
-  // Row lifecycle.  ``"idle"`` on every existing row and on
-  // immediately-dispatched turns (the 99% case).  Queue lifecycle
-  // states (only on rows that hit the soft running cap):
-  //   * ``"queued"``    — waiting for a running slot
-  //   * ``"running"``   — dispatcher claimed it, turn is processing
-  //   * ``"cancelled"`` — user dropped it before promotion (terminal)
-  // After the turn completes, ``"running"`` is cleared back to
-  // ``"idle"``.  Open enum: future states (``"errored"``, ``"paused"``)
-  // can land here without a migration.
-  chatStatus String @default("idle")
   // Per-row JSONB metadata bag.  Currently holds the dispatcher's
-  // submit-time payload on queued rows (file_ids, mode, model,
-  // permissions, context, request_arrival_at) so a promotion later
-  // replays the turn faithfully.  Generic so future per-row state can
-  // land here without another migration.
-  metadata   Json?
+  // submit-time payload (file_ids, mode, model, permissions, context,
+  // request_arrival_at) on the user row that triggered a queued turn,
+  // so a later promotion can replay the original turn faithfully.
+  // Generic so future per-row state can land here without a migration.
+  metadata Json?
 
   @@unique([sessionId, sequence])
-  // Partial index for the dispatcher's FIFO scan: only non-idle rows
-  // count, so the index stays tiny on a hot table where every
-  // chat-history row is ``"idle"``.
-  @@index([chatStatus, createdAt], name: "ChatMessage_queue_dispatch_idx")
 }
 
 // This model describes the Agent Graph/Flow (Multi Agent System).

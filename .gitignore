@@ -205,3 +205,4 @@ copilot-session-switch-qa/
 tmp/
 screenshots/
 test-screenshots/
+.ign/*

@@ -39,7 +39,6 @@ def _make_msg(
         toolCallId=None,
         refusal=None,
         functionCall=None,
-        chatStatus="idle",
     )
 
 
@@ -62,6 +61,7 @@ def _make_session(
         totalCompletionTokens=0,
         title=None,
         metadata={},
+        chatStatus="idle",
         Messages=messages or [],
     )
     return session
@@ -618,102 +618,91 @@ async def test_update_message_content_by_sequence_sanitizes_content():
 # above and the integration coverage in ``model_test.py``.
 
 
-# Running-turn tracking + queue ops.
+# ChatSession lifecycle primitives + insert_chat_message.
 
 
 @pytest.mark.asyncio
-async def test_count_running_turns_for_user_filters_by_stale_cutoff() -> None:
-    from backend.copilot.db import count_running_turns_for_user
+async def test_count_chat_sessions_by_status_filters_by_user_and_status() -> None:
+    from backend.copilot.db import count_chat_sessions_by_status
 
-    cutoff = datetime.now(UTC)
     count = AsyncMock(return_value=3)
     with patch.object(PrismaChatSession, "prisma", return_value=AsyncMock(count=count)):
-        result = await count_running_turns_for_user("u1", cutoff)
+        result = await count_chat_sessions_by_status(user_id="u1", status="running")
     assert result == 3
     where = count.call_args.kwargs["where"]
-    assert where["userId"] == "u1"
-    assert where["currentTurnStartedAt"] == {"gt": cutoff}
+    assert where == {"userId": "u1", "chatStatus": "running"}
 
 
 @pytest.mark.asyncio
-async def test_list_running_session_ids_for_user_returns_ids() -> None:
-    from backend.copilot.db import list_running_session_ids_for_user
+async def test_list_chat_sessions_by_status_returns_rows_oldest_first() -> None:
+    from backend.copilot.db import list_chat_sessions_by_status
 
     rows = [AsyncMock(id="s1"), AsyncMock(id="s2")]
     find_many = AsyncMock(return_value=rows)
     with patch.object(
         PrismaChatSession, "prisma", return_value=AsyncMock(find_many=find_many)
     ):
-        ids = await list_running_session_ids_for_user("u1", datetime.now(UTC))
-    assert ids == ["s1", "s2"]
+        result = await list_chat_sessions_by_status(user_id="u1", status="queued")
+    assert result == rows
+    kwargs = find_many.call_args.kwargs
+    assert kwargs["where"] == {"userId": "u1", "chatStatus": "queued"}
+    assert kwargs["order"] == {"updatedAt": "asc"}
 
 
 @pytest.mark.asyncio
-async def test_get_session_current_turn_started_at_returns_none_when_missing() -> None:
-    from backend.copilot.db import get_session_current_turn_started_at
-
-    find_unique = AsyncMock(return_value=None)
-    with patch.object(
-        PrismaChatSession, "prisma", return_value=AsyncMock(find_unique=find_unique)
-    ):
-        result = await get_session_current_turn_started_at("missing")
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_get_session_current_turn_started_at_returns_timestamp() -> None:
-    from backend.copilot.db import get_session_current_turn_started_at
-
-    when = datetime.now(UTC)
-    row = AsyncMock(currentTurnStartedAt=when)
-    find_unique = AsyncMock(return_value=row)
-    with patch.object(
-        PrismaChatSession, "prisma", return_value=AsyncMock(find_unique=find_unique)
-    ):
-        result = await get_session_current_turn_started_at("s1")
-    assert result == when
-
-
-@pytest.mark.asyncio
-async def test_stamp_session_current_turn_writes_with_userid_guard() -> None:
-    from backend.copilot.db import stamp_session_current_turn
-
-    when = datetime.now(UTC)
-    update_many = AsyncMock(return_value=1)
-    with patch.object(
-        PrismaChatSession, "prisma", return_value=AsyncMock(update_many=update_many)
-    ):
-        await stamp_session_current_turn("s1", "u1", when)
-    kwargs = update_many.call_args.kwargs
-    assert kwargs["where"] == {"id": "s1", "userId": "u1"}
-    assert kwargs["data"] == {"currentTurnStartedAt": when}
-
-
-@pytest.mark.asyncio
-async def test_clear_session_current_turn_sets_null() -> None:
-    from backend.copilot.db import clear_session_current_turn
+async def test_transition_chat_session_status_owner_gated_returns_true_on_match() -> (
+    None
+):
+    """User-initiated transition (cancel) gates on both ``chatStatus``
+    AND ``userId`` — both guards in one atomic update."""
+    from backend.copilot.db import transition_chat_session_status
 
     update_many = AsyncMock(return_value=1)
     with patch.object(
         PrismaChatSession, "prisma", return_value=AsyncMock(update_many=update_many)
     ):
-        await clear_session_current_turn("s1", "u1")
+        ok = await transition_chat_session_status(
+            session_id="s1",
+            from_status="queued",
+            to_status="idle",
+            user_id="u1",
+        )
+    assert ok is True
     kwargs = update_many.call_args.kwargs
-    assert kwargs["where"] == {"id": "s1", "userId": "u1"}
-    assert kwargs["data"] == {"currentTurnStartedAt": None}
+    assert kwargs["where"] == {"id": "s1", "chatStatus": "queued", "userId": "u1"}
+    assert kwargs["data"] == {"chatStatus": "idle"}
 
 
 @pytest.mark.asyncio
-async def test_count_chat_messages_by_status_filters_by_user_and_status() -> None:
-    from backend.copilot.db import count_chat_messages_by_status
+async def test_transition_chat_session_status_returns_false_when_cas_fails() -> None:
+    from backend.copilot.db import transition_chat_session_status
 
-    count = AsyncMock(return_value=2)
-    with patch.object(PrismaChatMessage, "prisma", return_value=AsyncMock(count=count)):
-        result = await count_chat_messages_by_status(user_id="u1", status="queued")
-    assert result == 2
-    where = count.call_args.kwargs["where"]
-    assert where["chatStatus"] == "queued"
-    assert where["Session"] == {"is": {"userId": "u1"}}
+    update_many = AsyncMock(return_value=0)
+    with patch.object(
+        PrismaChatSession, "prisma", return_value=AsyncMock(update_many=update_many)
+    ):
+        ok = await transition_chat_session_status(
+            session_id="s1", from_status="queued", to_status="idle"
+        )
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_transition_chat_session_status_dispatcher_path_omits_user_gate() -> None:
+    """Dispatcher-initiated transitions (claim / restore / release) don't
+    pass ``user_id`` — they act on the session regardless of owner."""
+    from backend.copilot.db import transition_chat_session_status
+
+    update_many = AsyncMock(return_value=1)
+    with patch.object(
+        PrismaChatSession, "prisma", return_value=AsyncMock(update_many=update_many)
+    ):
+        await transition_chat_session_status(
+            session_id="s1", from_status="queued", to_status="running"
+        )
+    where = update_many.call_args.kwargs["where"]
+    assert "userId" not in where
+    assert where == {"id": "s1", "chatStatus": "queued"}
 
 
 @pytest.mark.asyncio
@@ -730,12 +719,10 @@ async def test_insert_chat_message_serialises_metadata_via_safejson() -> None:
             role="user",
             content="hi",
             sequence=1,
-            chat_status="queued",
             metadata={"mode": "extended_thinking"},
         )
     data = create.call_args.kwargs["data"]
     assert data["id"] == "m1"
-    assert data["chatStatus"] == "queued"
     metadata = data["metadata"]
     inner = getattr(metadata, "data", metadata)
     assert inner == {"mode": "extended_thinking"}
@@ -755,76 +742,7 @@ async def test_insert_chat_message_omits_metadata_when_none() -> None:
             role="user",
             content="hi",
             sequence=1,
-            chat_status="queued",
             metadata=None,
         )
     data = create.call_args.kwargs["data"]
     assert "metadata" not in data
-
-
-@pytest.mark.asyncio
-async def test_transition_chat_message_status_owner_gated_returns_row_on_match() -> (
-    None
-):
-    """A user-initiated transition (e.g. cancel) is gated on both
-    ``chatStatus`` and the row belonging to the user — both guards in
-    one atomic update."""
-    from backend.copilot.db import transition_chat_message_status
-
-    update_many = AsyncMock(return_value=1)
-    find_unique = AsyncMock(return_value=_make_msg(sequence=1))
-    with patch.object(
-        PrismaChatMessage,
-        "prisma",
-        return_value=AsyncMock(update_many=update_many, find_unique=find_unique),
-    ):
-        result = await transition_chat_message_status(
-            message_id="m1",
-            from_status="queued",
-            to_status="cancelled",
-            user_id="u1",
-        )
-    assert result is not None
-    where = update_many.call_args.kwargs["where"]
-    assert where["chatStatus"] == "queued"
-    assert where["Session"] == {"is": {"userId": "u1"}}
-    data = update_many.call_args.kwargs["data"]
-    assert data["chatStatus"] == "cancelled"
-
-
-@pytest.mark.asyncio
-async def test_transition_chat_message_status_returns_none_when_cas_fails() -> None:
-    from backend.copilot.db import transition_chat_message_status
-
-    update_many = AsyncMock(return_value=0)
-    with patch.object(
-        PrismaChatMessage,
-        "prisma",
-        return_value=AsyncMock(update_many=update_many),
-    ):
-        result = await transition_chat_message_status(
-            message_id="m1", from_status="queued", to_status="cancelled"
-        )
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_transition_chat_message_status_dispatcher_path_omits_user_gate() -> None:
-    """Dispatcher-initiated transitions (claim / restore) don't pass
-    ``user_id`` — they act on the row regardless of owner."""
-    from backend.copilot.db import transition_chat_message_status
-
-    update_many = AsyncMock(return_value=1)
-    find_unique = AsyncMock(return_value=_make_msg(sequence=1))
-    with patch.object(
-        PrismaChatMessage,
-        "prisma",
-        return_value=AsyncMock(update_many=update_many, find_unique=find_unique),
-    ):
-        await transition_chat_message_status(
-            message_id="m1", from_status="queued", to_status="idle"
-        )
-    where = update_many.call_args.kwargs["where"]
-    assert "Session" not in where
-    assert where["chatStatus"] == "queued"
-    assert update_many.call_args.kwargs["data"]["chatStatus"] == "idle"

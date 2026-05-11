@@ -565,10 +565,7 @@ export function ChatMessagesContainer({
               {message.role === "user" &&
                 (() => {
                   const stats = turnStats?.get(message.id);
-                  if (
-                    stats?.chatStatus !== "queued" &&
-                    stats?.chatStatus !== "cancelled"
-                  ) {
+                  if (!stats?.isLatestUserInQueuedSession) {
                     return null;
                   }
                   return (
@@ -576,11 +573,7 @@ export function ChatMessagesContainer({
                       className="mt-1 items-center justify-end gap-1.5"
                       data-testid="queue-status-row"
                     >
-                      <QueueBadge
-                        chatStatus={stats.chatStatus}
-                        rawMessageId={stats.rawMessageId}
-                        sessionID={sessionID ?? null}
-                      />
+                      <QueueBadge sessionID={sessionID ?? null} />
                     </MessageActions>
                   );
                 })()}

@@ -4,15 +4,11 @@ import type { FileUIPart, UIMessage, UIDataTypes, UITools } from "ai";
 export interface TurnStats {
   durationMs?: number;
   createdAt?: string;
-  /**
-   * Queue lifecycle of the user-row that initiated this turn — mirrors
-   * the backend ``ChatMessage.chatStatus``.  Open enum: only ``"queued"``
-   * and ``"cancelled"`` drive any UI today; everything else is treated
-   * as ``"idle"`` (no badge).
-   */
-  chatStatus?: string;
-  /** Raw ChatMessage.id (UUID). Required to call DELETE /chat/queued-tasks/{id}. */
+  /** Raw ChatMessage.id (UUID).  Carried for the badge's cancel handler. */
   rawMessageId?: string | null;
+  /** True iff this user row is the latest user message in a queued session
+   *  — the "Queued" badge renders on this row. */
+  isLatestUserInQueuedSession?: boolean;
 }
 
 export type TurnStatsMap = Map<string, TurnStats>;
@@ -26,7 +22,6 @@ interface SessionChatMessage {
   sequence: number | null;
   duration_ms: number | null;
   created_at: string | null;
-  chat_status: string;
 }
 
 function coerceSessionChatMessages(
@@ -67,8 +62,6 @@ function coerceSessionChatMessages(
             : msg.created_at instanceof Date
               ? msg.created_at.toISOString()
               : null,
-        chat_status:
-          typeof msg.chat_status === "string" ? msg.chat_status : "idle",
       };
     })
     .filter((m): m is SessionChatMessage => m !== null);
@@ -223,12 +216,25 @@ export function convertChatSessionMessagesToUiMessages(
     isComplete?: boolean;
     /** Tool outputs from adjacent pages, for cross-page tool_call matching. */
     extraToolOutputs?: Map<string, unknown>;
+    /** Session-level queue lifecycle ("idle" | "queued" | "running").
+     *  When ``"queued"``, the latest user message gets a "Queued" badge. */
+    sessionChatStatus?: string;
   },
 ): {
   messages: UIMessage<unknown, UIDataTypes, UITools>[];
   stats: TurnStatsMap;
 } {
   const messages = coerceSessionChatMessages(rawMessages);
+  // Find the most-recent user message — when the session is queued, this
+  // is the message that's waiting and renders the "Queued" badge.
+  let latestUserMessageIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") {
+      latestUserMessageIndex = i;
+      break;
+    }
+  }
+  const sessionIsQueued = options?.sessionChatStatus === "queued";
   const toolOutputsByCallId = new Map<string, unknown>();
 
   // Seed with extra tool outputs from adjacent pages first;
@@ -408,10 +414,13 @@ export function convertChatSessionMessagesToUiMessages(
       patch.durationMs = msg.duration_ms;
     }
     if (uiRole === "user") {
-      // Queue badge + cancel button consume these via
-      // ``turnStats.get(message.id)`` in ChatMessagesContainer.
-      patch.chatStatus = msg.chat_status;
+      // Queue badge consumes these via ``turnStats.get(message.id)``
+      // in ChatMessagesContainer.  The badge renders on the latest
+      // user message whenever the OWNING SESSION is in the queued
+      // state — not on the message itself.
       patch.rawMessageId = msg.id;
+      patch.isLatestUserInQueuedSession =
+        sessionIsQueued && idx === latestUserMessageIndex;
     }
     if (Object.keys(patch).length > 0) patchStats(msgId, patch);
   });

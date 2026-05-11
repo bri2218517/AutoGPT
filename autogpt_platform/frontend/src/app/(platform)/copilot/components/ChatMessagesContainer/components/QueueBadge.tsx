@@ -11,26 +11,17 @@ import {
 } from "@/components/atoms/Tooltip/BaseTooltip";
 import { toast } from "@/components/molecules/Toast/use-toast";
 import * as Sentry from "@sentry/nextjs";
-import {
-  HourglassIcon,
-  ProhibitIcon,
-  XCircleIcon,
-} from "@phosphor-icons/react";
+import { HourglassIcon, XCircleIcon } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 
 interface Props {
-  /** Backend ``ChatMessage.chatStatus`` value driving the rendered shape. */
-  chatStatus: string;
-  /** Raw ChatMessage.id (UUID); required for the cancel endpoint. */
-  rawMessageId?: string | null;
   sessionID: string | null;
 }
 
 const QUEUED_TOOLTIP =
   "Will start automatically when one of your current tasks finishes.";
-const CANCELLED_TOOLTIP = "You cancelled this before it ran.";
 
-export function QueueBadge({ chatStatus, rawMessageId, sessionID }: Props) {
+export function QueueBadge({ sessionID }: Props) {
   const queryClient = useQueryClient();
   const { mutate: cancelTask, isPending: isCancelling } =
     useDeleteV2CancelQueuedTask({
@@ -46,9 +37,8 @@ export function QueueBadge({ chatStatus, rawMessageId, sessionID }: Props) {
           });
         },
         onError: (error) => {
-          // 404 means the task was already promoted / not owned — sync the UI
-          // with reality (the badge has stopped meaning what we thought) and
-          // suppress the toast since this is expected, not an actual failure.
+          // 404 means the session was already promoted / not owned — sync
+          // the UI with reality and suppress the toast.
           const status = (error as { response?: { status?: number } })?.response
             ?.status;
           if (status === 404) {
@@ -70,31 +60,9 @@ export function QueueBadge({ chatStatus, rawMessageId, sessionID }: Props) {
     });
 
   function handleCancel() {
-    if (!rawMessageId || isCancelling) return;
-    cancelTask({ messageId: rawMessageId });
+    if (!sessionID || isCancelling) return;
+    cancelTask({ sessionId: sessionID });
   }
-
-  // Terminal "Cancelled" state — neutral pill, no cancel button.
-  if (chatStatus === "cancelled") {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span
-            className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600"
-            data-testid="queue-badge-cancelled"
-          >
-            <ProhibitIcon size={12} weight="bold" />
-            Cancelled
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="max-w-xs whitespace-normal">
-          {CANCELLED_TOOLTIP}
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-
-  if (chatStatus !== "queued") return null;
 
   return (
     <span className="inline-flex items-center gap-1">
@@ -112,7 +80,7 @@ export function QueueBadge({ chatStatus, rawMessageId, sessionID }: Props) {
           {QUEUED_TOOLTIP}
         </TooltipContent>
       </Tooltip>
-      {rawMessageId ? (
+      {sessionID ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <button

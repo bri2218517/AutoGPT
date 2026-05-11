@@ -397,19 +397,12 @@ class DatabaseManager(AppService):
     update_message_content_by_sequence = _(chat_db.update_message_content_by_sequence)
     update_chat_session_title = _(chat_db.update_chat_session_title)
     set_turn_duration = _(chat_db.set_turn_duration)
-    # Running-turn tracking on ChatSession + generic ChatMessage
-    # lifecycle primitives. Callable from the CoPilotExecutor subprocess
-    # where Prisma isn't connected; HTTP path also routes through here
-    # for consistency via ``chat_db()``.
-    count_running_turns_for_user = _(chat_db.count_running_turns_for_user)
-    list_running_session_ids_for_user = _(chat_db.list_running_session_ids_for_user)
-    get_session_current_turn_started_at = _(chat_db.get_session_current_turn_started_at)
-    stamp_session_current_turn = _(chat_db.stamp_session_current_turn)
-    clear_session_current_turn = _(chat_db.clear_session_current_turn)
-    count_chat_messages_by_status = _(chat_db.count_chat_messages_by_status)
-    list_chat_messages_by_status = _(chat_db.list_chat_messages_by_status)
+    # ChatSession lifecycle primitives.  Three functions cover the
+    # cap-count + cross-session queue (count/list/transition).
+    count_chat_sessions_by_status = _(chat_db.count_chat_sessions_by_status)
+    list_chat_sessions_by_status = _(chat_db.list_chat_sessions_by_status)
+    transition_chat_session_status = _(chat_db.transition_chat_session_status)
     insert_chat_message = _(chat_db.insert_chat_message)
-    transition_chat_message_status = _(chat_db.transition_chat_message_status)
 
 
 class DatabaseManagerClient(AppServiceClient):
@@ -636,12 +629,7 @@ class DatabaseManagerAsyncClient(AppServiceClient):
     update_message_content_by_sequence = d.update_message_content_by_sequence
     update_chat_session_title = d.update_chat_session_title
     set_turn_duration = d.set_turn_duration
-    count_running_turns_for_user = d.count_running_turns_for_user
-    list_running_session_ids_for_user = d.list_running_session_ids_for_user
-    get_session_current_turn_started_at = d.get_session_current_turn_started_at
-    stamp_session_current_turn = d.stamp_session_current_turn
-    clear_session_current_turn = d.clear_session_current_turn
-    count_chat_messages_by_status = d.count_chat_messages_by_status
-    list_chat_messages_by_status = d.list_chat_messages_by_status
+    count_chat_sessions_by_status = d.count_chat_sessions_by_status
+    list_chat_sessions_by_status = d.list_chat_sessions_by_status
+    transition_chat_session_status = d.transition_chat_session_status
     insert_chat_message = d.insert_chat_message
-    transition_chat_message_status = d.transition_chat_message_status

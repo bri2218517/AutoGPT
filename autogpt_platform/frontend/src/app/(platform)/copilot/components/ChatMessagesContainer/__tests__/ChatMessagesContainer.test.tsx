@@ -59,8 +59,8 @@ vi.mock("../components/AssistantMessageActions", () => ({
 }));
 
 vi.mock("../components/QueueBadge", () => ({
-  QueueBadge: ({ rawMessageId }: { rawMessageId?: string | null }) => (
-    <span data-testid="queue-badge" data-raw-id={rawMessageId ?? ""}>
+  QueueBadge: ({ sessionID }: { sessionID: string | null }) => (
+    <span data-testid="queue-badge" data-session-id={sessionID ?? ""}>
       QueueBadge
     </span>
   ),
@@ -541,13 +541,13 @@ describe("ChatMessagesContainer — queue badges on user messages", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders a QueueBadge when the user message has chatStatus='queued'", () => {
+  it("renders a QueueBadge when the row is the latest user in a queued session", () => {
     const userId = "user-q1";
     const turnStats = new Map([
       [
         userId,
         {
-          chatStatus: "queued",
+          isLatestUserInQueuedSession: true,
           rawMessageId: "uuid-q1",
         },
       ],
@@ -568,7 +568,7 @@ describe("ChatMessagesContainer — queue badges on user messages", () => {
       />,
     );
     const badge = screen.getByTestId("queue-badge");
-    expect(badge.getAttribute("data-raw-id")).toBe("uuid-q1");
+    expect(badge.getAttribute("data-session-id")).toBe("sess-123");
   });
 
   it("does NOT render a QueueBadge for normal (non-queued) user messages", () => {

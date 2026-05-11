@@ -19,7 +19,7 @@ vi.mock("@/app/api/__generated__/endpoints/chat/chat", () => ({
       onError?: (error: unknown) => void;
     };
   }) => ({
-    mutate: (args: { messageId: string }) => {
+    mutate: (args: { sessionId: string }) => {
       cancelMock(args);
       if (errorResponse !== null) {
         mutation?.onError?.(errorResponse);
@@ -54,47 +54,29 @@ afterEach(() => {
 });
 
 describe("QueueBadge", () => {
-  it("renders the queued badge with the cancel button when a raw id is present", () => {
-    render(
-      <QueueBadge
-        chatStatus="queued"
-        rawMessageId="msg-1"
-        sessionID="sess-1"
-      />,
-    );
+  it("renders the queued badge with the cancel button when a sessionID is present", () => {
+    render(<QueueBadge sessionID="sess-1" />);
     expect(screen.getByTestId("queue-badge-queued")).toBeDefined();
     expect(screen.getByTestId("queue-cancel-button")).toBeDefined();
   });
 
-  it("invokes the cancel mutation with the raw message id on click", () => {
-    render(
-      <QueueBadge
-        chatStatus="queued"
-        rawMessageId="msg-42"
-        sessionID="sess-1"
-      />,
-    );
+  it("invokes the cancel mutation with the session id on click", () => {
+    render(<QueueBadge sessionID="sess-42" />);
     fireEvent.click(screen.getByTestId("queue-cancel-button"));
-    expect(cancelMock).toHaveBeenCalledWith({ messageId: "msg-42" });
+    expect(cancelMock).toHaveBeenCalledWith({ sessionId: "sess-42" });
   });
 
-  it("hides the cancel button when no raw id is available", () => {
-    render(<QueueBadge chatStatus="queued" sessionID="sess-1" />);
+  it("hides the cancel button when no sessionID is available", () => {
+    render(<QueueBadge sessionID={null} />);
     expect(screen.getByTestId("queue-badge-queued")).toBeDefined();
     expect(screen.queryByTestId("queue-cancel-button")).toBeNull();
   });
 
   it("treats a 404 cancel response as success (no toast, no Sentry)", () => {
-    // 404 = task already promoted / not owned: not a real failure, the
+    // 404 = session already promoted / not owned: not a real failure, the
     // UI just needs to resync. The destructive toast must NOT fire.
     errorResponse = { response: { status: 404 } };
-    render(
-      <QueueBadge
-        chatStatus="queued"
-        rawMessageId="msg-x"
-        sessionID="sess-1"
-      />,
-    );
+    render(<QueueBadge sessionID="sess-x" />);
     fireEvent.click(screen.getByTestId("queue-cancel-button"));
     expect(toastMock).not.toHaveBeenCalled();
     expect(captureExceptionMock).not.toHaveBeenCalled();
@@ -102,13 +84,7 @@ describe("QueueBadge", () => {
 
   it("shows the destructive toast and reports to Sentry on a real cancel error", () => {
     errorResponse = { response: { status: 500 } };
-    render(
-      <QueueBadge
-        chatStatus="queued"
-        rawMessageId="msg-y"
-        sessionID="sess-1"
-      />,
-    );
+    render(<QueueBadge sessionID="sess-y" />);
     fireEvent.click(screen.getByTestId("queue-cancel-button"));
     expect(toastMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -123,13 +99,7 @@ describe("QueueBadge", () => {
     // No `.response` on the error → the `status === 404` check should
     // be false, so we fall through to the toast + Sentry path.
     errorResponse = {};
-    render(
-      <QueueBadge
-        chatStatus="queued"
-        rawMessageId="msg-z"
-        sessionID="sess-1"
-      />,
-    );
+    render(<QueueBadge sessionID="sess-z" />);
     fireEvent.click(screen.getByTestId("queue-cancel-button"));
     expect(toastMock).toHaveBeenCalled();
     expect(captureExceptionMock).toHaveBeenCalled();

@@ -308,6 +308,7 @@ class SessionDetailResponse(BaseModel):
     created_at: str
     updated_at: str
     user_id: str | None
+    chat_status: str = "idle"
     messages: list[dict]
     active_stream: ActiveStreamInfo | None = None  # Present if stream is still active
     has_more_messages: bool = False
@@ -324,6 +325,7 @@ class SessionSummaryResponse(BaseModel):
     created_at: str
     updated_at: str
     title: str | None = None
+    chat_status: str = "idle"
     is_processing: bool
 
 
@@ -415,6 +417,7 @@ async def list_sessions(
                 created_at=session.started_at.isoformat(),
                 updated_at=session.updated_at.isoformat(),
                 title=session.title,
+                chat_status=session.chat_status,
                 is_processing=session.session_id in processing_set,
             )
             for session in sessions
@@ -627,6 +630,7 @@ async def get_session(
             created_at=page.session.started_at.isoformat(),
             updated_at=page.session.updated_at.isoformat(),
             user_id=page.session.user_id or None,
+            chat_status=page.session.chat_status,
             messages=messages,
             active_stream=None,
             has_more_messages=page.has_more,
@@ -643,6 +647,7 @@ async def get_session(
         created_at=page.session.started_at.isoformat(),
         updated_at=page.session.updated_at.isoformat(),
         user_id=page.session.user_id or None,
+        chat_status=page.session.chat_status,
         messages=messages,
         active_stream=active_stream_info,
         has_more_messages=page.has_more,
@@ -654,20 +659,19 @@ async def get_session(
 
 
 class QueuedTaskItem(BaseModel):
-    """One queued AutoPilot task. Frontend renders these in the 'your
-    queued tasks' panel + per-message badge in the chat view."""
+    """One queued AutoPilot task — a session waiting for a running slot.
+    Frontend renders these in the 'your queued tasks' panel."""
 
-    id: str = Field(description="ChatMessage id; pass to DELETE to cancel")
-    session_id: str
-    created_at: datetime
-    message: str | None = Field(default=None, max_length=500)
+    session_id: str = Field(description="ChatSession id; cancel via DELETE")
+    updated_at: datetime
+    title: str | None = Field(default=None, max_length=500)
 
 
 class QueuedTaskList(BaseModel):
     """Response shape for ``GET /chat/queued-tasks``. ``running`` is the
     user's current active-turn count; ``queued`` are the FIFO waiting
-    tasks. Caps are echoed so the frontend can render '5/5 running, 2
-    queued, room for 8 more' without a second settings fetch."""
+    sessions. Caps are echoed so the frontend can render '5/5 running,
+    2 queued, room for 8 more' without a second settings fetch."""
 
     running: int
     queued: list[QueuedTaskItem]
@@ -682,23 +686,19 @@ class QueuedTaskList(BaseModel):
 async def list_queued_tasks(
     user_id: Annotated[str, Security(auth.get_user_id)],
 ) -> QueuedTaskList:
-    """Tasks waiting for a running slot, ordered FIFO."""
-    queued = await turn_queue.list_queued_turns(user_id)
+    """Sessions waiting for a running slot, ordered FIFO."""
+    queued = await turn_queue.list_queued_sessions(user_id)
     running = await count_running_turns(user_id)
 
     return QueuedTaskList(
         running=running,
         queued=[
             QueuedTaskItem(
-                id=r.id,
-                session_id=r.session_id,
-                created_at=r.created_at,
-                message=(r.content or "")[:500] if r.content else None,
+                session_id=s.id,
+                updated_at=s.updatedAt,
+                title=(s.title or "")[:500] if s.title else None,
             )
-            for r in queued
-            if r.id is not None
-            and r.session_id is not None
-            and r.created_at is not None
+            for s in queued
         ],
         running_cap=get_running_turn_limit(),
         inflight_cap=get_inflight_turn_limit(),
@@ -706,23 +706,23 @@ async def list_queued_tasks(
 
 
 @router.delete(
-    "/queued-tasks/{message_id}",
+    "/queued-tasks/{session_id}",
     status_code=204,
-    responses={404: {"description": "Queued task not found or not owned by user"}},
+    responses={404: {"description": "Queued session not found or not owned by user"}},
 )
 async def cancel_queued_task(
-    message_id: str,
+    session_id: str,
     user_id: Annotated[str, Security(auth.get_user_id)],
 ) -> Response:
-    """Cancel a queued task before the dispatcher claims it.
+    """Cancel a queued session before the dispatcher claims it.
 
-    No-op (404) if the row was already promoted to running, already
-    cancelled, or doesn't belong to this user — the cancel transition
-    is gated on ``chatStatus='queued'`` AND ``Session.userId=user_id``
-    in a single atomic update.
+    No-op (404) if the session was already promoted to running, already
+    idle / cancelled, or doesn't belong to this user — the cancel
+    transition is gated on ``chatStatus='queued'`` AND
+    ``ChatSession.userId=user_id`` in a single atomic update.
     """
     cancelled = await turn_queue.cancel_queued_turn(
-        user_id=user_id, message_id=message_id
+        user_id=user_id, session_id=session_id
     )
     if not cancelled:
         raise HTTPException(

@@ -695,94 +695,49 @@ async def set_turn_duration(session_id: str, duration_ms: int) -> None:
             await cache_chat_session(session)
 
 
-# Running-turn tracking on ChatSession. Called from both the HTTP server
-# (Prisma directly) and the CoPilotExecutor subprocess (RPC via
-# DatabaseManager). The executor has no Prisma connection so all access
-# must go through ``backend.data.db_accessors.chat_db()`` — see
-# ``backend/copilot/active_turns.py``.
+# Session lifecycle primitives.  Callers pass the ``CHAT_STATUS_*``
+# constants from ``model``.  Counting and listing by ``chatStatus``
+# covers both the per-user soft running cap (status='running') and the
+# cross-session queue (status='queued').  Adding a new state is a
+# code-only change at call sites.
 
 
-async def count_running_turns_for_user(user_id: str, stale_cutoff: datetime) -> int:
-    """Count user's sessions whose ``currentTurnStartedAt`` is set and
-    fresher than ``stale_cutoff``."""
+async def count_chat_sessions_by_status(*, user_id: str, status: str) -> int:
+    """Count user's ChatSession rows whose ``chatStatus`` matches."""
     return await PrismaChatSession.prisma().count(
-        where={
-            "userId": user_id,
-            "currentTurnStartedAt": {"gt": stale_cutoff},
-        },
+        where={"userId": user_id, "chatStatus": status},
     )
 
 
-async def list_running_session_ids_for_user(
-    user_id: str, stale_cutoff: datetime
-) -> list[str]:
-    """User's session ids currently running a turn, fresher than
-    ``stale_cutoff``."""
-    rows = await PrismaChatSession.prisma().find_many(
-        where={
-            "userId": user_id,
-            "currentTurnStartedAt": {"gt": stale_cutoff},
-        },
-    )
-    return [r.id for r in rows]
-
-
-async def get_session_current_turn_started_at(
-    session_id: str,
-) -> datetime | None:
-    """Return ``currentTurnStartedAt`` for ``session_id``, or ``None``
-    if the row doesn't exist or the column is NULL."""
-    row = await PrismaChatSession.prisma().find_unique(where={"id": session_id})
-    return row.currentTurnStartedAt if row else None
-
-
-async def stamp_session_current_turn(
-    session_id: str, user_id: str, when: datetime
-) -> None:
-    """Set ``currentTurnStartedAt = when`` on the given session; user-id
-    guard prevents stamping someone else's row under a misrouted call."""
-    await PrismaChatSession.prisma().update_many(
-        where={"id": session_id, "userId": user_id},
-        data={"currentTurnStartedAt": when},
-    )
-
-
-async def clear_session_current_turn(session_id: str, user_id: str) -> None:
-    """Clear ``currentTurnStartedAt`` on the given session. Idempotent;
-    user-id guard prevents clearing someone else's row."""
-    await PrismaChatSession.prisma().update_many(
-        where={"id": session_id, "userId": user_id},
-        data={"currentTurnStartedAt": None},
-    )
-
-
-# ChatMessage lifecycle primitives.  Generic read / mutate by status —
-# callers pass the ``CHAT_STATUS_*`` constants from ``model``.  Adding a
-# new lifecycle state is a code-only change at the call sites.
-
-
-async def count_chat_messages_by_status(*, user_id: str, status: str) -> int:
-    """Count user's ChatMessage rows in the given lifecycle status."""
-    return await PrismaChatMessage.prisma().count(
-        where={
-            "chatStatus": status,
-            "Session": {"is": {"userId": user_id}},
-        },
-    )
-
-
-async def list_chat_messages_by_status(
+async def list_chat_sessions_by_status(
     *, user_id: str, status: str
-) -> list[ChatMessage]:
-    """User's ChatMessage rows in the given status, oldest-first."""
-    rows = await PrismaChatMessage.prisma().find_many(
-        where={
-            "chatStatus": status,
-            "Session": {"is": {"userId": user_id}},
-        },
-        order={"createdAt": "asc"},
+) -> list[PrismaChatSession]:
+    """User's ChatSession rows with the given status, oldest-first."""
+    return await PrismaChatSession.prisma().find_many(
+        where={"userId": user_id, "chatStatus": status},
+        order={"updatedAt": "asc"},
     )
-    return [ChatMessage.from_db(r) for r in rows]
+
+
+async def transition_chat_session_status(
+    *,
+    session_id: str,
+    from_status: str,
+    to_status: str,
+    user_id: str | None = None,
+) -> bool:
+    """Atomic CAS on ``ChatSession.chatStatus``: ``from_status`` →
+    ``to_status``.  Pass ``user_id`` for user-initiated transitions
+    (e.g. cancel) so the same statement enforces ownership.  Returns
+    True iff the gate matched.  Cancel/dispatch/complete all share
+    this primitive."""
+    where: ChatSessionWhereInput = {"id": session_id, "chatStatus": from_status}
+    if user_id is not None:
+        where["userId"] = user_id
+    updated = await PrismaChatSession.prisma().update_many(
+        where=where, data={"chatStatus": to_status}
+    )
+    return updated > 0
 
 
 async def insert_chat_message(
@@ -792,48 +747,20 @@ async def insert_chat_message(
     role: str,
     content: str,
     sequence: int,
-    chat_status: str,
     metadata: dict[str, Any] | None = None,
 ) -> ChatMessage:
-    """Insert a ChatMessage row with the given lifecycle status.
-    ``metadata`` is wrapped in :class:`SafeJson`; pass ``None`` to
-    leave the column NULL."""
+    """Insert a ChatMessage row.  ``metadata`` is wrapped in
+    :class:`SafeJson`; pass ``None`` to leave the column NULL.  Used
+    by the queue path to persist the user message + dispatcher payload
+    before flipping the session status to ``"queued"``."""
     data: ChatMessageCreateInput = {
         "id": message_id,
         "Session": {"connect": {"id": session_id}},
         "role": role,
         "content": content,
         "sequence": sequence,
-        "chatStatus": chat_status,
     }
     if metadata:
         data["metadata"] = SafeJson(metadata)
     row = await PrismaChatMessage.prisma().create(data=data)
     return ChatMessage.from_db(row)
-
-
-async def transition_chat_message_status(
-    *,
-    message_id: str,
-    from_status: str,
-    to_status: str,
-    user_id: str | None = None,
-) -> ChatMessage | None:
-    """Atomic CAS on ``chatStatus``: ``from_status`` → ``to_status``.
-
-    Returns the updated row on success, ``None`` if the gate didn't
-    match (a parallel transition won the race, the row was cancelled,
-    or — when ``user_id`` is given — the row isn't owned by this
-    user).  Pass ``user_id`` for user-initiated transitions (e.g.
-    cancel) so the same statement enforces ownership.
-    """
-    where: ChatMessageWhereInput = {"id": message_id, "chatStatus": from_status}
-    if user_id is not None:
-        where["Session"] = {"is": {"userId": user_id}}
-    updated = await PrismaChatMessage.prisma().update_many(
-        where=where, data={"chatStatus": to_status}
-    )
-    if updated == 0:
-        return None
-    row = await PrismaChatMessage.prisma().find_unique(where={"id": message_id})
-    return ChatMessage.from_db(row) if row else None

@@ -1,23 +1,21 @@
 """Per-user concurrent AutoPilot turn tracking, backed entirely by Postgres.
 
-Each :class:`prisma.models.ChatSession` carries a
-``currentTurnStartedAt`` timestamp:
-
-* ``NULL`` — no active turn (the 99% case for idle sessions).
-* set — a turn is currently running on this session. Stale entries
-  (older than :data:`MAX_TURN_LIFETIME_SECONDS`) are filtered out at
-  read time, so a crashed turn cannot permanently hold a slot.
+Each :class:`prisma.models.ChatSession` carries a ``chatStatus`` text
+enum: ``"idle"`` (no turn in flight, the 99% case), ``"queued"``
+(waiting for a running slot to free), ``"running"`` (a turn is being
+processed).  The cap and queue queries are both ``count`` / ``find_many``
+on ``ChatSession`` by ``chatStatus``.
 
 Public API
 ----------
 
 * :func:`acquire_turn_slot` — async context manager. Counts the user's
-  currently-running sessions, raises :class:`ConcurrentTurnLimitError`
-  at the cap, otherwise stamps ``currentTurnStartedAt`` and yields a
+  ``"running"`` sessions, raises :class:`ConcurrentTurnLimitError` at
+  the cap, otherwise flips the session to ``"running"`` and yields a
   handle whose release transfers to ``mark_session_completed`` via
   :meth:`TurnSlot.keep`.
-* :func:`release_turn_slot` — clears ``currentTurnStartedAt``. Called
-  from ``mark_session_completed`` when the turn ends.
+* :func:`release_turn_slot` — flips the session back to ``"idle"``.
+  Called from ``mark_session_completed`` when the turn ends.
 * :func:`count_running_turns` / :func:`get_running_session_ids` —
   used by the queue layer (in-flight = running + queued) and the
   dispatcher's busy-session check.
@@ -26,9 +24,7 @@ Cap admission is a *non-locked* count-then-update. Two concurrent
 submits from the same user can both pass the count and both update,
 leaving the user briefly one or two over the cap. This is the same
 trade-off the graph-execution credit rate-limit accepts on its
-``INCRBY`` path: the cap is a safeguard, not a budget. Going to 16/17
-in-flight under burst is acceptable; the row-locked alternative would
-add a transaction round trip per admit for no real correctness gain.
+``INCRBY`` path: the cap is a safeguard, not a budget.
 
 DB access goes through :func:`backend.data.db_accessors.chat_db` so
 the dispatcher works from both the HTTP server (Prisma directly) and
@@ -36,45 +32,32 @@ the copilot_executor process (RPC via DatabaseManager).
 """
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator
 
+from backend.copilot.model import CHAT_STATUS_IDLE, CHAT_STATUS_RUNNING
 from backend.data.db_accessors import chat_db
 from backend.util.settings import Settings
 
-# Upper bound on a single AutoPilot turn's wall-clock duration. Beyond
-# this we treat the turn as abandoned: the read-time filter excludes the
-# row from the running count so a crashed turn doesn't hold a slot
-# forever. Far exceeds typical chat-turn duration (seconds-minutes) so
-# legitimate long-running tool calls (E2B, deep web crawls) aren't
-# penalised. The normal release path is ``mark_session_completed``;
-# this is the safety net.
+# Upper bound on a single AutoPilot turn's wall-clock duration.  Re-exported
+# for callers (e.g. ``backend.blocks.autopilot``) that need a sensible
+# upper-wait timeout.  Stale running sessions older than this are an
+# operational concern surfaced via metrics + manual recovery, not
+# enforced at read time.
 MAX_TURN_LIFETIME_SECONDS = 6 * 60 * 60
 
 
 def get_running_turn_limit() -> int:
-    """Configured soft cap on concurrently *running* turns per user.
-
-    Tasks submitted while the user is at this cap are queued up to
-    :func:`get_inflight_turn_limit`. Reading at call time so operators
-    can retune via env-backed Settings without a redeploy.
-    """
+    """Configured soft cap on concurrently *running* turns per user."""
     return Settings().config.max_running_copilot_turns_per_user
 
 
 def get_inflight_turn_limit() -> int:
-    """Configured hard cap on in-flight (running + queued) turns per user.
-
-    Once total in-flight hits this, :class:`ConcurrentTurnLimitError`
-    is raised on new submissions and the API returns HTTP 429.
-    """
+    """Configured hard cap on in-flight (running + queued) turns per user."""
     return Settings().config.max_concurrent_copilot_turns_per_user
 
 
 def inflight_turn_limit_message(limit: int | None = None) -> str:
-    """User-facing 429 detail when the in-flight cap is hit. Includes
-    queued tasks in the count to match the user's mental model
-    ('15 active = 5 running + 10 queued')."""
+    """User-facing 429 detail when the in-flight cap is hit."""
     resolved = get_inflight_turn_limit() if limit is None else limit
     return (
         f"You've reached the limit of {resolved} active tasks (running + queued). "
@@ -85,7 +68,7 @@ def inflight_turn_limit_message(limit: int | None = None) -> str:
 def running_turn_limit_message(limit: int | None = None) -> str:
     """Default :class:`ConcurrentTurnLimitError` detail when the
     *running* cap is hit on a path that does not queue (e.g.
-    ``AutoPilotBlock``, ``run_sub_session``). The HTTP route catches
+    ``AutoPilotBlock``, ``run_sub_session``).  The HTTP route catches
     the error before it surfaces and replaces the message with the
     inflight one."""
     resolved = get_running_turn_limit() if limit is None else limit
@@ -104,80 +87,55 @@ def queued_turn_message() -> str:
     )
 
 
-# Back-compat shims — older module name. Prefer the explicit running /
+# Back-compat shims — older module name.  Prefer the explicit running /
 # inflight variants in new code.
 get_concurrent_turn_limit = get_running_turn_limit
 concurrent_turn_limit_message = running_turn_limit_message
 
 
 class ConcurrentTurnLimitError(Exception):
-    """User has reached the configured running AutoPilot turn cap.
-
-    The HTTP chat route catches this and falls through to the FIFO
-    queue (or 429 at the inflight cap). Non-HTTP paths surface the
-    default :func:`running_turn_limit_message` to the user.
-    """
+    """User has reached the configured running AutoPilot turn cap."""
 
     def __init__(self, message: str | None = None) -> None:
         super().__init__(message or running_turn_limit_message())
 
 
-def _stale_cutoff() -> datetime:
-    return datetime.now(timezone.utc) - timedelta(seconds=MAX_TURN_LIFETIME_SECONDS)
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-# ============================================================================
-# Reads
-# ============================================================================
-
-
 async def count_running_turns(user_id: str) -> int:
-    """User's current running-turn count, excluding stale entries."""
-    return await chat_db().count_running_turns_for_user(user_id, _stale_cutoff())
-
-
-async def get_running_session_ids(user_id: str) -> set[str]:
-    """Set of the user's session IDs currently running a turn.
-
-    Used by the dispatcher to skip queued heads whose session already
-    has a running turn — promoting a second turn for the same session
-    would silently replace its ``currentTurnStartedAt`` and the first
-    completion would clear it for both.
-    """
-    return set(
-        await chat_db().list_running_session_ids_for_user(user_id, _stale_cutoff())
+    """User's current running-turn count."""
+    return await chat_db().count_chat_sessions_by_status(
+        user_id=user_id, status=CHAT_STATUS_RUNNING
     )
 
 
-# ============================================================================
-# Mutations
-# ============================================================================
+async def get_running_session_ids(user_id: str) -> set[str]:
+    """Set of the user's session IDs currently running a turn."""
+    rows = await chat_db().list_chat_sessions_by_status(
+        user_id=user_id, status=CHAT_STATUS_RUNNING
+    )
+    return {r.id for r in rows}
 
 
 async def release_turn_slot(user_id: str, session_id: str) -> None:
-    """Clear the session's ``currentTurnStartedAt``. Idempotent.
-
-    Called from ``mark_session_completed`` when a turn ends. The
-    ``userId`` guard ensures we never clear another user's session if
-    a stale call ever fires with the wrong identity.
-    """
+    """Flip the session back to ``"idle"``.  Idempotent — the CAS on
+    ``chatStatus='running'`` is a no-op when the status has already
+    changed (e.g. a parallel cancel)."""
     if not user_id:
         return
-    await chat_db().clear_session_current_turn(session_id, user_id)
+    await chat_db().transition_chat_session_status(
+        session_id=session_id,
+        from_status=CHAT_STATUS_RUNNING,
+        to_status=CHAT_STATUS_IDLE,
+        user_id=user_id,
+    )
 
 
 class TurnSlot:
     """Handle yielded by :func:`acquire_turn_slot`.
 
     Call :meth:`keep` once a turn has been successfully scheduled to
-    transfer release ownership to ``mark_session_completed``. Without
+    transfer release ownership to ``mark_session_completed``.  Without
     ``keep``, the context manager auto-releases on exit — but only when
-    *this* caller admitted the slot. A re-entrant refresh leaves the
-    slot alone, since some earlier caller still owns it.
+    *this* caller admitted the slot.
     """
 
     __slots__ = ("user_id", "session_id", "admitted", "_kept")
@@ -189,9 +147,7 @@ class TurnSlot:
         self._kept = False
 
     def keep(self) -> None:
-        """Transfer slot ownership out of this context. Caller is now
-        responsible for ensuring ``mark_session_completed`` releases the
-        slot (or accepts the stale-cutoff fallback)."""
+        """Transfer slot ownership out of this context."""
         self._kept = True
 
 
@@ -203,24 +159,14 @@ async def acquire_turn_slot(
 ) -> AsyncIterator[TurnSlot]:
     """Reserve a turn slot for the duration of the ``async with`` block.
 
-    ``capacity`` controls how many concurrent slots the user may hold:
-
-    * The HTTP chat route uses the default (running cap, default 5) so
-      the 6th submit raises :class:`ConcurrentTurnLimitError` and the
-      route falls through to the FIFO queue.
-    * Non-HTTP entry points (``schedule_turn`` for ``run_sub_session``
-      / ``AutoPilotBlock``) pass the inflight cap (default 15) since
-      they have no queue and must preserve the prior #13064 cap.
-
     Three branches on entry:
 
-    * **Admitted** — session was idle and the user is below the cap;
-      ``currentTurnStartedAt`` is stamped now. Exit auto-releases
-      unless :meth:`TurnSlot.keep` was called.
-    * **Refreshed** — same ``session_id`` already running (network
-      retry, duplicate request); the timestamp is bumped but this
-      caller does NOT own the release. Exiting without ``keep`` is a
-      no-op.
+    * **Admitted** — user below the cap; ``chatStatus`` flips to
+      ``"running"``.  Exit auto-releases unless :meth:`TurnSlot.keep`
+      was called.
+    * **Refreshed** — same ``session_id`` is already ``"running"``
+      (network retry, duplicate request); status stays as-is and this
+      caller does NOT own the release.
     * **Rejected** — at the cap; raises :class:`ConcurrentTurnLimitError`.
 
     Anonymous sessions (``user_id`` falsy) bypass the cap entirely.
@@ -232,20 +178,28 @@ async def acquire_turn_slot(
 
     resolved_capacity = capacity if capacity is not None else get_running_turn_limit()
     db = chat_db()
-    started_at = await db.get_session_current_turn_started_at(session_id)
-    is_refresh = started_at is not None and started_at > _stale_cutoff()
 
-    if not is_refresh:
-        if await count_running_turns(user_id) >= resolved_capacity:
+    # Promote idle → running (one statement, CAS-gated).  If the row is
+    # already running this returns False — a refresh path; no release
+    # ownership.
+    if await db.transition_chat_session_status(
+        session_id=session_id,
+        from_status=CHAT_STATUS_IDLE,
+        to_status=CHAT_STATUS_RUNNING,
+        user_id=user_id,
+    ):
+        # Fresh admit: enforce the cap by counting AFTER the flip.
+        # Reading after-write is OK because over-admit just briefly
+        # exceeds the cap — the user gets one extra slot at most under
+        # burst, same trade-off as the prior count-then-update path.
+        if await count_running_turns(user_id) > resolved_capacity:
+            # Roll back our flip; we'll let the caller fall through to
+            # the queue.
+            await release_turn_slot(user_id, session_id)
             raise ConcurrentTurnLimitError(
                 running_turn_limit_message(resolved_capacity)
             )
         handle.admitted = True
-
-    # Idempotent stamp — bumps the timestamp on refresh, sets it on a
-    # fresh admit. ``userId`` guard prevents stamping someone else's
-    # session under a misrouted request.
-    await db.stamp_session_current_turn(session_id, user_id, _now())
 
     try:
         yield handle

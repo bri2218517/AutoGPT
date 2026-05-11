@@ -386,61 +386,47 @@ describe("concatWithAssistantMerge", () => {
 });
 
 describe("convertChatSessionMessagesToUiMessages — queue lifecycle", () => {
-  it("captures chatStatus='queued' + raw id on user messages so the badge can render", () => {
+  it("marks the latest user row when the session is queued", () => {
     const result = convertChatSessionMessagesToUiMessages(
       SESSION_ID,
       [
-        {
-          id: "uuid-user-1",
-          role: "user",
-          content: "queue me",
-          sequence: 0,
-          chat_status: "queued",
-        },
+        { id: "uuid-user-1", role: "user", content: "first", sequence: 0 },
+        { id: "uuid-asst-1", role: "assistant", content: "reply", sequence: 1 },
+        { id: "uuid-user-2", role: "user", content: "queue me", sequence: 2 },
       ],
-      { isComplete: true },
+      { isComplete: true, sessionChatStatus: "queued" },
     );
 
-    expect(result.messages).toHaveLength(1);
+    const stats0 = result.stats.get(result.messages[0].id);
+    const stats2 = result.stats.get(
+      result.messages[result.messages.length - 1].id,
+    );
+    // First user row is older — not the latest, no badge.
+    expect(stats0?.isLatestUserInQueuedSession).toBeFalsy();
+    // Latest user row carries the badge marker.
+    expect(stats2?.isLatestUserInQueuedSession).toBe(true);
+    expect(stats2?.rawMessageId).toBe("uuid-user-2");
+  });
+
+  it("leaves the latest-user marker false when the session is idle", () => {
+    const result = convertChatSessionMessagesToUiMessages(
+      SESSION_ID,
+      [{ id: "u1", role: "user", content: "hi", sequence: 0 }],
+      { isComplete: true, sessionChatStatus: "idle" },
+    );
+
     const stats = result.stats.get(result.messages[0].id);
-    expect(stats?.chatStatus).toBe("queued");
-    expect(stats?.rawMessageId).toBe("uuid-user-1");
+    expect(stats?.isLatestUserInQueuedSession).toBe(false);
   });
 
-  it("captures chatStatus='cancelled' so the row can render a 'Cancelled' indicator", () => {
+  it("leaves the latest-user marker false when sessionChatStatus is omitted", () => {
     const result = convertChatSessionMessagesToUiMessages(
       SESSION_ID,
-      [
-        { role: "user", content: "first", sequence: 0 },
-        {
-          role: "user",
-          content: "this got cancelled",
-          sequence: 1,
-          chat_status: "cancelled",
-        },
-        { role: "assistant", content: "reply", sequence: 2 },
-      ],
-      { isComplete: true },
-    );
-
-    const userTexts = result.messages
-      .filter((m) => m.role === "user")
-      .flatMap((m) => m.parts)
-      .filter((p) => p.type === "text")
-      .map((p) => (p as { text: string }).text);
-    expect(userTexts).toEqual(["first", "this got cancelled"]);
-    const cancelledStats = result.stats.get(result.messages[1].id);
-    expect(cancelledStats?.chatStatus).toBe("cancelled");
-  });
-
-  it("defaults chatStatus to 'idle' for normal user messages", () => {
-    const result = convertChatSessionMessagesToUiMessages(
-      SESSION_ID,
-      [{ role: "user", content: "normal", sequence: 0 }],
+      [{ id: "u1", role: "user", content: "hi", sequence: 0 }],
       { isComplete: true },
     );
 
     const stats = result.stats.get(result.messages[0].id);
-    expect(stats?.chatStatus).toBe("idle");
+    expect(stats?.isLatestUserInQueuedSession).toBe(false);
   });
 });
