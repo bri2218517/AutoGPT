@@ -294,9 +294,7 @@ async def test_mark_session_completed_fires_user_queue_dispatcher():
     ``dispatch_next_for_user('u1')`` so the user's next queued session
     can be promoted.  Per-user scoping: we don't dispatch for other
     users (no global broadcast)."""
-    fake_redis = _FakeRedis(
-        {"status": "running", "turn_id": "turn-1", "user_id": "u1"}
-    )
+    fake_redis = _FakeRedis({"status": "running", "turn_id": "turn-1", "user_id": "u1"})
     dispatch_mock = AsyncMock(return_value=True)
 
     with (
@@ -313,9 +311,7 @@ async def test_mark_session_completed_fires_user_queue_dispatcher():
             new=AsyncMock(),
             create=True,
         ),
-        patch.object(
-            stream_registry, "release_turn_slot", new=AsyncMock()
-        ),
+        patch.object(stream_registry, "release_turn_slot", new=AsyncMock()),
         patch(
             "backend.copilot.turn_queue.dispatch_next_for_user",
             new=dispatch_mock,
@@ -332,9 +328,7 @@ async def test_mark_session_completed_swallows_dispatcher_errors():
     the completion path — any exception from ``dispatch_next_for_user``
     is logged and swallowed so a queue hiccup never blocks the turn's
     cleanup."""
-    fake_redis = _FakeRedis(
-        {"status": "running", "turn_id": "turn-1", "user_id": "u1"}
-    )
+    fake_redis = _FakeRedis({"status": "running", "turn_id": "turn-1", "user_id": "u1"})
 
     with (
         patch.object(
@@ -350,9 +344,7 @@ async def test_mark_session_completed_swallows_dispatcher_errors():
             new=AsyncMock(),
             create=True,
         ),
-        patch.object(
-            stream_registry, "release_turn_slot", new=AsyncMock()
-        ),
+        patch.object(stream_registry, "release_turn_slot", new=AsyncMock()),
         patch(
             "backend.copilot.turn_queue.dispatch_next_for_user",
             new=AsyncMock(side_effect=RuntimeError("queue brown-out")),

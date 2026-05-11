@@ -54,7 +54,9 @@ async def test_check_pending_call_rate_fails_open_on_redis_error(
 # ── is_turn_in_flight: fail-closed on Redis errors ────────────────────
 
 
-def _mock_chat_db(monkeypatch: pytest.MonkeyPatch, *, status: str | None = "idle") -> None:
+def _mock_chat_db(
+    monkeypatch: pytest.MonkeyPatch, *, status: str | None = "idle"
+) -> None:
     """Stub ``chat_db()`` so the ``is_turn_in_flight`` fallthrough that
     reads ``ChatSession.chatStatus`` doesn't hit a real DB connection."""
     db = MagicMock()
