@@ -248,62 +248,6 @@ def cleanup_expired_files():
     run_async(cleanup_expired_files_async())
 
 
-def cleanup_stuck_copilot_sessions():
-    """Force-release ChatSessions stuck in ``chatStatus='running'`` past
-    the configured age that no longer have a live Redis stream (executor
-    crashed mid-turn, or the API process died between
-    ``acquire_turn_slot`` and ``dispatch_turn`` so the slot flipped but
-    ``create_session`` never landed).  Without this sweep the sidebar's
-    green dot persists until the user opens the chat (which fires the
-    inline stale-CAS) or 6h+5min elapse."""
-
-    async def _sweep() -> int:
-        from backend.copilot import stream_registry
-        from backend.copilot.active_turns import release_turn_slot
-        from backend.data.db_accessors import chat_db
-
-        cfg = Config()
-        candidates = await chat_db().list_stuck_running_sessions(
-            max_age_seconds=cfg.copilot_stuck_session_max_age_secs
-        )
-        if not candidates:
-            return 0
-        cleaned = 0
-        for sess in candidates:
-            try:
-                active = await stream_registry.get_session(sess.session_id)
-            except Exception:
-                logger.exception(
-                    "stuck-session sweep: failed to read Redis for session=%s",
-                    sess.session_id,
-                )
-                continue
-            if active is not None and active.status == "running":
-                # Real running stream — leave it alone (long but legit
-                # tool call).  The inline stale-CAS in get_active_session
-                # handles the 6h+5min ceiling.
-                continue
-            try:
-                await release_turn_slot(sess.user_id, sess.session_id)
-                await stream_registry.delete_session_meta(sess.session_id)
-                cleaned += 1
-                logger.info(
-                    "stuck-session sweep: released session=%s user=%s "
-                    "(running for %.0fs with no live stream)",
-                    sess.session_id,
-                    sess.user_id,
-                    (sess.updated_at and sess.updated_at.timestamp() or 0),
-                )
-            except Exception:
-                logger.exception(
-                    "stuck-session sweep: cleanup failed for session=%s",
-                    sess.session_id,
-                )
-        return cleaned
-
-    run_async(_sweep())
-
-
 def cleanup_oauth_tokens():
     """Clean up expired OAuth tokens from the database."""
 
@@ -635,20 +579,6 @@ class Scheduler(AppService):
                 seconds=config.cloud_storage_cleanup_interval_hours
                 * 3600,  # Convert hours to seconds
                 jobstore=Jobstores.EXECUTION.value,
-            )
-
-            # Stuck-running copilot session sweep: belt-and-braces for the
-            # "executor died mid-turn, sidebar shows green dot forever" UX
-            # bug.  Reactive cleanup already happens on cancel + chat-open;
-            # this catches the no-interaction case.
-            self.scheduler.add_job(
-                cleanup_stuck_copilot_sessions,
-                id="cleanup_stuck_copilot_sessions",
-                trigger="interval",
-                replace_existing=True,
-                seconds=config.copilot_stuck_session_sweep_interval_secs,
-                jobstore=Jobstores.EXECUTION.value,
-                max_instances=1,
             )
 
             # OAuth Token Cleanup - configurable interval
