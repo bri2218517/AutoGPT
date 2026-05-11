@@ -42,9 +42,7 @@ async def _ensure_db_connected() -> None:
         await db_module.connect()
 
 
-def make_session(
-    user_id: str, *, guide_read: bool = True, library_check: bool = True
-):
+def make_session(user_id: str, *, guide_read: bool = True, library_check: bool = True):
     """Build a fake ChatSession for tool tests.
 
     ``guide_read=True`` (default) pre-populates the session with a

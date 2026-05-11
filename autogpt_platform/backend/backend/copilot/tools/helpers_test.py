@@ -1348,9 +1348,7 @@ class TestRequireLibraryCheck:
         assert require_library_check(session, "create_agent") is None
 
     def test_returns_error_when_not_called(self):
-        session = make_session(
-            "user-lib-check", guide_read=False, library_check=False
-        )
+        session = make_session("user-lib-check", guide_read=False, library_check=False)
         result = require_library_check(session, "create_agent")
         assert isinstance(result, ErrorResponse)
         assert "find_library_agent" in result.message
@@ -1358,8 +1356,6 @@ class TestRequireLibraryCheck:
         assert "library_check_ack" in result.message
 
     def test_bypassed_in_builder_context(self):
-        session = make_session(
-            "user-lib-check", guide_read=False, library_check=False
-        )
+        session = make_session("user-lib-check", guide_read=False, library_check=False)
         session.metadata.builder_graph_id = "some-graph-id"
         assert require_library_check(session, "create_agent") is None

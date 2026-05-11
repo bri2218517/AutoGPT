@@ -401,9 +401,7 @@ async def search_library_for_creation(
     except Exception as e:
         # Anything else (e.g. embedding-service down, pgvector edge case)
         # — degrade gracefully rather than surface an error in chat.
-        logger.warning(
-            f"Hybrid library search failed unexpectedly: {e}", exc_info=True
-        )
+        logger.warning(f"Hybrid library search failed unexpectedly: {e}", exc_info=True)
         return NoResultsResponse(
             message=(
                 "Could not run the library similarity check. Proceeding "
