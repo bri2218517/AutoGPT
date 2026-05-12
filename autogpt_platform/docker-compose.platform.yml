@@ -173,10 +173,14 @@ services:
       rabbitmq:
         condition: service_healthy
     healthcheck:
+      # redis-cli ping is the real readiness signal - the app only talks
+      # FalkorDB over the redis protocol on 6379. The previous version also
+      # wget-probed the browser UI on :3000, but wget isn't installed in
+      # the falkordb image, so the check always reported unhealthy.
       test:
         [
           "CMD-SHELL",
-          'redis-cli -p 6379 -a "$${GRAPHITI_FALKORDB_PASSWORD:-}" --no-auth-warning ping && wget --spider -q http://localhost:3000 || exit 1',
+          'redis-cli -p 6379 -a "$${GRAPHITI_FALKORDB_PASSWORD:-}" --no-auth-warning ping | grep -q PONG',
         ]
       interval: 10s
       timeout: 5s
