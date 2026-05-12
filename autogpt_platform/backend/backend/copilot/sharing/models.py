@@ -112,6 +112,15 @@ def sanitize_chat_message(message: ChatMessageDomain) -> SharedChatMessage:
     - Redacts secret-shaped keys inside ``tool_calls`` and ``function_call``.
     - Drops the per-row dispatcher metadata entirely.
     - Drops ``refusal`` (model-internal signal, not user content).
+
+    Plain ``content`` is intentionally **not** key-redacted.  Tool-call
+    arguments are structured data with stable secret-shaped keys
+    (``api_key``, ``auth_token``) that we can pattern-match safely, but
+    free-form chat content has no such structure -- any regex pass would
+    either miss most real cases or false-positive on legitimate text.
+    The share modal's warning banner ("don't share if it contains
+    secrets you pasted") makes plain-content exposure an explicit
+    user-opt-in decision.
     """
     content = message.content
     if message.role == "user" and isinstance(content, str) and content:

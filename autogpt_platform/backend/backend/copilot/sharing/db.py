@@ -29,6 +29,7 @@ from backend.copilot.sharing.models import (
     sanitize_chat_message,
     sanitize_chat_session,
 )
+from backend.data.db import transaction
 from backend.data.sharing.tokens import generate_share_token
 from backend.data.sharing.workspace_refs import extract_workspace_file_ids
 
@@ -56,6 +57,11 @@ async def enable_chat_session_share(
     are already independently shared keep their existing token; only
     not-yet-shared executions get a new ``CHAT_LINK`` share.
 
+    All writes happen inside a single Prisma transaction so a crash
+    mid-flow cannot leave the chat publicly readable with a missing
+    file allowlist or an execution flipped to ``CHAT_LINK`` shared
+    state with no parent chat linkage.
+
     Returns the share token.
 
     Raises ValueError if the session does not belong to *user_id* or if
@@ -74,29 +80,37 @@ async def enable_chat_session_share(
     share_token = generate_share_token()
     now = datetime.now(UTC)
 
-    # Clear stale allowlist + linkage rows before re-keying the token,
-    # so an old token + new linkage never coexist.
-    await SharedChatFile.prisma().delete_many(where={"sessionId": session_id})
-    await ChatLinkedShare.prisma().delete_many(where={"sessionId": session_id})
+    async with transaction() as tx:
+        # Clear stale allowlist + linkage rows before re-keying the token,
+        # so an old token + new linkage never coexist.
+        await SharedChatFile.prisma(tx).delete_many(where={"sessionId": session_id})
+        await ChatLinkedShare.prisma(tx).delete_many(where={"sessionId": session_id})
 
-    await PrismaChatSession.prisma().update(
-        where={"id": session_id},
-        data={
-            "isShared": True,
-            "shareToken": share_token,
-            "sharedAt": now,
-        },
-    )
+        await _build_shared_chat_files(
+            session_id=session_id,
+            share_token=share_token,
+            user_id=user_id,
+            tx=tx,
+        )
 
-    await _build_shared_chat_files(
-        session_id=session_id, share_token=share_token, user_id=user_id
-    )
+        await _link_executions_to_share(
+            session_id=session_id,
+            executions=requested_links,
+            shared_at=now,
+            tx=tx,
+        )
 
-    await _link_executions_to_share(
-        session_id=session_id,
-        executions=requested_links,
-        shared_at=now,
-    )
+        # Session update goes LAST inside the transaction so the chat
+        # only becomes publicly readable after the allowlist + linkage
+        # are committed.
+        await PrismaChatSession.prisma(tx).update(
+            where={"id": session_id},
+            data={
+                "isShared": True,
+                "shareToken": share_token,
+                "sharedAt": now,
+            },
+        )
 
     return share_token
 
@@ -104,9 +118,12 @@ async def enable_chat_session_share(
 async def disable_chat_session_share(session_id: str, user_id: str) -> None:
     """Revoke sharing on a chat session and cascade-revoke linked executions.
 
-    Cascade rule: only executions whose ``sharedVia == CHAT_LINK`` get
-    their share state cleared.  User-initiated execution shares survive
-    chat-share revocation even when they were also opted-in here.
+    Cascade rule: an execution share is cleared only when (a) it was
+    enabled via a chat share (``sharedVia == CHAT_LINK``) AND (b) no
+    other chat session still has a ``ChatLinkedShare`` row referencing
+    it.  User-initiated execution shares survive untouched, and an
+    execution opted-in by multiple chat shares stays shared as long as
+    at least one chat share still references it.
     """
     session = await PrismaChatSession.prisma().find_first(
         where={"id": session_id, "userId": user_id},
@@ -114,36 +131,49 @@ async def disable_chat_session_share(session_id: str, user_id: str) -> None:
     if not session:
         raise ValueError(f"Chat session {session_id} not found for user")
 
-    # Walk the linkage table and disable only the chat-derived shares.
+    # Walk the linkage table and disable only the chat-derived shares
+    # that aren't still referenced by another chat session's linkage.
     linked = await ChatLinkedShare.prisma().find_many(
         where={"sessionId": session_id},
         include={"Execution": True},
     )
-    for row in linked:
-        execution = row.Execution
-        if execution is None or execution.sharedVia != SharedVia.CHAT_LINK:
-            continue
-        await AgentGraphExecution.prisma().update(
-            where={"id": execution.id},
+
+    async with transaction() as tx:
+        for row in linked:
+            execution = row.Execution
+            if execution is None or execution.sharedVia != SharedVia.CHAT_LINK:
+                continue
+            other_link = await ChatLinkedShare.prisma(tx).find_first(
+                where={
+                    "executionId": execution.id,
+                    "NOT": {"sessionId": session_id},
+                },
+            )
+            if other_link is not None:
+                # Another chat share still depends on this execution —
+                # leave it shared.
+                continue
+            await AgentGraphExecution.prisma(tx).update(
+                where={"id": execution.id},
+                data={
+                    "isShared": False,
+                    "shareToken": None,
+                    "sharedAt": None,
+                    "sharedVia": None,
+                },
+            )
+
+        await ChatLinkedShare.prisma(tx).delete_many(where={"sessionId": session_id})
+        await SharedChatFile.prisma(tx).delete_many(where={"sessionId": session_id})
+
+        await PrismaChatSession.prisma(tx).update(
+            where={"id": session_id},
             data={
                 "isShared": False,
                 "shareToken": None,
                 "sharedAt": None,
-                "sharedVia": None,
             },
         )
-
-    await ChatLinkedShare.prisma().delete_many(where={"sessionId": session_id})
-    await SharedChatFile.prisma().delete_many(where={"sessionId": session_id})
-
-    await PrismaChatSession.prisma().update(
-        where={"id": session_id},
-        data={
-            "isShared": False,
-            "shareToken": None,
-            "sharedAt": None,
-        },
-    )
 
 
 # ---------- Public read path -------------------------------------------------
@@ -303,10 +333,14 @@ async def _validate_owned_executions(
 
 
 async def _build_shared_chat_files(
-    session_id: str, share_token: str, user_id: str
+    session_id: str,
+    share_token: str,
+    user_id: str,
+    *,
+    tx: Any | None = None,
 ) -> int:
     """Scan all messages in the session for workspace://<id> refs + persist allowlist."""
-    rows = await PrismaChatMessage.prisma().find_many(
+    rows = await PrismaChatMessage.prisma(tx).find_many(
         where={"sessionId": session_id},
     )
 
@@ -322,11 +356,11 @@ async def _build_shared_chat_files(
     if not file_ids:
         return 0
 
-    workspace = await UserWorkspace.prisma().find_unique(where={"userId": user_id})
+    workspace = await UserWorkspace.prisma(tx).find_unique(where={"userId": user_id})
     if not workspace:
         return 0
 
-    owned_files = await UserWorkspaceFile.prisma().find_many(
+    owned_files = await UserWorkspaceFile.prisma(tx).find_many(
         where={
             "id": {"in": list(file_ids)},
             "workspaceId": workspace.id,
@@ -337,7 +371,7 @@ async def _build_shared_chat_files(
     created = 0
     for file in owned_files:
         try:
-            await SharedChatFile.prisma().create(
+            await SharedChatFile.prisma(tx).create(
                 data={
                     "sessionId": session_id,
                     "fileId": file.id,
@@ -356,16 +390,18 @@ async def _link_executions_to_share(
     session_id: str,
     executions: list[AgentGraphExecution],
     shared_at: datetime,
+    *,
+    tx: Any | None = None,
 ) -> None:
     """Insert ChatLinkedShare rows and cascade-enable share on unshared ones."""
     for execution in executions:
-        await ChatLinkedShare.prisma().create(
+        await ChatLinkedShare.prisma(tx).create(
             data={"sessionId": session_id, "executionId": execution.id}
         )
         if execution.isShared:
             # Already independently shared — keep its token and provenance.
             continue
-        await AgentGraphExecution.prisma().update(
+        await AgentGraphExecution.prisma(tx).update(
             where={"id": execution.id},
             data={
                 "isShared": True,

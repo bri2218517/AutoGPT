@@ -15,7 +15,7 @@ import logging
 from typing import Annotated
 
 from autogpt_libs import auth
-from fastapi import APIRouter, HTTPException, Path, Response, Security
+from fastapi import APIRouter, Body, HTTPException, Path, Response, Security
 from pydantic import BaseModel
 from starlette.status import HTTP_204_NO_CONTENT
 
@@ -95,7 +95,7 @@ async def list_linked_executions(
 async def enable_chat_sharing(
     session_id: Annotated[str, Path],
     user_id: Annotated[str, Security(auth.get_user_id)],
-    body: EnableShareRequest = EnableShareRequest(),
+    body: EnableShareRequest = Body(default_factory=EnableShareRequest),
 ) -> ShareResponse:
     """Enable sharing for a chat session.
 
@@ -104,6 +104,17 @@ async def enable_chat_sharing(
     """
     if not await is_feature_enabled(Flag.CHAT_SHARING, user_id):
         raise HTTPException(status_code=403, detail="Chat sharing is not enabled")
+
+    base_url = settings.config.frontend_base_url
+    if not base_url:
+        # Fail fast rather than handing the user a localhost URL that
+        # only works on the backend host.  This catches deployment
+        # misconfigurations at share-enable time instead of silently
+        # shipping broken share URLs to end users.
+        logger.error("frontend_base_url is not configured; refusing to enable share")
+        raise HTTPException(
+            status_code=500, detail="Sharing is not configured on this deployment"
+        )
 
     try:
         share_token = await share_db.enable_chat_session_share(
@@ -114,7 +125,6 @@ async def enable_chat_sharing(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
-    base_url = settings.config.frontend_base_url or "http://localhost:3000"
     return ShareResponse(
         share_url=f"{base_url}/share/chat/{share_token}",
         share_token=share_token,
