@@ -77,11 +77,7 @@ export function EditAgentForm({
     !!watched.title &&
     !!watched.subheader &&
     !!watched.category;
-  const experienceComplete =
-    !experienceHasError &&
-    !!watched.description &&
-    !!watched.youtubeLink &&
-    !!watched.agentOutputDemo;
+  const experienceComplete = !experienceHasError && !!watched.description;
   const thumbnailsComplete = !thumbnailsHasError && images.length > 0;
 
   const isSubmitDisabled =
