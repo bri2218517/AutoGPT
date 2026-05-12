@@ -10,7 +10,7 @@ export default function SharedChatPage() {
   const params = useParams();
   const token = params.token as string;
 
-  const { session, messages, isLoading, isError, error, retry } =
+  const { session, messages, hasMore, isLoading, isError, error, retry } =
     useSharedChatPage(token);
 
   if (isLoading) {
@@ -37,6 +37,13 @@ export default function SharedChatPage() {
         This is a public read-only view of a chat conversation. The person who
         shared it can revoke access at any time.
       </div>
+
+      {hasMore && (
+        <div className="mb-4 rounded-md border border-zinc-200 bg-zinc-50 px-4 py-2 text-xs text-zinc-600">
+          Showing the most recent {messages.length} messages of this
+          conversation. Older history is not visible in this shared view.
+        </div>
+      )}
 
       <SharedChatMessageList
         messages={messages}

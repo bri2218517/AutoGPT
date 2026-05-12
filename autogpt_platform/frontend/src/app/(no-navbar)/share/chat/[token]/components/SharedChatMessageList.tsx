@@ -40,11 +40,14 @@ export function SharedChatMessageList({ messages, linkedExecutions }: Props) {
               {new Date(message.created_at).toLocaleTimeString()}
             </span>
           </div>
-          {message.content && (
-            <div className="whitespace-pre-wrap text-sm text-zinc-800">
-              {message.content}
-            </div>
-          )}
+          {message.content &&
+            (message.role === "tool" ? (
+              renderToolContent(message.content)
+            ) : (
+              <div className="whitespace-pre-wrap text-sm text-zinc-800">
+                {message.content}
+              </div>
+            ))}
           {message.role === "tool" &&
             renderExecutionDrillIn(message, sharedExecutionTokens)}
         </li>
@@ -64,6 +67,28 @@ function labelForRole(role: string): string {
     default:
       return role;
   }
+}
+
+function renderToolContent(content: string) {
+  // Tool responses are JSON-serialised in ``content``.  Try to parse +
+  // pretty-print so readers see structure instead of a wall of
+  // escaped quotes; fall back to the raw string if it isn't JSON.
+  const trimmed = content.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(content);
+      return (
+        <pre className="overflow-x-auto rounded bg-zinc-50 px-2 py-1.5 font-mono text-xs text-zinc-700">
+          {JSON.stringify(parsed, null, 2)}
+        </pre>
+      );
+    } catch {
+      // fall through to raw render
+    }
+  }
+  return (
+    <div className="whitespace-pre-wrap text-sm text-zinc-800">{content}</div>
+  );
 }
 
 function renderExecutionDrillIn(

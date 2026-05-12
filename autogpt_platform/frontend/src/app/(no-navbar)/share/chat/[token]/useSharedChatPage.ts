@@ -5,10 +5,19 @@ import {
 
 const PAGE_SIZE = 200;
 
+// Retry transient failures, but not real 404s — a missing share is a
+// permanent state and looping retries on it would just delay the error
+// UI without changing the outcome.
+function retryUnlessNotFound(failureCount: number, error: unknown): boolean {
+  const status = (error as { status?: number } | null)?.status;
+  if (status === 404) return false;
+  return failureCount < 3;
+}
+
 export function useSharedChatPage(token: string) {
   const sessionQuery = useGetV2GetSharedChat(token, {
     query: {
-      retry: false,
+      retry: retryUnlessNotFound,
       select: (res) => (res.status === 200 ? res.data : undefined),
     },
   });
@@ -19,7 +28,7 @@ export function useSharedChatPage(token: string) {
     {
       query: {
         enabled: !!sessionQuery.data,
-        retry: false,
+        retry: retryUnlessNotFound,
         select: (res) => (res.status === 200 ? res.data : undefined),
       },
     },
