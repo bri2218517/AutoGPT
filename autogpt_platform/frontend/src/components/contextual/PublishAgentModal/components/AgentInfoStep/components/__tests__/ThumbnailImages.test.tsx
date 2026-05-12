@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   getPostV2GenerateSubmissionImageMockHandler,
@@ -7,7 +7,6 @@ import {
 } from "@/app/api/__generated__/endpoints/store/store.msw";
 import { server } from "@/mocks/mock-server";
 import {
-  cleanup,
   fireEvent,
   render,
   screen,
@@ -15,8 +14,6 @@ import {
 } from "@/tests/integrations/test-utils";
 
 import { ThumbnailImages } from "../ThumbnailImages";
-
-afterEach(() => cleanup());
 
 const toastSpy = vi.hoisted(() => vi.fn());
 vi.mock("@/components/molecules/Toast/use-toast", async (importOriginal) => {
@@ -81,7 +78,9 @@ describe("ThumbnailImages", () => {
 
   it("uploads a file via the empty-state input and shows the new image", async () => {
     server.use(
-      getPostV2UploadSubmissionMediaMockHandler("https://cdn.test/uploaded.png"),
+      getPostV2UploadSubmissionMediaMockHandler(
+        "https://cdn.test/uploaded.png",
+      ),
     );
 
     const onImagesChange = vi.fn();

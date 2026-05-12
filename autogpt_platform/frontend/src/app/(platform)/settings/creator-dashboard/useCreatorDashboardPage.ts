@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as Sentry from "@sentry/nextjs";
 import { keepPreviousData } from "@tanstack/react-query";
 
@@ -89,6 +89,12 @@ export function useCreatorDashboardPage() {
 
   const [isSortingTransition, setIsSortingTransition] = useState(false);
   const sortingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (sortingTimerRef.current) clearTimeout(sortingTimerRef.current);
+    };
+  }, []);
 
   function setFilterState(next: FilterState) {
     setFilterStateRaw(next);

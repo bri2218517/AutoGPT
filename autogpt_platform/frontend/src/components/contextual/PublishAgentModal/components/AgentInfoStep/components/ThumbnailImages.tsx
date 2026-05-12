@@ -4,7 +4,7 @@ import { Button } from "@/components/atoms/Button/Button";
 import { Text } from "@/components/atoms/Text/Text";
 import {
   CircleNotchIcon,
-  MagicWand,
+  MagicWandIcon,
   PlusIcon,
   XIcon,
 } from "@phosphor-icons/react";
@@ -104,7 +104,7 @@ export function ThumbnailImages({
               onClick={handleGenerateImage}
               disabled={isGenerating || isUploading || images.length >= 5}
               loading={isGenerating}
-              leftIcon={<MagicWand className="h-4 w-4" />}
+              leftIcon={<MagicWandIcon className="h-4 w-4" />}
             >
               {isGenerating ? "Generating" : "Generate"}
             </Button>
@@ -181,7 +181,7 @@ export function ThumbnailImages({
                 onClick={handleGenerateImage}
                 disabled={isGenerating || isUploading || images.length >= 5}
                 loading={isGenerating}
-                leftIcon={<MagicWand className="h-4 w-4" />}
+                leftIcon={<MagicWandIcon className="h-4 w-4" />}
               >
                 {isGenerating
                   ? "Generating"

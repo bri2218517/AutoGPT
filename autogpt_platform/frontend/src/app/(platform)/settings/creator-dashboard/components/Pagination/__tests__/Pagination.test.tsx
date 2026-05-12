@@ -136,9 +136,7 @@ describe("Pagination", () => {
         screen.getByRole("button", { name: `Go to page ${page}` }),
       ).toBeDefined();
     }
-    expect(
-      screen.queryByRole("button", { name: "Go to page 6" }),
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Go to page 6" })).toBeNull();
   });
 
   it("slides the visible window so 5 pages render around the current page", () => {

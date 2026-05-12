@@ -1,16 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { StoreSubmissionEditRequest } from "@/app/api/__generated__/models/storeSubmissionEditRequest";
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-} from "@/tests/integrations/test-utils";
+import { fireEvent, render, screen } from "@/tests/integrations/test-utils";
 
 import { EditAgentModal } from "../EditAgentModal";
-
-afterEach(() => cleanup());
 
 function makeSubmission(): StoreSubmissionEditRequest & {
   store_listing_version_id: string | undefined;
